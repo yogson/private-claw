@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Implementation Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+            position: relative;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .data-source-indicator {
+            position: absolute;
+            top: 15px;
+            right: 20px;
+            background: rgba(255,255,255,0.2);
+            padding: 8px 15px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            font-weight: 500;
+            backdrop-filter: blur(10px);
+        }
+
+        .project-overview {
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 2px solid #e9ecef;
+        }
+
+        .overview-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+            border-left: 4px solid #3498db;
+        }
+
+        .stat-card.completed {
+            border-left-color: #27ae60;
+        }
+
+        .stat-card.in-progress {
+            border-left-color: #f39c12;
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #ecf0f1;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3498db, #2ecc71);
+            transition: width 0.3s ease;
+            border-radius: 10px;
+        }
+
+        .phases-container {
+            padding: 20px;
+        }
+
+        .phase-card {
+            background: white;
+            margin: 20px 0;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.05);
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .phase-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .phase-header {
+            position: relative;
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            cursor: pointer;
+            display: flex;
+            justify-content: between;
+            align-items: center;
+        }
+
+        .phase-info {
+            flex-grow: 1;
+        }
+
+        .phase-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #2c3e50;
+        }
+
+        .phase-description {
+            color: #6c757d;
+            font-size: 0.95em;
+        }
+
+        .phase-meta {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .status-badge {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 2px solid transparent;
+        }
+
+        .status-badge:hover {
+            transform: scale(1.05);
+            border: 2px solid #007bff;
+            box-shadow: 0 2px 8px rgba(0,123,255,0.3);
+        }
+
+        .status-badge:hover::after {
+            content: " 🔄";
+            font-size: 0.7em;
+        }
+
+        .status-not_started {
+            background: #ecf0f1;
+            color: #7f8c8d;
+        }
+
+        .status-in_progress {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-on_hold {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-cancelled {
+            background: #f5f5f5;
+            color: #6c757d;
+        }
+
+        .status-implemented {
+            background: #e3f2fd;
+            color: #1565c0;
+        }
+
+        .priority-badge {
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.75em;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .priority-CRITICAL {
+            background: #dc3545;
+            color: white;
+        }
+
+        .priority-HIGH {
+            background: #fd7e14;
+            color: white;
+        }
+
+        .priority-MEDIUM {
+            background: #ffc107;
+            color: #212529;
+        }
+
+        .priority-LOW {
+            background: #6c757d;
+            color: white;
+        }
+
+        .phase-content {
+            display: none;
+            padding: 0;
+        }
+
+        .phase-content.active {
+            display: block;
+        }
+
+        .tasks-grid {
+            display: grid;
+            gap: 15px;
+            padding: 20px;
+        }
+
+        .task-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #dee2e6;
+            transition: all 0.2s ease;
+        }
+
+        .task-item:hover {
+            background: #e9ecef;
+        }
+
+        .task-item.completed {
+            border-left-color: #28a745;
+            background: #f8fff8;
+        }
+
+        .task-item.in_progress {
+            border-left-color: #ffc107;
+            background: #fffef5;
+        }
+
+        .task-item.implemented {
+            border-left-color: #17a2b8;
+            background: #f0faff;
+        }
+
+        .task-item.blocked {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .delivered-file {
+            background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+            color: #1565c0;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            border: 1px solid #90caf9;
+            transition: all 0.2s ease;
+            cursor: default;
+        }
+
+        .delivered-file:hover {
+            background: linear-gradient(135deg, #bbdefb 0%, #90caf9 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(21, 101, 192, 0.2);
+        }
+
+        .delivered-file.test-file {
+            background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);
+            color: #7b1fa2;
+            border: 1px solid #ce93d8;
+        }
+
+        .delivered-file.test-file:hover {
+            background: linear-gradient(135deg, #e1bee7 0%, #ce93d8 100%);
+            box-shadow: 0 2px 6px rgba(123, 31, 162, 0.2);
+        }
+
+        .delivered-file.test-file::before {
+            content: "🧪 ";
+            font-size: 0.8em;
+        }
+
+        .delivered-file.not-reviewed {
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+            color: #856404;
+            border: 2px solid #f1c40f;
+            animation: pulse 2s infinite;
+        }
+
+        .delivered-file.not-reviewed:hover {
+            background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
+            box-shadow: 0 2px 6px rgba(133, 100, 4, 0.3);
+        }
+
+        .delivered-file.not-reviewed::before {
+            content: "⏳ ";
+            font-size: 0.9em;
+        }
+
+        .delivered-file.test-file.not-reviewed {
+            background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);
+            color: #643578;
+            border: 2px solid #e91e63;
+            animation: pulse-test 2s infinite;
+        }
+
+        .delivered-file.test-file.not-reviewed:hover {
+            background: linear-gradient(135deg, #e1bee7 0%, #ce93d8 100%);
+            box-shadow: 0 2px 6px rgba(123, 31, 162, 0.3);
+        }
+
+        .delivered-file.test-file.not-reviewed::before {
+            content: "🧪⏳ ";
+            font-size: 0.9em;
+        }
+
+        .delivered-file.reviewed {
+            background: linear-gradient(135deg, #d4edda 0%, #b8e6c1 100%);
+            color: #155724;
+            border: 2px solid #28a745;
+        }
+
+        .delivered-file.reviewed:hover {
+            background: linear-gradient(135deg, #b8e6c1 0%, #a3d9a5 100%);
+            box-shadow: 0 2px 6px rgba(21, 87, 36, 0.3);
+        }
+
+        .delivered-file.reviewed::before {
+            content: "✅ ";
+            font-size: 0.9em;
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(241, 196, 15, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 10px rgba(241, 196, 15, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(241, 196, 15, 0);
+            }
+        }
+
+        @keyframes pulse-test {
+            0% {
+                box-shadow: 0 0 0 0 rgba(233, 30, 99, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 10px rgba(233, 30, 99, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(233, 30, 99, 0);
+            }
+        }
+
+        .task-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .task-title {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .task-id {
+            font-size: 0.8em;
+            color: #6c757d;
+            background: #fff;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+
+        .phase-code {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            font-size: 0.65em;
+            color: #6c757d;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            border: 1px solid #dee2e6;
+            backdrop-filter: blur(5px);
+            z-index: 10;
+        }
+
+        .task-description {
+            color: #6c757d;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+
+        .task-scope {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.8em;
+            color: #7928ca;
+            background: #f8f9fa;
+            padding: 5px 10px;
+            border-radius: 5px;
+            display: inline-block;
+        }
+
+        .deliverables, .success-criteria {
+            padding: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .deliverables h4, .success-criteria h4 {
+            color: #495057;
+            margin-bottom: 15px;
+            font-size: 1em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .deliverables ul, .success-criteria ul {
+            list-style: none;
+        }
+
+        .deliverables li, .success-criteria li {
+            padding: 8px 0;
+            padding-left: 25px;
+            position: relative;
+        }
+
+        .deliverables li::before {
+            content: "📦";
+            position: absolute;
+            left: 0;
+        }
+
+        .success-criteria li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #28a745;
+            font-weight: bold;
+        }
+
+        .expand-icon {
+            transition: transform 0.3s ease;
+        }
+
+        .expand-icon.expanded {
+            transform: rotate(180deg);
+        }
+
+        .dependencies {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+
+        .dependency {
+            background: #e3f2fd;
+            color: #1565c0;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+        }
+
+        .notes-section {
+            padding: 30px;
+            background: #f8f9fa;
+            border-top: 2px solid #e9ecef;
+        }
+
+        .notes-section h3 {
+            color: #495057;
+            margin-bottom: 15px;
+        }
+
+        .note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px 15px;
+            margin: 10px 0;
+            border-radius: 0 5px 5px 0;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #6c757d;
+        }
+
+        .status-legend {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .phase-meta {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .overview-stats {
+                grid-template-columns: 1fr;
+            }
+            
+            .data-source-indicator {
+                position: relative;
+                top: auto;
+                right: auto;
+                display: block;
+                margin: 0 auto 15px auto;
+                width: fit-content;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="data-source-indicator" id="dataSourceIndicator">📁 Loading...</div>
+            <h1>🚀 Implementation Tracker</h1>
+            <p>Project Development Progress</p>
+        </div>
+
+        <div id="loading" class="loading">
+            <h3>Loading project data...</h3>
+        </div>
+
+        <div id="content" style="display: none;">
+            <div class="project-overview">
+                <h2>Project Overview</h2>
+                <div class="overview-stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalPhases">0</div>
+                        <div class="stat-label">Total Phases</div>
+                    </div>
+                    <div class="stat-card completed">
+                        <div class="stat-value" id="completedPhases">0</div>
+                        <div class="stat-label">Completed</div>
+                    </div>
+                    <div class="stat-card in-progress">
+                        <div class="stat-value" id="totalTasks">0</div>
+                        <div class="stat-label">Total Tasks</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="projectStatus">Not Started</div>
+                        <div class="stat-label">Project Status</div>
+                    </div>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="overallProgress" style="width: 0%"></div>
+                </div>
+                <div style="text-align: center; margin: 20px 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+                    <button onclick="exportProjectData()" style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        border: none;
+                        padding: 12px 24px;
+                        border-radius: 25px;
+                        cursor: pointer;
+                        font-weight: 600;
+                        font-size: 0.9em;
+                        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+                        transition: all 0.2s ease;
+                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(0,0,0,0.3)'" 
+                       onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(0,0,0,0.2)'">
+                        💾 Export Updated JSON
+                    </button>
+                    
+                    <button onclick="resetToOriginal()" style="
+                        background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+                        color: white;
+                        border: none;
+                        padding: 12px 24px;
+                        border-radius: 25px;
+                        cursor: pointer;
+                        font-weight: 600;
+                        font-size: 0.9em;
+                        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+                        transition: all 0.2s ease;
+                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(0,0,0,0.3)'" 
+                       onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(0,0,0,0.2)'">
+                        🔄 Reload from JSON
+                    </button>
+                </div>
+                <div class="status-legend" id="statusLegend">
+                    <!-- Status legend will be populated dynamically from JSON -->
+                </div>
+            </div>
+
+            <div class="phases-container">
+                <h2 style="margin-bottom: 20px; text-align: center; color: #495057;">Implementation Phases</h2>
+                <div id="phasesContainer"></div>
+            </div>
+
+            <div class="notes-section">
+                <h3>📝 Implementation Notes</h3>
+                <div id="notesContainer"></div>
+                
+                <div style="margin-top: 30px; padding: 20px; background: #e3f2fd; border-radius: 10px; border-left: 4px solid #2196f3;">
+                    <h4 style="color: #1565c0; margin-bottom: 15px;">💡 How to Use Interactive Features</h4>
+                    <ul style="color: #0d47a1; line-height: 1.8;">
+                        <li><strong>Click Status Badges:</strong> Click any status badge to cycle through available statuses</li>
+                        <li><strong>Auto-Save Dates:</strong> Completion dates are automatically set when marking items as "completed"</li>
+                        <li><strong>Files Delivered:</strong> Implemented tasks show delivered files as colored badges with filenames (hover for full path)
+                            <ul style="margin-top: 5px; font-size: 0.9em;">
+                                <li>Regular files: Blue badges</li>
+                                <li>Test files: Purple badges with 🧪 icon</li>
+                                <li><strong>Review Status:</strong> Click file badges to toggle review status
+                                    <ul style="margin-top: 3px;">
+                                        <li>⏳ Yellow badges with pulse: Regular files not reviewed</li>
+                                        <li>🧪⏳ Purple badges with pink pulse: Test files not reviewed</li>
+                                        <li>✅ Green badges: All reviewed files (click to mark as not reviewed)</li>
+                                        <li>Review counter shows progress: "2/3 reviewed"</li>
+                                    </ul>
+                                </li>
+                            </ul>
+                        </li>
+                        <li><strong>Project Stats:</strong> Overall progress updates automatically based on phase completion</li>
+                        <li><strong>Auto-Save:</strong> All changes are automatically saved to browser storage and persist between page refreshes</li>
+                        <li><strong>Export Changes:</strong> Use the "Export Updated JSON" button to save your progress to a file
+                            <ul style="margin-top: 5px; font-size: 0.9em;">
+                                <li>Chrome/Edge: Choose exact location to save</li>
+                                <li>Other browsers: Downloads folder with consistent filename</li>
+                            </ul>
+                        </li>
+                        <li><strong>Reset to Original:</strong> Use the "Reset to Original" button to discard all changes and reload from JSON file</li>
+                        <li><strong>Visual Feedback:</strong> Hover over status badges to see the toggle icon (🔄)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global project data storage
+        let projectData = null;
+        const STORAGE_KEY = 'project_tracker_data';
+        const STORAGE_TIMESTAMP_KEY = 'project_tracker_timestamp';
+
+        // Load and display project data
+        async function loadProjectData() {
+            try {
+                // First try to load from localStorage
+                const savedData = loadFromLocalStorage();
+                if (savedData) {
+                    projectData = savedData;
+                    displayProject(projectData);
+                    showDataSourceNotification('localStorage');
+                    return;
+                }
+
+                // If no saved data, load from JSON file
+                const response = await fetch('project_tracker.json');
+                projectData = await response.json();
+                displayProject(projectData);
+                showDataSourceNotification('json');
+                
+                // Save initial data to localStorage
+                saveToLocalStorage();
+                
+            } catch (error) {
+                console.error('Error loading project data:', error);
+                document.getElementById('loading').innerHTML = 
+                    '<h3 style="color: #dc3545;">Error loading project data. Please ensure project_tracker.json is available.</h3>';
+            }
+        }
+
+        function saveToLocalStorage() {
+            if (!projectData) return;
+            
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(projectData));
+                localStorage.setItem(STORAGE_TIMESTAMP_KEY, new Date().toISOString());
+            } catch (error) {
+                console.error('Failed to save to localStorage:', error);
+            }
+        }
+
+        function loadFromLocalStorage() {
+            try {
+                const savedData = localStorage.getItem(STORAGE_KEY);
+                return savedData ? JSON.parse(savedData) : null;
+            } catch (error) {
+                console.error('Failed to load from localStorage:', error);
+                return null;
+            }
+        }
+
+        function clearLocalStorage() {
+            try {
+                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem(STORAGE_TIMESTAMP_KEY);
+                return true;
+            } catch (error) {
+                console.error('Failed to clear localStorage:', error);
+                return false;
+            }
+        }
+
+        function getLastSavedTime() {
+            const timestamp = localStorage.getItem(STORAGE_TIMESTAMP_KEY);
+            if (timestamp) {
+                return new Date(timestamp).toLocaleString();
+            }
+            return null;
+        }
+
+        function showDataSourceNotification(source) {
+            // Update the persistent indicator
+            updateDataSourceIndicator(source);
+            
+            const notification = document.createElement('div');
+            const isLocalStorage = source === 'localStorage';
+            const lastSaved = getLastSavedTime();
+            
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                left: 20px;
+                background: ${isLocalStorage ? '#17a2b8' : '#6c757d'};
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 1000;
+                animation: slideIn 0.3s ease;
+                max-width: 300px;
+                font-size: 0.9em;
+            `;
+            
+            if (isLocalStorage) {
+                notification.innerHTML = `
+                    <div style="font-weight: bold;">💾 Restored from Local Storage</div>
+                    ${lastSaved ? `<div style="font-size: 0.8em; opacity: 0.9;">Last saved: ${lastSaved}</div>` : ''}
+                `;
+            } else {
+                notification.innerHTML = `
+                    <div style="font-weight: bold;">📁 Loaded from JSON file</div>
+                    <div style="font-size: 0.8em; opacity: 0.9;">Changes will be auto-saved</div>
+                `;
+            }
+            
+            document.body.appendChild(notification);
+            
+            // Remove after 4 seconds
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => notification.remove(), 300);
+            }, 4000);
+        }
+
+        function updateDataSourceIndicator(source) {
+            const indicator = document.getElementById('dataSourceIndicator');
+            if (!indicator) return;
+            
+            const isLocalStorage = source === 'localStorage';
+            const lastSaved = getLastSavedTime();
+            
+            if (isLocalStorage) {
+                indicator.innerHTML = `💾 Local Storage ${lastSaved ? `(${new Date(localStorage.getItem(STORAGE_TIMESTAMP_KEY)).toLocaleDateString()})` : ''}`;
+                indicator.title = `Data loaded from browser storage. Last saved: ${lastSaved || 'Unknown'}`;
+            } else {
+                indicator.innerHTML = '📁 JSON File';
+                indicator.title = 'Data loaded from project_tracker.json file';
+            }
+        }
+
+        function displayProject(data) {
+            // Hide loading, show content
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+
+            // Update overview stats
+            document.getElementById('totalPhases').textContent = data.project.total_phases;
+            document.getElementById('completedPhases').textContent = data.project.completed_phases;
+            document.getElementById('projectStatus').textContent = data.project.status.replace('_', ' ').toUpperCase();
+            
+            let totalTasks = 0;
+            let completedTasks = 0;
+            
+            data.phases.forEach(phase => {
+                totalTasks += phase.tasks.length;
+                completedTasks += phase.tasks.filter(task => task.status === 'completed' || task.status === 'cancelled').length;
+            });
+            
+            document.getElementById('totalTasks').textContent = totalTasks;
+            
+            // Update progress bar
+            const progressPercent = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
+            document.getElementById('overallProgress').style.width = progressPercent + '%';
+
+            // Display dynamic status legend
+            displayStatusLegend(data.status_values);
+
+            // Display phases
+            displayPhases(data.phases);
+            
+            // Display notes
+            displayNotes(data.notes);
+        }
+
+        function displayStatusLegend(statusValues) {
+            const container = document.getElementById('statusLegend');
+            
+            // Clear existing legend items to prevent duplication
+            container.innerHTML = '';
+            
+            // Status color mapping
+            const statusColors = {
+                'not_started': '#ecf0f1',
+                'in_progress': '#fff3cd',
+                'completed': '#d4edda',
+                'on_hold': '#f8d7da',
+                'cancelled': '#f5f5f5',
+                'blocked': '#ffebf0',
+                'implemented': '#e7f3ff'
+            };
+            
+            // Generate legend items
+            statusValues.forEach(status => {
+                const legendItem = document.createElement('div');
+                legendItem.className = 'legend-item';
+                
+                const color = statusColors[status] || '#e9ecef'; // fallback color
+                const displayName = status.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+                
+                legendItem.innerHTML = `
+                    <div class="legend-color" style="background: ${color};"></div>
+                    <span>${displayName}</span>
+                `;
+                
+                container.appendChild(legendItem);
+            });
+        }
+
+        function displayPhases(phases) {
+            const container = document.getElementById('phasesContainer');
+            
+            phases.forEach(phase => {
+                const phaseElement = createPhaseElement(phase);
+                container.appendChild(phaseElement);
+            });
+        }
+
+        function createPhaseElement(phase) {
+            const phaseDiv = document.createElement('div');
+            phaseDiv.className = 'phase-card';
+            
+            const completedTasks = phase.tasks.filter(task => task.status === 'completed' || task.status === 'cancelled').length;
+            const taskProgress = phase.tasks.length > 0 ? (completedTasks / phase.tasks.length) * 100 : 0;
+            
+            phaseDiv.innerHTML = `
+                <div class="phase-header" onclick="togglePhase('${phase.id}')">
+                    <span class="phase-code" title="Phase Code: ${phase.id}">${phase.id}</span>
+                    <div class="phase-info">
+                        <div class="phase-title">${phase.name}</div>
+                        <div class="phase-description">${phase.description}</div>
+                        <div style="margin-top: 10px;">
+                            <div class="progress-bar" style="height: 6px; margin: 5px 0;">
+                                <div class="progress-fill" style="width: ${taskProgress}%"></div>
+                            </div>
+                            <small style="color: #6c757d;">${completedTasks}/${phase.tasks.length} tasks completed</small>
+                        </div>
+                        ${phase.dependencies.length > 0 ? `
+                        <div style="margin-top: 10px;">
+                            <small style="color: #6c757d;">Dependencies: </small>
+                            <div class="dependencies">
+                                ${phase.dependencies.map(dep => `<span class="dependency">${dep}</span>`).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                    <div class="phase-meta">
+                        <span class="priority-badge priority-${phase.priority}">${phase.priority}</span>
+                        <span class="status-badge status-${phase.status}" 
+                              onclick="event.stopPropagation(); toggleStatus('Phase', '${phase.id}')"
+                              title="Click to change status">${phase.status.replace('_', ' ')}</span>
+                        <span class="expand-icon" id="icon-${phase.id}">▼</span>
+                    </div>
+                </div>
+                <div class="phase-content" id="content-${phase.id}">
+                    <div class="tasks-grid">
+                        ${phase.tasks.map(task => createTaskHTML(task, phase.id)).join('')}
+                    </div>
+                    <div class="deliverables">
+                        <h4>📦 Deliverables</h4>
+                        <ul>
+                            ${phase.deliverables.map(deliverable => `<li>${deliverable}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <div class="success-criteria">
+                        <h4>✅ Success Criteria</h4>
+                        <ul>
+                            ${phase.success_criteria.map(criteria => `<li>${criteria}</li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+            `;
+            
+            return phaseDiv;
+        }
+
+        function createTaskHTML(task, phaseId) {
+            return `
+                <div class="task-item ${task.status}">
+                    <div class="task-header">
+                        <span class="task-title">${task.name}</span>
+                        <span class="task-id">${task.id}</span>
+                    </div>
+                    <div class="task-description">${task.description}</div>
+                    <div class="task-scope">${task.scope_path}</div>
+                    <div style="margin-top: 10px;">
+                        <span class="status-badge status-${task.status}" 
+                              onclick="event.stopPropagation(); toggleStatus('Task', '${phaseId}', '${task.id}')"
+                              title="Click to change status">${task.status.replace('_', ' ')}</span>
+                        ${task.completed_date ? `<small style="margin-left: 10px; color: #28a745;">Completed: ${task.completed_date}</small>` : ''}
+                    </div>
+                    ${task.files_delivered && task.files_delivered.length > 0 ? `
+                        <div style="margin-top: 12px;">
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 0.85em; font-weight: 600; color: #495057; display: flex; align-items: center;">
+                                    📦 Files Delivered (${task.files_delivered.length})
+                                </span>
+                                <span style="font-size: 0.75em; color: #6c757d; margin-left: 10px;">
+                                    ${task.files_delivered.filter(f => f.reviewed).length}/${task.files_delivered.length} reviewed
+                                </span>
+                            </div>
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                ${task.files_delivered.map((fileObj, index) => {
+                                    // Handle both old string format and new object format for backward compatibility
+                                    const filePath = typeof fileObj === 'string' ? fileObj : fileObj.path;
+                                    const isReviewed = typeof fileObj === 'object' ? fileObj.reviewed : false;
+                                    const fileName = filePath.split('/').pop();
+                                    const isTestFile = fileName.toLowerCase().includes('test');
+                                    
+                                    let cssClass = 'delivered-file';
+                                    if (isTestFile) cssClass += ' test-file';
+                                    if (typeof fileObj === 'object') {
+                                        cssClass += isReviewed ? ' reviewed' : ' not-reviewed';
+                                    }
+                                    
+                                    return `
+                                        <div class="${cssClass}" 
+                                             title="Delivered file: ${filePath}${typeof fileObj === 'object' ? (isReviewed ? ' (✅ Reviewed)' : ' (⏳ Click to mark as reviewed)') : ''}"
+                                             ${typeof fileObj === 'object' ? `onclick="toggleFileReviewStatus('${phaseId}', '${task.id}', ${index})" style="cursor: pointer;"` : ''}>
+                                            ${fileName}
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    ${task.notes ? `<div style="margin-top: 8px; font-style: italic; color: #6c757d;">${task.notes}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function displayNotes(notes) {
+            const container = document.getElementById('notesContainer');
+            
+            // Clear existing notes to prevent duplication
+            container.innerHTML = '';
+            
+            notes.forEach(note => {
+                const noteDiv = document.createElement('div');
+                noteDiv.className = 'note';
+                noteDiv.textContent = note;
+                container.appendChild(noteDiv);
+            });
+        }
+
+        // File review status toggle functionality
+        function toggleFileReviewStatus(phaseId, taskId, fileIndex) {
+            if (!projectData) return;
+
+            // Find the target task
+            const phase = projectData.phases.find(p => p.id === phaseId);
+            if (!phase) return;
+
+            const task = phase.tasks.find(t => t.id === taskId);
+            if (!task || !task.files_delivered || !task.files_delivered[fileIndex]) return;
+
+            // Toggle the reviewed status
+            const fileObj = task.files_delivered[fileIndex];
+            if (typeof fileObj === 'object') {
+                fileObj.reviewed = !fileObj.reviewed;
+                
+                // Save changes to localStorage
+                saveToLocalStorage();
+                
+                // Refresh the display
+                refreshDisplay();
+                
+                // Show notification
+                const fileName = fileObj.path.split('/').pop();
+                const status = fileObj.reviewed ? 'marked as reviewed' : 'marked as not reviewed';
+                showFileReviewNotification(fileName, status);
+            }
+        }
+
+        function showFileReviewNotification(fileName, status) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 20px;
+                background: ${status.includes('reviewed') && !status.includes('not') ? '#17a2b8' : '#ffc107'};
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 1000;
+                animation: slideIn 0.3s ease;
+                max-width: 300px;
+                font-size: 0.9em;
+            `;
+            
+            const icon = status.includes('reviewed') && !status.includes('not') ? '✅' : '⏳';
+            notification.innerHTML = `
+                <div style="font-weight: bold;">${icon} File ${status}</div>
+                <div style="font-size: 0.85em; opacity: 0.9;">${fileName}</div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // Remove after 2.5 seconds
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => notification.remove(), 300);
+            }, 2500);
+        }
+
+        // Status toggle functionality
+        function toggleStatus(type, phaseId, taskId = null) {
+            if (!projectData) return;
+
+            const statusValues = projectData.status_values;
+            let currentStatus, targetObject;
+
+            // Find the target object (phase or task)
+            const phase = projectData.phases.find(p => p.id === phaseId);
+            if (!phase) return;
+
+            if (taskId) {
+                // Toggle task status
+                const task = phase.tasks.find(t => t.id === taskId);
+                if (!task) return;
+                targetObject = task;
+                currentStatus = task.status;
+            } else {
+                // Toggle phase status
+                targetObject = phase;
+                currentStatus = phase.status;
+            }
+
+            // Get next status in cycle
+            const currentIndex = statusValues.indexOf(currentStatus);
+            const nextIndex = (currentIndex + 1) % statusValues.length;
+            const newStatus = statusValues[nextIndex];
+
+            // Update the status
+            targetObject.status = newStatus;
+            
+            // Set completion date if completed
+            if (newStatus === 'completed' && !targetObject.completed_date) {
+                targetObject.completed_date = new Date().toISOString().split('T')[0];
+            } else if (newStatus !== 'completed') {
+                targetObject.completed_date = null;
+            }
+
+            // Update project completion stats if phase changed
+            if (!taskId) {
+                updateProjectStats();
+            }
+
+            // Save changes to localStorage
+            saveToLocalStorage();
+            
+            // Refresh the display
+            refreshDisplay();
+            
+            // Show notification
+            showStatusChangeNotification(type, targetObject.name, newStatus);
+        }
+
+        function updateProjectStats() {
+            const completedPhases = projectData.phases.filter(p => p.status === 'completed').length;
+            projectData.project.completed_phases = completedPhases;
+            
+            // Update project status based on phases
+            if (completedPhases === 0) {
+                projectData.project.status = 'not_started';
+            } else if (completedPhases === projectData.phases.length) {
+                projectData.project.status = 'completed';
+            } else {
+                projectData.project.status = 'in_progress';
+            }
+        }
+
+        function refreshDisplay() {
+            // Store which phases are currently expanded
+            const expandedPhases = new Set();
+            projectData.phases.forEach(phase => {
+                const content = document.getElementById(`content-${phase.id}`);
+                if (content && content.classList.contains('active')) {
+                    expandedPhases.add(phase.id);
+                }
+            });
+            
+            // Clear containers
+            document.getElementById('phasesContainer').innerHTML = '';
+            
+            // Refresh project data display
+            displayProject(projectData);
+            
+            // Restore expanded state
+            expandedPhases.forEach(phaseId => {
+                const content = document.getElementById(`content-${phaseId}`);
+                const icon = document.getElementById(`icon-${phaseId}`);
+                if (content && icon) {
+                    content.classList.add('active');
+                    icon.classList.add('expanded');
+                }
+            });
+        }
+
+        function showStatusChangeNotification(type, name, newStatus) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #28a745;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 1000;
+                animation: slideIn 0.3s ease;
+                max-width: 300px;
+            `;
+            
+            const displayStatus = newStatus.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+            notification.innerHTML = `
+                <strong>${type} Updated:</strong><br>
+                ${name}<br>
+                → ${displayStatus}
+            `;
+            
+            // Add animation keyframes if not exists
+            if (!document.getElementById('notificationStyle')) {
+                const style = document.createElement('style');
+                style.id = 'notificationStyle';
+                style.textContent = `
+                    @keyframes slideIn {
+                        from { transform: translateX(100%); opacity: 0; }
+                        to { transform: translateX(0); opacity: 1; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            document.body.appendChild(notification);
+            
+            // Remove after 3 seconds
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+
+        function exportProjectData() {
+            if (!projectData) {
+                alert('No project data to export!');
+                return;
+            }
+
+            // Check if the File System Access API is supported (Chrome/Edge)
+            if ('showSaveFilePicker' in window) {
+                exportWithFilePicker();
+            } else {
+                exportWithDownload();
+            }
+        }
+
+        async function exportWithFilePicker() {
+            try {
+                // Use modern File System Access API
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: 'project_tracker.json',
+                    types: [{
+                        description: 'JSON files',
+                        accept: {
+                            'application/json': ['.json'],
+                        },
+                    }],
+                });
+
+                const writable = await fileHandle.createWritable();
+                const jsonString = JSON.stringify(projectData, null, 2);
+                await writable.write(jsonString);
+                await writable.close();
+                
+                showStatusChangeNotification('Export', 'Project data saved successfully!', 'completed');
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('Export failed:', error);
+                    // Fallback to download method
+                    exportWithDownload();
+                }
+            }
+        }
+
+        function exportWithDownload() {
+            // Create a downloadable JSON file
+            const jsonString = JSON.stringify(projectData, null, 2);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            
+            // Create a temporary download link with consistent filename
+            const downloadLink = document.createElement('a');
+            downloadLink.href = url;
+            downloadLink.download = 'project_tracker.json'; // Same name every time
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            
+            // Clean up
+            URL.revokeObjectURL(url);
+            
+            // Show success notification with instructions
+            showExportInstructions();
+        }
+
+        function showExportInstructions() {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #28a745;
+                color: white;
+                padding: 15px 20px;
+                border-radius: 10px;
+                box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+                z-index: 1000;
+                max-width: 350px;
+                animation: slideIn 0.3s ease;
+            `;
+            
+            notification.innerHTML = `
+                <div style="font-weight: bold; margin-bottom: 8px;">📥 File Downloaded!</div>
+                <div style="font-size: 0.9em; line-height: 1.4;">
+                    <strong>project_tracker.json</strong> saved to Downloads.<br>
+                    💡 <em>Replace your original file to keep changes!</em>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // Remove after 5 seconds (longer for instructions)
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => notification.remove(), 300);
+            }, 5000);
+        }
+
+        async function resetToOriginal() {
+            if (!confirm('Are you sure you want to reset to the original JSON file? All changes will be lost!')) {
+                return;
+            }
+
+            try {
+                // Clear localStorage
+                clearLocalStorage();
+                
+                // Show a brief notification before reloading
+                const notification = document.createElement('div');
+                notification.style.cssText = `
+                    position: fixed;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: #17a2b8;
+                    color: white;
+                    padding: 20px 30px;
+                    border-radius: 10px;
+                    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+                    z-index: 1001;
+                    font-size: 1.1em;
+                    font-weight: bold;
+                    text-align: center;
+                `;
+                
+                notification.innerHTML = `
+                    <div>🔄 Resetting to original JSON...</div>
+                    <div style="font-size: 0.9em; margin-top: 8px; opacity: 0.9;">Page will reload automatically</div>
+                `;
+                
+                document.body.appendChild(notification);
+                
+                // Reload the page after a brief delay to show the notification
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1500);
+                
+            } catch (error) {
+                console.error('Error resetting to original:', error);
+                alert('Failed to reset to original file. Please ensure project_tracker.json is available.');
+            }
+        }
+
+        function togglePhase(phaseId) {
+            const content = document.getElementById(`content-${phaseId}`);
+            const icon = document.getElementById(`icon-${phaseId}`);
+            
+            if (content.classList.contains('active')) {
+                content.classList.remove('active');
+                icon.classList.remove('expanded');
+            } else {
+                content.classList.add('active');
+                icon.classList.add('expanded');
+            }
+        }
+
+        // Load data when page loads
+        document.addEventListener('DOMContentLoaded', loadProjectData);
+    </script>
+</body>
+</html>

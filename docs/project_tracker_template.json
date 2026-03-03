@@ -1,0 +1,47 @@
+{
+  "project": {
+    "name": "",
+    "version": "1.0.0",
+    "status": "not_started",
+    "started_date": null,
+    "estimated_completion": null,
+    "actual_completion": null,
+    "total_phases": 0,
+    "completed_phases": 0
+  },
+  "status_values": [
+    "not_started",
+    "in_progress",
+    "implemented",
+    "on_hold",
+    "completed",
+    "cancelled"
+  ],
+  "phases": [
+    {
+      "id": "phase_1",
+      "name": "",
+      "description": "",
+      "priority": "HIGH",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [],
+      "tasks": [
+        {
+          "id": "1.1",
+          "name": "",
+          "description": "",
+          "scope_path": "",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [],
+      "success_criteria": []
+    }
+  ],
+  "notes": []
+}

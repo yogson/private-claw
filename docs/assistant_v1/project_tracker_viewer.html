@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assistant v1 Tracker</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f7fb;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .card {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        h1, h2, h3 {
+            margin: 0 0 12px 0;
+        }
+        .muted {
+            color: #6b7280;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .stat {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 12px;
+            background: #f9fafb;
+        }
+        .stat .value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+        }
+        .status-not_started { background: #e5e7eb; color: #374151; }
+        .status-in_progress { background: #fef3c7; color: #92400e; }
+        .status-implemented { background: #dbeafe; color: #1e40af; }
+        .status-completed { background: #dcfce7; color: #166534; }
+        .status-on_hold { background: #fee2e2; color: #991b1b; }
+        .status-cancelled { background: #f3f4f6; color: #6b7280; }
+        .priority {
+            margin-left: 8px;
+            background: #111827;
+            color: white;
+        }
+        .phase {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            margin-top: 12px;
+            overflow: hidden;
+        }
+        .phase-header {
+            padding: 12px;
+            background: #f9fafb;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .tasks {
+            padding: 12px;
+            display: grid;
+            gap: 10px;
+        }
+        .task {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .task-head {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .task-path {
+            margin-top: 8px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            color: #4338ca;
+        }
+        .progress {
+            width: 100%;
+            height: 10px;
+            background: #e5e7eb;
+            border-radius: 999px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #3b82f6;
+        }
+        .error {
+            color: #b91c1c;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>Personal AI Assistant v1 Tracker</h1>
+            <p class="muted">Data source: <code>docs/assistant_v1/project_tracker.json</code></p>
+            <div id="overview" class="stats"></div>
+        </div>
+        <div id="content"></div>
+    </div>
+
+    <script>
+        async function loadTracker() {
+            try {
+                const response = await fetch("./project_tracker.json");
+                if (!response.ok) {
+                    throw new Error("Unable to read ./project_tracker.json");
+                }
+                const data = await response.json();
+                renderOverview(data);
+                renderPhases(data.phases || []);
+            } catch (error) {
+                document.getElementById("content").innerHTML =
+                    `<div class="card error">Failed to load tracker: ${error.message}</div>`;
+            }
+        }
+
+        function capitalize(value) {
+            return String(value || "")
+                .replace(/_/g, " ")
+                .replace(/\b\w/g, (m) => m.toUpperCase());
+        }
+
+        function phaseProgress(phase) {
+            const tasks = phase.tasks || [];
+            if (tasks.length === 0) return 0;
+            const done = tasks.filter((t) => t.status === "completed" || t.status === "cancelled").length;
+            return Math.round((done / tasks.length) * 100);
+        }
+
+        function renderOverview(data) {
+            const phases = data.phases || [];
+            const totalTasks = phases.reduce((acc, p) => acc + (p.tasks || []).length, 0);
+            const doneTasks = phases.reduce(
+                (acc, p) => acc + (p.tasks || []).filter((t) => t.status === "completed" || t.status === "cancelled").length,
+                0
+            );
+            const overall = totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
+
+            const cards = [
+                { label: "Project", value: data.project?.name || "N/A" },
+                { label: "Status", value: capitalize(data.project?.status) },
+                { label: "Phases", value: `${data.project?.completed_phases || 0}/${data.project?.total_phases || phases.length}` },
+                { label: "Tasks", value: `${doneTasks}/${totalTasks}` },
+                { label: "Overall Progress", value: `${overall}%` }
+            ];
+
+            document.getElementById("overview").innerHTML = cards.map((c) => `
+                <div class="stat">
+                    <div class="muted">${c.label}</div>
+                    <div class="value">${c.value}</div>
+                </div>
+            `).join("");
+        }
+
+        function renderPhases(phases) {
+            const container = document.getElementById("content");
+            container.innerHTML = phases.map((phase) => {
+                const progress = phaseProgress(phase);
+                const dependencies = (phase.dependencies || []).length
+                    ? `<div class="muted">Dependencies: ${(phase.dependencies || []).join(", ")}</div>`
+                    : `<div class="muted">Dependencies: none</div>`;
+
+                const tasksHtml = (phase.tasks || []).map((task) => `
+                    <div class="task">
+                        <div class="task-head">
+                            <strong>${task.id} - ${task.name}</strong>
+                            <span class="badge status-${task.status}">${capitalize(task.status)}</span>
+                        </div>
+                        <div class="muted">${task.description || ""}</div>
+                        <div class="task-path">${task.scope_path || ""}</div>
+                    </div>
+                `).join("");
+
+                return `
+                    <div class="card phase">
+                        <div class="phase-header">
+                            <h3>${phase.id}: ${phase.name}</h3>
+                            <div>
+                                <span class="badge status-${phase.status}">${capitalize(phase.status)}</span>
+                                <span class="badge priority">${phase.priority}</span>
+                            </div>
+                            <p class="muted">${phase.description || ""}</p>
+                            ${dependencies}
+                            <div class="progress"><div class="progress-fill" style="width: ${progress}%"></div></div>
+                            <div class="muted">Task progress: ${progress}%</div>
+                        </div>
+                        <div class="tasks">${tasksHtml}</div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        document.addEventListener("DOMContentLoaded", loadTracker);
+    </script>
+</body>
+</html>
+

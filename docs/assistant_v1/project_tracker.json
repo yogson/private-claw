@@ -1,0 +1,442 @@
+{
+  "project": {
+    "name": "Personal AI Assistant v1",
+    "version": "1.0.0",
+    "status": "not_started",
+    "started_date": null,
+    "estimated_completion": null,
+    "actual_completion": null,
+    "total_phases": 6,
+    "completed_phases": 0
+  },
+  "status_values": [
+    "not_started",
+    "in_progress",
+    "implemented",
+    "on_hold",
+    "completed",
+    "cancelled"
+  ],
+  "phases": [
+    {
+      "id": "phase_1",
+      "name": "Foundation and Runtime Skeleton",
+      "description": "Establish Python/uv runtime baseline, FastAPI operational gateway, provider adapter integration, and sub-agent contract definitions.",
+      "priority": "CRITICAL",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [],
+      "tasks": [
+        {
+          "id": "1.1",
+          "name": "Runtime Bootstrap and Configuration [CMP_CORE_AGENT_ORCHESTRATOR]",
+          "description": "Implement application bootstrap, configuration loading, validation lifecycle, and baseline structured logging setup.",
+          "scope_path": "src/assistant/core/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "1.2",
+          "name": "FastAPI Operational Gateway [CMP_API_FASTAPI_GATEWAY]",
+          "description": "Implement liveness/readiness endpoints and foundational API module wiring for operational control paths.",
+          "scope_path": "src/assistant/api/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "1.3",
+          "name": "Anthropic Provider Adapter [CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER]",
+          "description": "Integrate Pydantic AI provider abstraction with Anthropic-first model configuration.",
+          "scope_path": "src/assistant/providers/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "1.4",
+          "name": "Sub-agent Contract Definitions [CMP_AGENT_SUBAGENT_COORDINATOR]",
+          "description": "Define spawn request/result schemas, model allowlist policy fields, budget limits, and execution guardrails.",
+          "scope_path": "src/assistant/subagents/contracts/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Runtime bootstrap and configuration contract",
+        "FastAPI health and baseline operational API surface",
+        "Anthropic-first model adapter path",
+        "Sub-agent spawning schema and policy definitions"
+      ],
+      "success_criteria": [
+        "Service starts with validated configuration and deterministic boot checks",
+        "Health endpoints provide stable liveness/readiness status",
+        "Baseline provider call path succeeds for smoke prompts",
+        "Sub-agent request schema validation rejects invalid payloads"
+      ]
+    },
+    {
+      "id": "phase_2",
+      "name": "Telegram Channel and Multimodal Intake",
+      "description": "Implement Telegram integration, message normalization contracts, and text/attachment/voice ingress behavior.",
+      "priority": "CRITICAL",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [
+        "phase_1"
+      ],
+      "tasks": [
+        {
+          "id": "2.1",
+          "name": "Telegram Adapter Core [CMP_CHANNEL_TELEGRAM_ADAPTER]",
+          "description": "Implement Telegram webhook/polling adapter, authorization allowlist checks, and outbound message responses.",
+          "scope_path": "src/assistant/channels/telegram/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "2.2",
+          "name": "Event Normalization Contracts [CMP_CORE_AGENT_ORCHESTRATOR]",
+          "description": "Define normalized event schema used by orchestrator for all channel and scheduler input.",
+          "scope_path": "src/assistant/core/events/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "2.3",
+          "name": "Attachment and Voice Intake [CMP_CHANNEL_TELEGRAM_ADAPTER]",
+          "description": "Implement multimodal metadata extraction and fallback flows for unsupported payload details.",
+          "scope_path": "src/assistant/channels/telegram/ingestion/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "2.4",
+          "name": "Channel Throttling and Retry [CMP_CHANNEL_TELEGRAM_ADAPTER]",
+          "description": "Add channel request throttling, retry policy, and operational error telemetry for outbound delivery.",
+          "scope_path": "src/assistant/channels/telegram/reliability/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Telegram ingress and egress runtime",
+        "Normalized event contract implementation",
+        "Attachment and voice intake handling",
+        "Throttle and retry policy implementation"
+      ],
+      "success_criteria": [
+        "Allowlisted Telegram user requests are processed successfully",
+        "Text, attachments, and voice notes map to normalized event schema",
+        "Unauthorized users are blocked and audited",
+        "Outbound failures are retried according to policy"
+      ]
+    },
+    {
+      "id": "phase_3",
+      "name": "Filesystem Memory System",
+      "description": "Implement markdown+frontmatter long-term memory with retrieval/write/consolidation policies.",
+      "priority": "HIGH",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [
+        "phase_1",
+        "phase_2"
+      ],
+      "tasks": [
+        {
+          "id": "3.1",
+          "name": "Memory Schema and Storage Layout [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Define and enforce memory category schemas with deterministic file paths and metadata requirements.",
+          "scope_path": "src/assistant/memory/store/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "3.2",
+          "name": "Memory Retrieval Strategies [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement category-aware retrieval and context assembly strategies for response generation.",
+          "scope_path": "src/assistant/memory/retrieval/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "3.3",
+          "name": "Memory Write and Dedup Policies [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement idempotent writes, confidence-aware updates, and duplicate detection behavior.",
+          "scope_path": "src/assistant/memory/write/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "3.4",
+          "name": "Consolidation Maintenance Jobs [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement periodic consolidation tasks to reduce drift and preserve memory relevance over time.",
+          "scope_path": "src/assistant/memory/maintenance/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Persistent memory schema and layout",
+        "Context retrieval engine",
+        "Write/update/dedup policy implementation",
+        "Memory consolidation routines"
+      ],
+      "success_criteria": [
+        "Memory persists and validates across restarts",
+        "Context retrieval returns relevant artifacts for active prompts",
+        "Deduplication reduces conflicting memory entries",
+        "Consolidation jobs complete with audit logs"
+      ]
+    },
+    {
+      "id": "phase_4",
+      "name": "Capabilities, Skills, and Sub-agent Delegation",
+      "description": "Deliver manifest-driven extension runtime, first-party capability set, and safe sub-agent orchestration.",
+      "priority": "HIGH",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [
+        "phase_1",
+        "phase_3"
+      ],
+      "tasks": [
+        {
+          "id": "4.1",
+          "name": "Manifest Registry Lifecycle [CMP_TOOL_RUNTIME_REGISTRY]",
+          "description": "Implement manifest discovery, validation, runtime loading, and enable/disable lifecycle behavior.",
+          "scope_path": "src/assistant/extensions/registry/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.2",
+          "name": "First-party Capability Pack [CMP_SKILL_RUNTIME_ENGINE]",
+          "description": "Deliver memory, web research, shell, calendar, GitHub CLI, and macOS Notes/Reminders integration capabilities and skill wrappers.",
+          "scope_path": "src/assistant/extensions/first_party/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.3",
+          "name": "Capability and Execution Safety [CMP_TOOL_RUNTIME_REGISTRY]",
+          "description": "Apply policy enforcement, allowlists, timeout controls, and side-effect auditing for capability execution.",
+          "scope_path": "src/assistant/extensions/policy/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.4",
+          "name": "Sub-agent Coordinator Runtime [CMP_AGENT_SUBAGENT_COORDINATOR]",
+          "description": "Implement sub-agent spawn lifecycle with explicit model selection, budget limits, and concurrency controls.",
+          "scope_path": "src/assistant/subagents/runtime/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.5",
+          "name": "Delegation Observability [CMP_OBSERVABILITY_LOGGING]",
+          "description": "Implement parent-child trace correlation and audit logs for all delegated tasks.",
+          "scope_path": "src/assistant/observability/subagent/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Manifest-driven capability and skill runtime",
+        "First-party capability and skill implementations",
+        "Capability policy and execution guards",
+        "Sub-agent runtime path with model selection controls",
+        "Delegation observability and audit records"
+      ],
+      "success_criteria": [
+        "Capabilities and skills load from manifests without runtime ambiguity",
+        "Policy violations are blocked and surfaced with actionable errors",
+        "Sub-agent spawn requests require explicit model_id and pass guardrails",
+        "Sub-agent budget/concurrency limits are enforced",
+        "Delegated task audit trails are queryable"
+      ]
+    },
+    {
+      "id": "phase_5",
+      "name": "Scheduler and Reminder Execution",
+      "description": "Implement single-timezone scheduler, reminder lifecycle, and resilient execution behavior.",
+      "priority": "HIGH",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [
+        "phase_2",
+        "phase_3"
+      ],
+      "tasks": [
+        {
+          "id": "5.1",
+          "name": "Scheduler Runtime Core [CMP_AUTOMATION_SCHEDULER]",
+          "description": "Implement persisted scheduler runtime with one-off and recurring jobs in a single configured timezone.",
+          "scope_path": "src/assistant/scheduler/core/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "5.2",
+          "name": "Reminder Lifecycle APIs [CMP_AUTOMATION_SCHEDULER]",
+          "description": "Implement create, list, update, and cancel reminder flows via orchestrator/API paths.",
+          "scope_path": "src/assistant/scheduler/reminders/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "5.3",
+          "name": "Retry and Missed-run Handling [CMP_AUTOMATION_SCHEDULER]",
+          "description": "Implement bounded retries, missed-run compensation, and failure state transitions.",
+          "scope_path": "src/assistant/scheduler/reliability/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "5.4",
+          "name": "Scheduler Audit Trail [CMP_OBSERVABILITY_LOGGING]",
+          "description": "Persist scheduler outcomes with consistent event schema and operational visibility.",
+          "scope_path": "src/assistant/observability/scheduler/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Scheduler runtime and persisted job state",
+        "Reminder lifecycle flows",
+        "Retry and missed-run handling policies",
+        "Scheduler execution audit trail"
+      ],
+      "success_criteria": [
+        "Reminders trigger within configured lateness thresholds",
+        "Job state survives process restarts",
+        "Failed jobs are retried or marked failed by policy",
+        "Scheduler history is available for operational review"
+      ]
+    },
+    {
+      "id": "phase_6",
+      "name": "Minimal Admin and Operational Hardening",
+      "description": "Deliver admin controls, memory browsing, capability toggles, backup/export routines, and tmux runbook validation.",
+      "priority": "MEDIUM",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [
+        "phase_2",
+        "phase_3",
+        "phase_4",
+        "phase_5"
+      ],
+      "tasks": [
+        {
+          "id": "6.1",
+          "name": "Minimal Admin UI and API [CMP_ADMIN_MINIMAL_UI]",
+          "description": "Implement health, memory, and runtime status dashboards with secure API bindings.",
+          "scope_path": "src/assistant/admin/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "6.2",
+          "name": "Memory Browser and Capability Toggles [CMP_API_FASTAPI_GATEWAY]",
+          "description": "Expose admin controls for memory inspection and capability enable/disable operations with audit logging.",
+          "scope_path": "src/assistant/admin/operations/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "6.3",
+          "name": "Backup and Export Workflows [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Provide filesystem backup/export capabilities for memory and runtime audit artifacts.",
+          "scope_path": "src/assistant/ops/backup/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "6.4",
+          "name": "tmux Runbook and Smoke Validation [CMP_OBSERVABILITY_LOGGING]",
+          "description": "Document startup/restart/check procedures and execute critical smoke flow verification checklist.",
+          "scope_path": "docs/assistant_v1/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Minimal admin interface and secured API operations",
+        "Memory browsing and capability toggling controls",
+        "Backup/export routines and restore guidance",
+        "tmux deployment runbook and smoke checklist"
+      ],
+      "success_criteria": [
+        "Admin can inspect runtime health and key component state",
+        "Memory and capability operations are available with audit trails",
+        "Backup and restore process is repeatable",
+        "Critical user flows pass smoke checks after restart"
+      ]
+    }
+  ],
+  "notes": [
+    "Tracker aligned with ASSISTANT_V1_IMPLEMENTATION_PLAN phases and dependencies.",
+    "All tasks include component IDs for traceability with architecture and technical specification docs.",
+    "Sub-agent spawning with explicit model selection is represented in phase 1 and phase 4 tasks.",
+    "Status values follow project documentation ruleset requirements.",
+    "Authoritative tracker for assistant_v1 scope is docs/assistant_v1/project_tracker.json; docs/project_tracker.json remains a root-level template/reference."
+  ]
+}
+
