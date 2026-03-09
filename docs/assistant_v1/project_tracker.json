@@ -2,8 +2,8 @@
   "project": {
     "name": "Personal AI Assistant v1",
     "version": "1.0.0",
-    "status": "not_started",
-    "started_date": null,
+    "status": "in_progress",
+    "started_date": "2026-03-09",
     "estimated_completion": null,
     "actual_completion": null,
     "total_phases": 6,
@@ -20,49 +20,83 @@
   "phases": [
     {
       "id": "phase_1",
-      "name": "Foundation and Runtime Skeleton",
-      "description": "Establish Python/uv runtime baseline, FastAPI operational gateway, provider adapter integration, and sub-agent contract definitions.",
+      "name": "Core, Config System, and Admin Config Control Plane",
+      "description": "Establish runtime foundation, canonical configuration domains, and admin-first config control flows.",
       "priority": "CRITICAL",
-      "status": "not_started",
-      "started_date": null,
+      "status": "in_progress",
+      "started_date": "2026-03-09",
       "completed_date": null,
       "dependencies": [],
       "tasks": [
         {
           "id": "1.1",
-          "name": "Runtime Bootstrap and Configuration [CMP_CORE_AGENT_ORCHESTRATOR]",
-          "description": "Implement application bootstrap, configuration loading, validation lifecycle, and baseline structured logging setup.",
+          "name": "Bootstrap and Config Domain Loader [CMP_CORE_AGENT_ORCHESTRATOR]",
+          "description": "Implement strict config loading and startup validation for app, channel, model, capabilities, MCP servers, scheduler, and store domains.",
           "scope_path": "src/assistant/core/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "completed_date": "2026-03-09",
+          "notes": "Pydantic schemas for all 7 config domains; ConfigLoader reads YAML + env overrides; bootstrap() entry point with fail-fast SystemExit on validation error. Project setup also delivered: pyproject.toml, Makefile, src/ skeleton, config/ YAML templates.",
+          "files_delivered": [
+            "pyproject.toml",
+            "Makefile",
+            "config/app.yaml",
+            "config/channel.telegram.yaml",
+            "config/model.yaml",
+            "config/capabilities.yaml",
+            "config/mcp_servers.yaml",
+            "config/scheduler.yaml",
+            "config/store.yaml",
+            "src/assistant/core/__init__.py",
+            "src/assistant/core/bootstrap.py",
+            "src/assistant/core/config/__init__.py",
+            "src/assistant/core/config/schemas.py"
+          ]
         },
         {
           "id": "1.2",
-          "name": "FastAPI Operational Gateway [CMP_API_FASTAPI_GATEWAY]",
-          "description": "Implement liveness/readiness endpoints and foundational API module wiring for operational control paths.",
-          "scope_path": "src/assistant/api/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "name": "Env Override Projection and Provenance [CMP_CORE_AGENT_ORCHESTRATOR]",
+          "description": "Implement validated environment override projection with provenance metadata and fail-fast policy behavior.",
+          "scope_path": "src/assistant/core/config/",
+          "status": "implemented",
+          "completed_date": "2026-03-09",
+          "notes": "Implemented inside ConfigLoader: apply_env_overrides() projects ASSISTANT_<DOMAIN>_<KEY> env vars with JSON type-parsing and double-underscore nested key support (e.g. ASSISTANT_SCHEDULER_RETRY_POLICY__MAX_ATTEMPTS); _build_provenance() tracks per-field source labels (file/env_override/default); effective_config() returns {config, provenance} with secrets redacted. Extracted env parsing helpers to env_utils.py. Fixed: effective_config() now performs fresh disk+env read on every call and actually annotates provenance in output.",
+          "files_delivered": [
+            "src/assistant/core/config/env_utils.py",
+            "src/assistant/core/config/loader.py"
+          ]
         },
         {
           "id": "1.3",
-          "name": "Anthropic Provider Adapter [CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER]",
-          "description": "Integrate Pydantic AI provider abstraction with Anthropic-first model configuration.",
-          "scope_path": "src/assistant/providers/",
+          "name": "FastAPI Gateway Baseline and Config Endpoints [CMP_API_FASTAPI_GATEWAY]",
+          "description": "Implement health endpoints, admin auth guard, and config read/validate/diff/apply endpoint flows.",
+          "scope_path": "src/assistant/api/",
+          "status": "implemented",
+          "completed_date": "2026-03-09",
+          "notes": "FastAPI app with lifespan-based config bootstrap; Bearer token admin auth guard (ASSISTANT_ADMIN_TOKEN); /health/live and /health/ready endpoints; /admin/config/effective (returns config+provenance, fresh disk read), /validate, /diff, /apply endpoints with allowlist-controlled key mutation, atomic YAML write, and live runtime reload via update_runtime_config_domain(). EffectiveConfigResponse now includes provenance dict. ApplyResponse includes live_reloaded flag.",
+          "files_delivered": [
+            "src/assistant/api/__init__.py",
+            "src/assistant/api/main.py",
+            "src/assistant/api/deps.py",
+            "src/assistant/api/routers/__init__.py",
+            "src/assistant/api/routers/health.py",
+            "src/assistant/api/routers/config.py"
+          ]
+        },
+        {
+          "id": "1.4",
+          "name": "Admin Config Panels and Apply Workflow [CMP_ADMIN_MINIMAL_UI]",
+          "description": "Implement minimal admin UI flow: load, edit allowlisted keys, validate, diff preview, confirm, and apply.",
+          "scope_path": "src/assistant/admin/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
           "files_delivered": []
         },
         {
-          "id": "1.4",
-          "name": "Sub-agent Contract Definitions [CMP_AGENT_SUBAGENT_COORDINATOR]",
-          "description": "Define spawn request/result schemas, model allowlist policy fields, budget limits, and execution guardrails.",
-          "scope_path": "src/assistant/subagents/contracts/",
+          "id": "1.5",
+          "name": "Anthropic Adapter and Correlation Propagation [CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER]",
+          "description": "Integrate Anthropic-first provider adapter baseline and propagate correlation IDs through model call paths.",
+          "scope_path": "src/assistant/providers/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -70,22 +104,24 @@
         }
       ],
       "deliverables": [
-        "Runtime bootstrap and configuration contract",
-        "FastAPI health and baseline operational API surface",
-        "Anthropic-first model adapter path",
-        "Sub-agent spawning schema and policy definitions"
+        "Runtime bootstrap module and validated config domain loader",
+        "Effective-config API with redaction and provenance projection",
+        "Admin config UI with controlled apply flow and audit trail",
+        "Health endpoints and provider baseline call path with trace IDs"
       ],
       "success_criteria": [
-        "Service starts with validated configuration and deterministic boot checks",
-        "Health endpoints provide stable liveness/readiness status",
-        "Baseline provider call path succeeds for smoke prompts",
-        "Sub-agent request schema validation rejects invalid payloads"
+        "Service starts with validated configuration only",
+        "Invalid config payloads fail safely without destructive persistence",
+        "Effective-config projection includes secret redaction and source provenance",
+        "Admin config apply flow enforces validate/diff/confirm and records audit events",
+        "Health endpoints report readiness and liveness consistently",
+        "Baseline model invocation path returns successful responses"
       ]
     },
     {
       "id": "phase_2",
-      "name": "Telegram Channel and Multimodal Intake",
-      "description": "Implement Telegram integration, message normalization contracts, and text/attachment/voice ingress behavior.",
+      "name": "Store Foundation and Runtime State Integrity",
+      "description": "Establish durable persistence, idempotency, and lock-protected atomic state updates for runtime domains.",
       "priority": "CRITICAL",
       "status": "not_started",
       "started_date": null,
@@ -96,9 +132,9 @@
       "tasks": [
         {
           "id": "2.1",
-          "name": "Telegram Adapter Core [CMP_CHANNEL_TELEGRAM_ADAPTER]",
-          "description": "Implement Telegram webhook/polling adapter, authorization allowlist checks, and outbound message responses.",
-          "scope_path": "src/assistant/channels/telegram/",
+          "name": "Store Facade and Internal Persistence Modules [CMP_STORE_STATE_FACADE]",
+          "description": "Implement store facade and session/task/idempotency/lock persistence components with filesystem backend baseline.",
+          "scope_path": "src/assistant/store/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -106,9 +142,9 @@
         },
         {
           "id": "2.2",
-          "name": "Event Normalization Contracts [CMP_CORE_AGENT_ORCHESTRATOR]",
-          "description": "Define normalized event schema used by orchestrator for all channel and scheduler input.",
-          "scope_path": "src/assistant/core/events/",
+          "name": "Atomic Writes and Lock TTL Recovery [CMP_STORE_STATE_FACADE]",
+          "description": "Implement atomic write semantics, lock TTL behavior, and recovery marker lifecycle.",
+          "scope_path": "src/assistant/store/runtime/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -116,9 +152,9 @@
         },
         {
           "id": "2.3",
-          "name": "Attachment and Voice Intake [CMP_CHANNEL_TELEGRAM_ADAPTER]",
-          "description": "Implement multimodal metadata extraction and fallback flows for unsupported payload details.",
-          "scope_path": "src/assistant/channels/telegram/ingestion/",
+          "name": "Session History Append/Read/Replay [CMP_STORE_SESSION_PERSISTENCE]",
+          "description": "Implement session history append, read, and replay contracts for per-turn agent lifecycle continuity.",
+          "scope_path": "src/assistant/store/session/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -126,9 +162,9 @@
         },
         {
           "id": "2.4",
-          "name": "Channel Throttling and Retry [CMP_CHANNEL_TELEGRAM_ADAPTER]",
-          "description": "Add channel request throttling, retry policy, and operational error telemetry for outbound delivery.",
-          "scope_path": "src/assistant/channels/telegram/reliability/",
+          "name": "Ingress Idempotency Registration and Check [CMP_STORE_IDEMPOTENCY_LEDGER]",
+          "description": "Implement idempotency key registration and duplicate-check path for channel and API ingress.",
+          "scope_path": "src/assistant/store/idempotency/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -136,22 +172,22 @@
         }
       ],
       "deliverables": [
-        "Telegram ingress and egress runtime",
-        "Normalized event contract implementation",
-        "Attachment and voice intake handling",
-        "Throttle and retry policy implementation"
+        "Store facade APIs with filesystem backend baseline",
+        "Session/task/idempotency/lock persistence modules",
+        "Recovery marker and consistency scan routines",
+        "Store-level diagnostics and audit events"
       ],
       "success_criteria": [
-        "Allowlisted Telegram user requests are processed successfully",
-        "Text, attachments, and voice notes map to normalized event schema",
-        "Unauthorized users are blocked and audited",
-        "Outbound failures are retried according to policy"
+        "Session and task state persist across restarts without corruption",
+        "Duplicate ingress events are rejected deterministically",
+        "Concurrent writes for the same session/task are lock-protected",
+        "Atomic write failures preserve last good state and emit recovery diagnostics"
       ]
     },
     {
       "id": "phase_3",
-      "name": "Filesystem Memory System",
-      "description": "Implement markdown+frontmatter long-term memory with retrieval/write/consolidation policies.",
+      "name": "Telegram Channel and Normalized Event Intake",
+      "description": "Enable Telegram-first interaction with deterministic event normalization for text, voice, attachment, and callbacks.",
       "priority": "HIGH",
       "status": "not_started",
       "started_date": null,
@@ -163,9 +199,9 @@
       "tasks": [
         {
           "id": "3.1",
-          "name": "Memory Schema and Storage Layout [CMP_MEMORY_FILESYSTEM_STORE]",
-          "description": "Define and enforce memory category schemas with deterministic file paths and metadata requirements.",
-          "scope_path": "src/assistant/memory/store/",
+          "name": "Telegram Adapter Ingress/Egress Core [CMP_CHANNEL_TELEGRAM_ADAPTER]",
+          "description": "Implement Telegram adapter ingress and egress with allowlist enforcement and outbound retry policy.",
+          "scope_path": "src/assistant/channels/telegram/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -173,9 +209,9 @@
         },
         {
           "id": "3.2",
-          "name": "Memory Retrieval Strategies [CMP_MEMORY_FILESYSTEM_STORE]",
-          "description": "Implement category-aware retrieval and context assembly strategies for response generation.",
-          "scope_path": "src/assistant/memory/retrieval/",
+          "name": "Normalized Event Mapping to INT_ORCH_EVENT_INPUT [CMP_CORE_AGENT_ORCHESTRATOR]",
+          "description": "Implement normalized inbound event mapping including callback and idempotency fields.",
+          "scope_path": "src/assistant/core/events/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -183,9 +219,9 @@
         },
         {
           "id": "3.3",
-          "name": "Memory Write and Dedup Policies [CMP_MEMORY_FILESYSTEM_STORE]",
-          "description": "Implement idempotent writes, confidence-aware updates, and duplicate detection behavior.",
-          "scope_path": "src/assistant/memory/write/",
+          "name": "Voice and Attachment Metadata Intake [CMP_CHANNEL_TELEGRAM_ADAPTER]",
+          "description": "Implement voice and attachment metadata handling with transcript fallback behavior.",
+          "scope_path": "src/assistant/channels/telegram/ingestion/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -193,8 +229,76 @@
         },
         {
           "id": "3.4",
-          "name": "Consolidation Maintenance Jobs [CMP_MEMORY_FILESYSTEM_STORE]",
-          "description": "Implement periodic consolidation tasks to reduce drift and preserve memory relevance over time.",
+          "name": "Channel Throttling and Audit Logging [CMP_OBSERVABILITY_LOGGING]",
+          "description": "Integrate per-channel throttling with channel audit logging and retry telemetry.",
+          "scope_path": "src/assistant/channels/telegram/reliability/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        }
+      ],
+      "deliverables": [
+        "Telegram adapter and response pipeline",
+        "Event normalization and callback handling path",
+        "Attachment and voice handlers with fallback responses",
+        "Channel-level throttling/retry and audit telemetry"
+      ],
+      "success_criteria": [
+        "Authorized Telegram interactions complete reliably",
+        "Normalized event schema remains stable for supported Telegram event types",
+        "Unauthorized users are blocked and audited",
+        "Failed outbound sends follow configured retry behavior"
+      ]
+    },
+    {
+      "id": "phase_4",
+      "name": "Filesystem Memory and Retrieval Quality",
+      "description": "Deliver durable long-term memory with deterministic retrieval, deduplication, and index repair behavior.",
+      "priority": "HIGH",
+      "status": "not_started",
+      "started_date": null,
+      "completed_date": null,
+      "dependencies": [
+        "phase_1",
+        "phase_2",
+        "phase_3"
+      ],
+      "tasks": [
+        {
+          "id": "4.1",
+          "name": "Memory Schema and Directory Model [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement markdown+frontmatter memory schemas and directory structure for core memory categories.",
+          "scope_path": "src/assistant/memory/store/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.2",
+          "name": "Deterministic Retrieval and Index Pipeline [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement deterministic non-vector retrieval/index pipeline with category caps and bounded context assembly.",
+          "scope_path": "src/assistant/memory/retrieval/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.3",
+          "name": "Memory Write, Confidence, and Dedup Policies [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement controlled memory write/update policy, confidence thresholds, and deduplication behavior.",
+          "scope_path": "src/assistant/memory/write/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "4.4",
+          "name": "Index Rebuild/Repair and Degraded Fallback [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Implement index rebuild and repair path with degraded-mode fallback retrieval and diagnostics.",
           "scope_path": "src/assistant/memory/maintenance/",
           "status": "not_started",
           "completed_date": null,
@@ -203,35 +307,36 @@
         }
       ],
       "deliverables": [
-        "Persistent memory schema and layout",
-        "Context retrieval engine",
-        "Write/update/dedup policy implementation",
-        "Memory consolidation routines"
+        "Memory persistence module and schema validator",
+        "Retrieval/index pipeline with bounded context outputs",
+        "Update and deduplication policy implementation",
+        "Memory repair/rebuild utilities and diagnostics"
       ],
       "success_criteria": [
-        "Memory persists and validates across restarts",
-        "Context retrieval returns relevant artifacts for active prompts",
-        "Deduplication reduces conflicting memory entries",
-        "Consolidation jobs complete with audit logs"
+        "Memory persists across restarts with schema validity",
+        "Retrieval provides relevant compact context under category caps",
+        "Duplicate and conflicting artifacts are reduced by update and consolidation logic",
+        "Index failures degrade gracefully with audit visibility"
       ]
     },
     {
-      "id": "phase_4",
-      "name": "Capabilities, Skills, and Sub-agent Delegation",
-      "description": "Deliver manifest-driven extension runtime, first-party capability set, and safe sub-agent orchestration.",
+      "id": "phase_5",
+      "name": "Capabilities, Skills, MCP Bridge, and Sub-agent Delegation",
+      "description": "Deliver extensibility runtime with strict policy controls and bounded sub-agent delegation.",
       "priority": "HIGH",
       "status": "not_started",
       "started_date": null,
       "completed_date": null,
       "dependencies": [
         "phase_1",
-        "phase_3"
+        "phase_2",
+        "phase_4"
       ],
       "tasks": [
         {
-          "id": "4.1",
-          "name": "Manifest Registry Lifecycle [CMP_TOOL_RUNTIME_REGISTRY]",
-          "description": "Implement manifest discovery, validation, runtime loading, and enable/disable lifecycle behavior.",
+          "id": "5.1",
+          "name": "Manifest Discovery, Validation, and Registry Lifecycle [CMP_TOOL_RUNTIME_REGISTRY]",
+          "description": "Implement capability/skill manifest discovery, validation, and runtime registry lifecycle.",
           "scope_path": "src/assistant/extensions/registry/",
           "status": "not_started",
           "completed_date": null,
@@ -239,9 +344,9 @@
           "files_delivered": []
         },
         {
-          "id": "4.2",
-          "name": "First-party Capability Pack [CMP_SKILL_RUNTIME_ENGINE]",
-          "description": "Deliver memory, web research, shell, calendar, GitHub CLI, and macOS Notes/Reminders integration capabilities and skill wrappers.",
+          "id": "5.2",
+          "name": "First-party Capability Set and Skill Wrappers [CMP_TOOL_RUNTIME_REGISTRY]",
+          "description": "Implement first-party memory, web research, shell wrappers, macOS bridges, and gh integration capabilities.",
           "scope_path": "src/assistant/extensions/first_party/",
           "status": "not_started",
           "completed_date": null,
@@ -249,19 +354,29 @@
           "files_delivered": []
         },
         {
-          "id": "4.3",
-          "name": "Capability and Execution Safety [CMP_TOOL_RUNTIME_REGISTRY]",
-          "description": "Apply policy enforcement, allowlists, timeout controls, and side-effect auditing for capability execution.",
-          "scope_path": "src/assistant/extensions/policy/",
+          "id": "5.3",
+          "name": "MCP Bridge and Tool Mapping Gates [CMP_TOOL_RUNTIME_REGISTRY]",
+          "description": "Implement MCP bridge from server registry and explicit tool mapping with risk-class policy gates.",
+          "scope_path": "src/assistant/extensions/mcp/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
           "files_delivered": []
         },
         {
-          "id": "4.4",
-          "name": "Sub-agent Coordinator Runtime [CMP_AGENT_SUBAGENT_COORDINATOR]",
-          "description": "Implement sub-agent spawn lifecycle with explicit model selection, budget limits, and concurrency controls.",
+          "id": "5.4",
+          "name": "Dynamic Capability Shortlist and Descriptor Injection [CMP_CORE_AGENT_ORCHESTRATOR]",
+          "description": "Implement dynamic top-N capability shortlist selection and descriptor injection with policy pre-filtering.",
+          "scope_path": "src/assistant/core/tooling/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "5.5",
+          "name": "Sub-agent Coordinator Runtime Controls [CMP_AGENT_SUBAGENT_COORDINATOR]",
+          "description": "Implement schema validation, model allowlist, capability subset checks, and budget/concurrency/TTL/heartbeat controls.",
           "scope_path": "src/assistant/subagents/runtime/",
           "status": "not_started",
           "completed_date": null,
@@ -269,9 +384,9 @@
           "files_delivered": []
         },
         {
-          "id": "4.5",
-          "name": "Delegation Observability [CMP_OBSERVABILITY_LOGGING]",
-          "description": "Implement parent-child trace correlation and audit logs for all delegated tasks.",
+          "id": "5.6",
+          "name": "Capability/Sub-agent Trace and Audit Correlation [CMP_OBSERVABILITY_LOGGING]",
+          "description": "Implement parent-child trace correlation and audit logging for capability and sub-agent execution paths.",
           "scope_path": "src/assistant/observability/subagent/",
           "status": "not_started",
           "completed_date": null,
@@ -280,96 +395,28 @@
         }
       ],
       "deliverables": [
-        "Manifest-driven capability and skill runtime",
-        "First-party capability and skill implementations",
-        "Capability policy and execution guards",
-        "Sub-agent runtime path with model selection controls",
-        "Delegation observability and audit records"
+        "Capability and skill runtime with policy enforcement",
+        "MCP-enabled capability mapping and safe tool activation path",
+        "Sub-agent spawn/result/error contract enforcement implementation",
+        "Audit history for capability and sub-agent executions"
       ],
       "success_criteria": [
-        "Capabilities and skills load from manifests without runtime ambiguity",
-        "Policy violations are blocked and surfaced with actionable errors",
-        "Sub-agent spawn requests require explicit model_id and pass guardrails",
-        "Sub-agent budget/concurrency limits are enforced",
-        "Delegated task audit trails are queryable"
-      ]
-    },
-    {
-      "id": "phase_5",
-      "name": "Scheduler and Reminder Execution",
-      "description": "Implement single-timezone scheduler, reminder lifecycle, and resilient execution behavior.",
-      "priority": "HIGH",
-      "status": "not_started",
-      "started_date": null,
-      "completed_date": null,
-      "dependencies": [
-        "phase_2",
-        "phase_3"
-      ],
-      "tasks": [
-        {
-          "id": "5.1",
-          "name": "Scheduler Runtime Core [CMP_AUTOMATION_SCHEDULER]",
-          "description": "Implement persisted scheduler runtime with one-off and recurring jobs in a single configured timezone.",
-          "scope_path": "src/assistant/scheduler/core/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
-        },
-        {
-          "id": "5.2",
-          "name": "Reminder Lifecycle APIs [CMP_AUTOMATION_SCHEDULER]",
-          "description": "Implement create, list, update, and cancel reminder flows via orchestrator/API paths.",
-          "scope_path": "src/assistant/scheduler/reminders/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
-        },
-        {
-          "id": "5.3",
-          "name": "Retry and Missed-run Handling [CMP_AUTOMATION_SCHEDULER]",
-          "description": "Implement bounded retries, missed-run compensation, and failure state transitions.",
-          "scope_path": "src/assistant/scheduler/reliability/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
-        },
-        {
-          "id": "5.4",
-          "name": "Scheduler Audit Trail [CMP_OBSERVABILITY_LOGGING]",
-          "description": "Persist scheduler outcomes with consistent event schema and operational visibility.",
-          "scope_path": "src/assistant/observability/scheduler/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
-        }
-      ],
-      "deliverables": [
-        "Scheduler runtime and persisted job state",
-        "Reminder lifecycle flows",
-        "Retry and missed-run handling policies",
-        "Scheduler execution audit trail"
-      ],
-      "success_criteria": [
-        "Reminders trigger within configured lateness thresholds",
-        "Job state survives process restarts",
-        "Failed jobs are retried or marked failed by policy",
-        "Scheduler history is available for operational review"
+        "Capabilities and skills load deterministically and invalid manifests are rejected",
+        "Per-turn tool context is shortlist-based, not full-catalog injection",
+        "MCP tools require explicit mapping and pass policy and confirmation gates",
+        "Sub-agent requests enforce model, capability, budget, and concurrency constraints with auditable traces"
       ]
     },
     {
       "id": "phase_6",
-      "name": "Minimal Admin and Operational Hardening",
-      "description": "Deliver admin controls, memory browsing, capability toggles, backup/export routines, and tmux runbook validation.",
+      "name": "Scheduler, Reminder Lifecycle, and Operational Hardening",
+      "description": "Deliver reliable scheduler and reminders, plus final admin hardening, backup/export, and tmux runbook validation.",
       "priority": "MEDIUM",
       "status": "not_started",
       "started_date": null,
       "completed_date": null,
       "dependencies": [
+        "phase_1",
         "phase_2",
         "phase_3",
         "phase_4",
@@ -378,9 +425,9 @@
       "tasks": [
         {
           "id": "6.1",
-          "name": "Minimal Admin UI and API [CMP_ADMIN_MINIMAL_UI]",
-          "description": "Implement health, memory, and runtime status dashboards with secure API bindings.",
-          "scope_path": "src/assistant/admin/",
+          "name": "Scheduler Runtime and Persisted Jobs/History [CMP_AUTOMATION_SCHEDULER]",
+          "description": "Implement scheduler runtime and persisted jobs/history model.",
+          "scope_path": "src/assistant/scheduler/core/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -388,9 +435,9 @@
         },
         {
           "id": "6.2",
-          "name": "Memory Browser and Capability Toggles [CMP_API_FASTAPI_GATEWAY]",
-          "description": "Expose admin controls for memory inspection and capability enable/disable operations with audit logging.",
-          "scope_path": "src/assistant/admin/operations/",
+          "name": "Reminder CRUD via Orchestrator/API/Telegram [CMP_AUTOMATION_SCHEDULER]",
+          "description": "Implement reminder create/list/update/cancel flows through orchestration, API, and Telegram response paths.",
+          "scope_path": "src/assistant/scheduler/reminders/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -398,9 +445,9 @@
         },
         {
           "id": "6.3",
-          "name": "Backup and Export Workflows [CMP_MEMORY_FILESYSTEM_STORE]",
-          "description": "Provide filesystem backup/export capabilities for memory and runtime audit artifacts.",
-          "scope_path": "src/assistant/ops/backup/",
+          "name": "Retry, Missed-run, and Scheduler Audit Semantics [CMP_AUTOMATION_SCHEDULER]",
+          "description": "Implement retry policy, missed-run handling, and execution audit semantics for scheduler jobs.",
+          "scope_path": "src/assistant/scheduler/reliability/",
           "status": "not_started",
           "completed_date": null,
           "notes": "",
@@ -408,8 +455,28 @@
         },
         {
           "id": "6.4",
-          "name": "tmux Runbook and Smoke Validation [CMP_OBSERVABILITY_LOGGING]",
-          "description": "Document startup/restart/check procedures and execute critical smoke flow verification checklist.",
+          "name": "Memory Maintenance Job Integration [CMP_MEMORY_FILESYSTEM_STORE]",
+          "description": "Integrate memory consolidation and index rebuild maintenance jobs with scheduler triggers.",
+          "scope_path": "src/assistant/memory/maintenance/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "6.5",
+          "name": "Expanded Admin Operational Controls [CMP_ADMIN_MINIMAL_UI]",
+          "description": "Expand admin panels for memory browser, capability/MCP toggles, scheduler/sub-agent audits, and backup/export flows.",
+          "scope_path": "src/assistant/admin/operations/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
+        },
+        {
+          "id": "6.6",
+          "name": "tmux Runbook and Smoke Checklist Validation [CMP_OBSERVABILITY_LOGGING]",
+          "description": "Define startup/restart/check procedures and validate critical smoke checklist for runtime operations.",
           "scope_path": "docs/assistant_v1/",
           "status": "not_started",
           "completed_date": null,
@@ -418,25 +485,28 @@
         }
       ],
       "deliverables": [
-        "Minimal admin interface and secured API operations",
-        "Memory browsing and capability toggling controls",
-        "Backup/export routines and restore guidance",
-        "tmux deployment runbook and smoke checklist"
+        "Scheduler runtime with persisted jobs and history",
+        "Reminder creation/update/list/cancel support",
+        "Admin operational controls for runtime modules and MCP state",
+        "Backup/export routines and documented restore process",
+        "Deployment and operations runbook"
       ],
       "success_criteria": [
-        "Admin can inspect runtime health and key component state",
-        "Memory and capability operations are available with audit trails",
-        "Backup and restore process is repeatable",
-        "Critical user flows pass smoke checks after restart"
+        "Scheduled reminders fire within expected latency window",
+        "Reminder lifecycle operations remain durable across restarts",
+        "Admin can verify and control health, memory, capability/MCP, scheduler, and sub-agent state",
+        "Backup and restore process is reproducible",
+        "Smoke checks pass for critical user and scheduler paths"
       ]
     }
   ],
   "notes": [
-    "Tracker aligned with ASSISTANT_V1_IMPLEMENTATION_PLAN phases and dependencies.",
-    "All tasks include component IDs for traceability with architecture and technical specification docs.",
-    "Sub-agent spawning with explicit model selection is represented in phase 1 and phase 4 tasks.",
-    "Status values follow project documentation ruleset requirements.",
-    "Authoritative tracker for assistant_v1 scope is docs/assistant_v1/project_tracker.json; docs/project_tracker.json remains a root-level template/reference."
+    "Tracker aligned with ASSISTANT_V1_IMPLEMENTATION_PLAN phase sequencing, dependencies, and quality-gate flow.",
+    "Tasks use component IDs that trace to ASSISTANT_V1_TECHNICAL_SPECIFICATION and domain ownership docs.",
+    "Store foundation is explicitly represented before Telegram and memory phases to match current architecture contracts.",
+    "Capability runtime includes MCP bridge and dynamic shortlist injection behavior per CAPABILITY_CATALOG and technical spec.",
+    "Sub-agent spawning remains explicit-model and policy-gated under phase 5 runtime controls.",
+    "Authoritative tracker for assistant_v1 scope is docs/assistant_v1/project_tracker.json."
   ]
 }
 

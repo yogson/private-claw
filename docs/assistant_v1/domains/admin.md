@@ -8,6 +8,25 @@ Define the operator-facing control plane for v1 to inspect runtime health, audit
 
 - `CMP_ADMIN_MINIMAL_UI`
 
+## UI Stack Baseline (v1)
+
+Implementation baseline for `CMP_ADMIN_MINIMAL_UI`:
+- Server-rendered HTML with FastAPI + Jinja templates.
+- Incremental interactivity with HTMX for partial updates and form workflows.
+- Lightweight CSS component kit (Tabler or Pico CSS) for consistent operator UI primitives.
+- Optional Alpine.js for small local interactions (modal state, inline toggles, confirm prompts).
+- Optional Chart.js only for targeted operational visualizations (for example scheduler/sub-agent trend charts).
+
+Out of scope for v1 baseline:
+- Full SPA architecture and frontend build pipeline.
+- ORM/database-coupled admin frameworks.
+- Client-side business logic that bypasses API validation and policy checks.
+
+Selection rationale:
+- Optimized for operational workflows (`validate -> diff -> confirm -> apply`) and auditability.
+- Keeps complexity and maintenance burden low for single-user, single-host deployment.
+- Preserves server-side policy enforcement as the primary control boundary.
+
 ## Scope
 
 - Provide operational visibility:

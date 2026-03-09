@@ -1,0 +1,9 @@
+# Capabilities and skills configuration
+# Environment override prefix: ASSISTANT_CAPABILITIES_
+
+allowed_capabilities:
+  - cap.memory.read
+  - cap.memory.write
+  - cap.memory.update
+denied_capabilities: []
+command_allowlist: []

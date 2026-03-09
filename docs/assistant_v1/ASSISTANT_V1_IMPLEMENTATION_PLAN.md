@@ -40,7 +40,7 @@ Parallel constraints:
   1. Implement application bootstrap with strict config loading/validation for `config/app.yaml`, `config/channel.telegram.yaml`, `config/model.yaml`, `config/capabilities.yaml`, `config/mcp_servers.yaml`, `config/scheduler.yaml`, `config/store.yaml` (`CMP_CORE_AGENT_ORCHESTRATOR`, `CMP_OBSERVABILITY_LOGGING`).
   2. Implement environment override projection with provenance metadata (`file`, `env_override`, `default`) and startup fail-fast validation policy (`CMP_CORE_AGENT_ORCHESTRATOR`).
   3. Implement FastAPI gateway baseline: health endpoints, admin auth guard, and config read/validate/diff/apply endpoints (`CMP_API_FASTAPI_GATEWAY`).
-  4. Implement minimal admin UI config panels and workflow: load -> edit allowlisted keys -> validate -> diff preview -> confirm -> apply (`CMP_ADMIN_MINIMAL_UI`).
+  4. Implement minimal admin UI config panels and workflow using server-rendered templates + HTMX (with lightweight UI kit) : load -> edit allowlisted keys -> validate -> diff preview -> confirm -> apply (`CMP_ADMIN_MINIMAL_UI`).
   5. Integrate Anthropic-first provider adapter baseline and correlation ID propagation (`CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER`, `CMP_OBSERVABILITY_LOGGING`).
 - Dependencies: none
 - Deliverables:

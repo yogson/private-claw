@@ -1,0 +1,17 @@
+# MCP servers configuration
+# Environment override prefix: ASSISTANT_MCP_
+
+servers: []
+# Example server entry:
+# - id: chrome_devtools
+#   url: ws://localhost:9222
+#   enabled: true
+#   tool_policy: deny_by_default
+
+defaults:
+  enabled: false
+  tool_policy: deny_by_default
+
+timeouts:
+  connect_seconds: 10
+  call_seconds: 30

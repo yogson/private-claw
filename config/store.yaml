@@ -1,0 +1,7 @@
+# Store / persistence configuration
+# Environment override prefix: ASSISTANT_STORE_
+
+backend: filesystem
+lock_ttl_seconds: 30
+atomic_write: true
+idempotency_retention_seconds: 86400   # 24 hours

@@ -1,0 +1,8 @@
+# Telegram channel configuration
+# Environment override prefix: ASSISTANT_CHANNEL_TELEGRAM_
+
+enabled: false          # Set to true only after providing bot_token and allowlist
+bot_token: ""           # Set via ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN env var
+allowlist: []           # List of allowed Telegram user IDs (integers)
+webhook_url: ""         # Optional: HTTPS URL for webhook mode; leave empty for polling
+polling_interval_seconds: 2

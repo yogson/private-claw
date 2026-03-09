@@ -37,38 +37,6 @@ Our architecture emphasizes **modularity**, **SOLID principles**, and **DRY (Don
 - Temporary or experimental endpoints (use debug module)
 - Tightly coupled functionality (keep in same module)
 
-#### Code Organization Best Practices
-
-1. **Function Organization:**
-   ```python
-   # Good: Single responsibility, clear naming
-   async def get_health_status() -> HealthStatus:
-       """Get comprehensive health status."""
-
-   # Bad: Multiple responsibilities
-   async def get_health_and_update_cache_and_log():
-       """Do everything."""
-   ```
-
-2. **Import Organization:**
-   ```python
-   # Good: Explicit, organized imports
-   from app.core.config import settings
-   from app.core.health import health_manager
-
-   # Bad: Wildcard imports
-   from app.core import *
-   ```
-
-3. **Error Handling:**
-   ```python
-   # Good: Specific error handling per module
-   try:
-       return await health_manager.run_all_checks()
-   except HealthCheckError as e:
-       raise HTTPException(status_code=503, detail=str(e))
-   ```
-
 ### 🚀 Future Architecture Considerations
 
 As the project grows, consider these architectural patterns:
@@ -90,8 +58,9 @@ As the project grows, consider these architectural patterns:
 5. **Pre-Commit Check**: `make format lint` (before git commit)
 6. **Git add**: If new files/modules arrive, add them to Git
 7. **Database migration**: If the database schema was changed, add the appropriate migration `make migrations migrate`
-8. **Documentation**: Keep the project documentation up to date, update relevant docs according to `docs/FRAMEWORK.md`
-9. **Progress tracking**: Update tracking docs to reflect the progress achieved
+8. **Documentation**: Keep the project documentation up to date, update relevant docs
+9. **Tests on feature complete**: Add concise unit tests for implemented behavior; add integration tests when the feature interacts with existing functionality
+10. **Progress tracking**: Update tracking docs to reflect the progress achieved
 
 **🚨 WORKFLOW ANTI-PATTERN TO AVOID:**
 - Making large changes across many files without intermediate checks
@@ -103,9 +72,9 @@ As the project grows, consider these architectural patterns:
 - DO NOT add docstrings for private methods, classes, and functions
 - Plan modules to be self-contained according to OPC, and **low coupling, high cohesion**
 - Keep Python modules concise. Plan module to be one-purpose-oriented. 
-- If a module grows over 200 lines, consider splitting
+- IMPORTANT: If a module grows over 200 lines, consider splitting
 - Interfaces to be named according to Python way: `SomeThingInterface`, and NOT `ISomething`
-- Each Python module should have a brif header pointing to the documentation framework entities (MOD)
+- Each Python module should have a brif header pointing to the documentation framework entities
 - If the database schema was changed, add the appropriate migration and roll it
 - All imports at the top of the module!!!
 - **Class/Module Comments**: Include component ID in header comments
@@ -117,13 +86,6 @@ As the project grows, consider these architectural patterns:
 
 **🚨 CODE ANTI-PATTERN TO AVOID:**
 - Do not use late importing to prevent circular imports. Proper plan and implement modules instead.
-
-### Debugging
-
-```bash
-# View logs
-make logs
-```
 
 ## Quality Standards
 
@@ -154,3 +116,11 @@ When planning the code, follow the principles:
 - Log at appropriate levels
 - Include relevant context in log messages
 - Avoid logging sensitive information
+
+## Testing Expectations
+
+- Add tests when a feature is complete; do not postpone test coverage to a later phase.
+- Keep unit tests concise, focused, and behavior-oriented.
+- Add integration tests when feature behavior crosses existing boundaries or depends on existing workflows.
+- Cover happy paths and major corner cases.
+- Avoid overcomplicated, brittle, or overly broad tests.
