@@ -1,0 +1,83 @@
+{#
+  HTMX partial: editable form for a config domain.
+  Loaded into #card-{domain}-body via GET /admin/config/{domain}/form.
+  On "Preview Diff" the form posts to /admin/config/{domain}/diff and the
+  result is swapped into #diff-{domain}.
+  The "Apply" button (rendered inside the diff partial) posts to
+  /admin/config/{domain}/apply using hx-include to carry the form values.
+#}
+
+<form id="form-{{ domain }}" class="px-1">
+  {% for field in fields %}
+  <div class="mb-3">
+    <label class="form-label" for="f-{{ domain }}-{{ field.name }}">
+      {{ field.label }}
+      {% if field.encoding == "line_list" %}
+        <small class="text-muted ms-1">— one per line</small>
+      {% endif %}
+    </label>
+
+    {% if field.type == "select" %}
+    <select name="{{ field.name }}" id="f-{{ domain }}-{{ field.name }}" class="form-select form-select-sm">
+      {% for opt in field.options %}
+      <option value="{{ opt }}" {% if opt == field.value %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+
+    {% elif field.type == "textarea" %}
+    <textarea
+      name="{{ field.name }}"
+      id="f-{{ domain }}-{{ field.name }}"
+      class="form-control form-control-sm"
+      rows="4"
+      spellcheck="false"
+    >{{ field.value }}</textarea>
+
+    {% elif field.type == "number" %}
+    <input
+      type="number"
+      name="{{ field.name }}"
+      id="f-{{ domain }}-{{ field.name }}"
+      class="form-control form-control-sm"
+      value="{{ field.value }}"
+    />
+
+    {% else %}
+    <input
+      type="text"
+      name="{{ field.name }}"
+      id="f-{{ domain }}-{{ field.name }}"
+      class="form-control form-control-sm"
+      value="{{ field.value }}"
+    />
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <div class="d-flex gap-2 mt-3 mb-1">
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-secondary"
+      hx-post="/admin/config/{{ domain }}/diff"
+      hx-include="#form-{{ domain }}"
+      hx-target="#diff-{{ domain }}"
+      hx-swap="innerHTML"
+      hx-indicator="#diff-spinner-{{ domain }}"
+    >
+      Preview Diff
+    </button>
+    <button
+      type="button"
+      class="btn btn-sm btn-ghost-secondary"
+      onclick="location.reload()"
+    >
+      Cancel
+    </button>
+  </div>
+</form>
+
+<div id="diff-{{ domain }}" class="mt-2">
+  <span id="diff-spinner-{{ domain }}" class="htmx-indicator text-muted small">
+    <span class="spinner-border spinner-border-sm me-1"></span>Checking diff…
+  </span>
+</div>

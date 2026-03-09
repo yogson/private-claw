@@ -87,10 +87,23 @@
           "name": "Admin Config Panels and Apply Workflow [CMP_ADMIN_MINIMAL_UI]",
           "description": "Implement minimal admin UI flow: load, edit allowlisted keys, validate, diff preview, confirm, and apply.",
           "scope_path": "src/assistant/admin/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "completed_date": "2026-03-09",
+          "notes": "Server-rendered admin UI with Tabler CSS + HTMX + Alpine.js. Cookie-based session auth (itsdangerous signed token). Config dashboard shows all 7 domains with provenance badges (env/default). Edit workflow: GET form partial -> POST diff preview -> Alpine.js confirm -> POST apply -> live reload. Allowlist-restricted editable keys per domain. Field types: select, number, textarea (line_list), text. Partials: domain_form.html, diff_result.html, apply_result.html. Auth: login/logout at /admin/login, session in HttpOnly cookie. Added jinja2 + itsdangerous to deps, SessionMiddleware to FastAPI app. 18 unit tests covering auth helpers and form parser.",
+          "files_delivered": [
+            "src/assistant/admin/__init__.py",
+            "src/assistant/admin/auth.py",
+            "src/assistant/admin/router.py",
+            "src/assistant/admin/templates/base.html",
+            "src/assistant/admin/templates/login.html",
+            "src/assistant/admin/templates/config.html",
+            "src/assistant/admin/templates/partials/domain_form.html",
+            "src/assistant/admin/templates/partials/diff_result.html",
+            "src/assistant/admin/templates/partials/apply_result.html",
+            "tests/assistant/admin/__init__.py",
+            "tests/assistant/admin/test_auth.py",
+            "tests/assistant/admin/test_router_helpers.py"
+          ]
         },
         {
           "id": "1.5",

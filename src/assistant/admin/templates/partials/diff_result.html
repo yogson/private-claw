@@ -1,0 +1,105 @@
+{#
+  HTMX partial: diff preview result.
+  Loaded into #diff-{domain} via POST /admin/config/{domain}/diff.
+  The "Apply" button includes #form-{domain} to carry the field values
+  and posts to /admin/config/{domain}/apply.
+#}
+
+{% if not changes and not blocked_keys %}
+<div class="alert alert-success mt-1 py-2 small">
+  <strong>No changes detected.</strong> Current config already matches the submitted values.
+</div>
+
+{% else %}
+
+{% if changes %}
+<div class="table-responsive mt-2">
+  <table class="table table-sm table-vcenter card-table">
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Current</th>
+        <th>Proposed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for change in changes %}
+      <tr>
+        <td><code>{{ change.key }}</code></td>
+        <td class="text-danger">
+          {% if change.current is iterable and change.current is not string %}
+            [{{ change.current | join(", ") }}]
+          {% else %}
+            {{ change.current }}
+          {% endif %}
+        </td>
+        <td class="text-success">
+          {% if change.proposed is iterable and change.proposed is not string %}
+            [{{ change.proposed | join(", ") }}]
+          {% else %}
+            {{ change.proposed }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if blocked_keys %}
+<div class="alert alert-warning py-2 small">
+  <strong>Blocked keys</strong> (not allowlisted for v1 editing):
+  {% for k in blocked_keys %}<code>{{ k }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+</div>
+{% endif %}
+
+{% if changes %}
+{# Pre-apply runtime reconciliation advisory — operator sees this before confirming. #}
+{% if restart_advisory == "none" %}
+<div class="alert alert-success py-2 small mb-2">
+  {{ restart_advisory_label }}
+</div>
+{% elif restart_advisory == "recommended" %}
+<div class="alert alert-warning py-2 small mb-2">
+  <strong>Restart recommended after apply.</strong>
+  In-flight behavioral effect is not yet confirmed for <code>{{ domain }}</code>
+  — the consuming subsystem is not yet wired for dynamic reload.
+</div>
+{% else %}
+<div class="alert alert-danger py-2 small mb-2">
+  <strong>Restart required after apply.</strong>
+  {{ restart_advisory_label }}
+</div>
+{% endif %}
+
+<div
+  id="apply-area-{{ domain }}"
+  x-data="{}"
+>
+  <button
+    type="button"
+    class="btn btn-sm btn-danger"
+    @click="
+      if (confirm('Apply {{ changes | length }} change(s) to {{ domain }}?\n\nThis will write the config file and reload the domain.')) {
+        htmx.trigger($refs.applyBtn, 'click');
+      }
+    "
+  >
+    Apply {{ changes | length }} Change{{ changes | length | pluralize }}
+  </button>
+
+  <button
+    x-ref="applyBtn"
+    type="button"
+    class="d-none"
+    hx-post="/admin/config/{{ domain }}/apply"
+    hx-include="#form-{{ domain }}"
+    hx-target="#apply-area-{{ domain }}"
+    hx-swap="outerHTML"
+    hx-indicator="#diff-spinner-{{ domain }}"
+  ></button>
+</div>
+{% endif %}
+
+{% endif %}

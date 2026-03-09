@@ -8,7 +8,9 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
+from assistant.admin.router import router as admin_router
 from assistant.api.deps import set_runtime_config
 from assistant.api.routers import config as config_router
 from assistant.api.routers import health
@@ -30,3 +32,10 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(config_router.router)
+app.include_router(admin_router)
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_root() -> RedirectResponse:
+    """Redirects bare /admin to the config dashboard."""
+    return RedirectResponse("/admin/config", status_code=302)

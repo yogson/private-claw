@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Configuration{% endblock %}
+{% block page_title %}Configuration Management{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="alert alert-info alert-dismissible" role="alert">
+      <div class="d-flex">
+        <div>
+          <strong>Config control plane.</strong>
+          Editable domains support the <strong>validate → diff → apply</strong> workflow.
+          Secrets are redacted. Provenance badges show the value source:
+          <span class="badge bg-warning-lt text-warning border">env</span> = environment override,
+          <span class="badge bg-secondary-lt text-secondary border">default</span> = schema default.
+        </div>
+      </div>
+      <a class="btn-close" data-bs-dismiss="alert" aria-label="close"></a>
+    </div>
+  </div>
+</div>
+
+<div class="row row-cards">
+  {% for domain in domains %}
+  <div class="col-md-6 col-xl-4">
+    <div class="card h-100" id="card-{{ domain.id }}">
+      <div class="card-header">
+        <h3 class="card-title">{{ domain.label }}</h3>
+        <div class="card-options">
+          {% if domain.has_editable %}
+          <button
+            class="btn btn-sm btn-outline-primary"
+            hx-get="/admin/config/{{ domain.id }}/form"
+            hx-target="#card-{{ domain.id }}-body"
+            hx-swap="innerHTML"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-sm me-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+              <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/>
+              <path d="M13.5 6.5l4 4"/>
+            </svg>
+            Edit
+          </button>
+          {% else %}
+          <span class="badge bg-secondary-lt text-secondary">View only</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card-body py-2" id="card-{{ domain.id }}-body">
+        <div id="spinner-{{ domain.id }}" class="htmx-indicator text-center py-2">
+          <div class="spinner-border spinner-border-sm text-primary"></div>
+        </div>
+
+        <dl class="row mb-0 small">
+          {% for key, value in domain.config.items() %}
+          <dt class="col-6 text-muted mb-1">{{ key }}</dt>
+          <dd class="col-6 mb-1">
+            {% set is_secret = "token" in key or "password" in key or "secret" in key or "key" in key %}
+            {% if is_secret and value %}
+              <span class="text-muted fst-italic">••••••</span>
+            {% elif value is iterable and value is not string and value is not mapping %}
+              <span class="text-muted" title="{{ value | join(', ') }}">[{{ value | length }} item{{ value | length | pluralize }}]</span>
+            {% else %}
+              <span>{{ value }}</span>
+            {% endif %}
+            {% set prov = domain.provenance.get(key) %}
+            {% if prov == "env_override" %}
+              <span class="badge bg-warning-lt text-warning border provenance-env ms-1">env</span>
+            {% elif prov == "default" %}
+              <span class="badge bg-secondary-lt text-secondary border provenance-default ms-1">default</span>
+            {% endif %}
+          </dd>
+          {% endfor %}
+        </dl>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+{#
+  HTMX partial: apply result.
+  Replaces #apply-area-{domain} after POST /admin/config/{domain}/apply.
+#}
+
+{% if applied %}
+<div class="alert alert-success py-2">
+  <div class="d-flex align-items-start gap-2">
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon text-success mt-1 flex-shrink-0" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+      <path d="M5 12l5 5l10 -10"/>
+    </svg>
+    <div>
+      <strong>Applied successfully.</strong><br/>
+      <small>{{ message }}</small>
+    </div>
+  </div>
+</div>
+
+{# Runtime reconciliation advisory — driven by _DOMAIN_RESTART_ADVISORY matrix. #}
+{% if restart_advisory == "none" %}
+<div class="alert alert-success py-2 small">
+  {{ restart_advisory_label }}
+</div>
+
+{% elif restart_advisory == "recommended" %}
+<div class="alert alert-warning py-2 small">
+  <strong>Restart recommended.</strong>
+  {{ restart_advisory_label }}
+</div>
+
+{% else %}
+<div class="alert alert-danger py-2 small">
+  <strong>Restart required.</strong>
+  {{ restart_advisory_label }}
+</div>
+{% endif %}
+
+<button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="location.reload()">
+  Refresh to see updated values
+</button>
+
+{% else %}
+<div class="alert alert-danger py-2">
+  <strong>Apply failed.</strong> {{ message }}
+</div>
+{% endif %}

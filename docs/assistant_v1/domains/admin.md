@@ -83,6 +83,37 @@ All configuration changes must follow a controlled, auditable workflow:
 
 Validation and apply failures must remain non-destructive (previous persisted config remains active).
 
+### Runtime Reconciliation Semantics (Current Implementation Note)
+
+For v1 baseline, the apply path performs two distinct actions:
+
+1. **Persistence**: writes merged domain config atomically to the domain YAML file.
+2. **Runtime config object reload**: reloads the domain into the process `RuntimeConfig` object.
+
+Important distinction:
+- `live_reloaded=true` means the in-memory `RuntimeConfig` domain object was updated.
+- It does **not** by itself guarantee every subsystem already consumes that domain dynamically.
+- If a subsystem reads configuration only at startup, behavior changes may still require restart even when `live_reloaded=true`.
+
+### Runtime Applicability Matrix (Current State)
+
+This matrix describes practical in-flight impact in the currently implemented codebase.
+
+| Domain | Admin-editable in v1 | Apply persists file | RuntimeConfig object updated | Confirmed subsystem behavior changes in-flight |
+|---|---|---|---|---|
+| `app` | Yes (partial) | Yes | Yes | Not yet confirmed |
+| `model` | Yes (partial) | Yes | Yes | Not yet confirmed |
+| `capabilities` | Yes | Yes | Yes | Not yet confirmed |
+| `scheduler` | Yes | Yes | Yes | Not yet confirmed |
+| `store` | Yes (partial) | Yes | Yes | Not yet confirmed |
+| `telegram` | No | N/A | N/A | N/A |
+| `mcp_servers` | No | N/A | N/A | N/A |
+
+Operator guidance:
+- Treat applied changes as **persisted source of truth** immediately.
+- Treat in-flight behavioral effect as **domain/subsystem-dependent** until that subsystem is explicitly wired for dynamic reload.
+- Keep “restart required” messaging for domains without explicit runtime consumer reload guarantees.
+
 ## MCP Onboarding and Management Workflow (Normative)
 
 Admin UI must support guided onboarding for external MCP servers aligned with `docs/assistant_v1/domains/capabilities.md`:
