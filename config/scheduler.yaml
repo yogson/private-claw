@@ -1,9 +1,6 @@
-# Scheduler configuration
-# Environment override prefix: ASSISTANT_SCHEDULER_
-
-tick_seconds: 10
-retry_policy:
-  max_attempts: 3
-  backoff_seconds: 60
-max_lateness_seconds: 300
 max_jobs: 500
+max_lateness_seconds: 300
+retry_policy:
+  backoff_seconds: 60
+  max_attempts: 3
+tick_seconds: 19

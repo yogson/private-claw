@@ -1,10 +1,7 @@
-# Model configuration
-# Environment override prefix: ASSISTANT_MODEL_
-
 default_model_id: claude-sonnet-4-5
+max_tokens_default: 90000
 model_allowlist:
-  - claude-opus-4-5
-  - claude-sonnet-4-5
-  - claude-haiku-4-5
-quality_routing: quality_first   # quality_first | cost_first
-max_tokens_default: 4096
+- claude-opus-4-5
+- claude-sonnet-4-5
+- claude-haiku-4-5
+quality_routing: quality_first

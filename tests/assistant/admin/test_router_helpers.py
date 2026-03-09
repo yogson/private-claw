@@ -89,3 +89,59 @@ def test_parse_form_payload_invalid_number_kept_as_string() -> None:
     form = _FakeForm({"tick_seconds": "not-a-number"})
     payload = _parse_form_payload("scheduler", form)
     assert payload["tick_seconds"] == "not-a-number"
+
+
+# ---------------------------------------------------------------------------
+# int_list encoding — telegram allowlist
+# ---------------------------------------------------------------------------
+
+
+def test_build_fields_int_list_coercion() -> None:
+    fields = _build_fields({"allowlist"}, {"allowlist": [123456789, 987654321]})
+    f = fields[0]
+    assert f["type"] == "textarea"
+    assert f["encoding"] == "int_list"
+    assert f["value"] == "123456789\n987654321"
+
+
+def test_build_fields_int_list_empty() -> None:
+    fields = _build_fields({"allowlist"}, {"allowlist": []})
+    assert fields[0]["value"] == ""
+
+
+def test_parse_form_payload_int_list_coercion() -> None:
+    form = _FakeForm({"allowlist": "123456789\n987654321"})
+    payload = _parse_form_payload("telegram", form)
+    assert payload["allowlist"] == [123456789, 987654321]
+
+
+def test_parse_form_payload_int_list_strips_blank_lines() -> None:
+    form = _FakeForm({"allowlist": "111\n\n  \n222"})
+    payload = _parse_form_payload("telegram", form)
+    assert payload["allowlist"] == [111, 222]
+
+
+def test_parse_form_payload_telegram_polling_interval() -> None:
+    form = _FakeForm({"polling_interval_seconds": "5"})
+    payload = _parse_form_payload("telegram", form)
+    assert payload["polling_interval_seconds"] == 5
+    assert isinstance(payload["polling_interval_seconds"], int)
+
+
+def test_parse_form_payload_telegram_bot_token_included_when_non_empty() -> None:
+    form = _FakeForm({"allowlist": "111", "bot_token": "secret-token"})
+    payload = _parse_form_payload("telegram", form)
+    assert payload["bot_token"] == "secret-token"
+    assert "allowlist" in payload
+
+
+def test_parse_form_payload_telegram_bot_token_excluded_when_blank() -> None:
+    form = _FakeForm({"allowlist": "111", "bot_token": ""})
+    payload = _parse_form_payload("telegram", form)
+    assert "bot_token" not in payload
+
+
+def test_parse_form_payload_telegram_bot_token_excluded_when_whitespace_only() -> None:
+    form = _FakeForm({"allowlist": "111", "bot_token": "   "})
+    payload = _parse_form_payload("telegram", form)
+    assert "bot_token" not in payload

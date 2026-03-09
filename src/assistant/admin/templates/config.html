@@ -56,7 +56,7 @@
           {% for key, value in domain.config.items() %}
           <dt class="col-6 text-muted mb-1">{{ key }}</dt>
           <dd class="col-6 mb-1">
-            {% set is_secret = "token" in key or "password" in key or "secret" in key or "key" in key %}
+            {% set is_secret = key.endswith("_token") or key.endswith("_password") or key.endswith("_secret") or key.endswith("_key") or key == "token" or key == "password" or key == "secret" or key == "key" %}
             {% if is_secret and value %}
               <span class="text-muted fst-italic">••••••</span>
             {% elif value is iterable and value is not string and value is not mapping %}

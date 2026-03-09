@@ -7,6 +7,7 @@ FastAPI application entry point: bootstraps config and mounts routers.
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
@@ -15,6 +16,10 @@ from assistant.api.deps import set_runtime_config
 from assistant.api.routers import config as config_router
 from assistant.api.routers import health
 from assistant.core.bootstrap import bootstrap
+
+# Load .env before the lifespan starts so env overrides and ASSISTANT_ADMIN_TOKEN
+# are available to bootstrap() and the auth layer.
+load_dotenv()
 
 
 @asynccontextmanager

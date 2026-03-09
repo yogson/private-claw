@@ -61,6 +61,7 @@ _DOMAIN_ORDER = ["app", "telegram", "model", "capabilities", "mcp_servers", "sch
 # ---------------------------------------------------------------------------
 _DOMAIN_RESTART_ADVISORY: dict[str, str] = {
     "app": "recommended",  # log_level / timezone — no consumer wired yet
+    "telegram": "recommended",  # allowlist / polling interval — adapter not wired yet
     "model": "recommended",  # model routing — no consumer wired yet
     "capabilities": "recommended",  # capability policy — no consumer wired yet
     "scheduler": "recommended",  # tick / lateness / jobs — no consumer wired yet
@@ -78,18 +79,32 @@ _RESTART_ADVISORY_LABELS: dict[str, str] = {
 }
 
 # Field type definitions for rendering the edit form.
+# Encodings:
+#   line_list     – list[str], one item per line in a textarea.
+#   int_list      – list[int], one integer per line (e.g. Telegram allowlist user IDs).
+# Special types:
+#   password      – never pre-filled; only included in payload when non-empty.
 _FIELD_DEFS: dict[str, dict[str, Any]] = {
     "log_level": {"type": "select", "options": ["DEBUG", "INFO", "WARNING", "ERROR"]},
     "timezone": {"type": "text"},
+    # telegram
+    "bot_token": {"type": "password"},
+    "allowlist": {"type": "textarea", "encoding": "int_list"},
+    "polling_interval_seconds": {"type": "number"},
+    # model
     "default_model_id": {"type": "text"},
+    "model_allowlist": {"type": "textarea", "encoding": "line_list"},
     "quality_routing": {"type": "select", "options": ["quality_first", "cost_first"]},
     "max_tokens_default": {"type": "number"},
+    # capabilities
     "allowed_capabilities": {"type": "textarea", "encoding": "line_list"},
     "denied_capabilities": {"type": "textarea", "encoding": "line_list"},
     "command_allowlist": {"type": "textarea", "encoding": "line_list"},
+    # scheduler
     "tick_seconds": {"type": "number"},
     "max_lateness_seconds": {"type": "number"},
     "max_jobs": {"type": "number"},
+    # store
     "lock_ttl_seconds": {"type": "number"},
     "idempotency_retention_seconds": {"type": "number"},
 }
@@ -111,7 +126,11 @@ def _build_fields(allowed_keys: set[str], current: dict[str, Any]) -> list[dict[
         value = current.get(key, "")
         defn = _FIELD_DEFS.get(key, {"type": "text"})
         display_value: Any = value
-        if defn.get("encoding") == "line_list" and isinstance(value, list):
+        encoding = defn.get("encoding")
+        field_type = defn.get("type", "text")
+        if field_type == "password":
+            display_value = ""  # never pre-fill secrets
+        elif encoding in ("line_list", "int_list") and isinstance(value, list):
             display_value = "\n".join(str(v) for v in value)
         fields.append(
             {
@@ -119,7 +138,7 @@ def _build_fields(allowed_keys: set[str], current: dict[str, Any]) -> list[dict[
                 "label": key.replace("_", " ").title(),
                 "type": defn.get("type", "text"),
                 "options": defn.get("options", []),
-                "encoding": defn.get("encoding"),
+                "encoding": encoding,
                 "value": display_value,
             }
         )
@@ -135,13 +154,28 @@ def _parse_form_payload(domain: str, form: Any) -> dict[str, Any]:
         if raw is None:
             continue
         defn = _FIELD_DEFS.get(key, {"type": "text"})
-        if defn.get("type") == "number":
+        encoding = defn.get("encoding")
+        if defn.get("type") == "password":
+            if not str(raw).strip():
+                continue  # blank = keep current value, exclude from payload
+            payload[key] = raw
+        elif defn.get("type") == "number":
             try:
                 payload[key] = int(raw)
             except (ValueError, TypeError):
                 payload[key] = raw
-        elif defn.get("encoding") == "line_list":
+        elif encoding == "line_list":
             payload[key] = [ln.strip() for ln in str(raw).splitlines() if ln.strip()]
+        elif encoding == "int_list":
+            items: list[int] = []
+            for ln in str(raw).splitlines():
+                ln = ln.strip()
+                if ln:
+                    try:
+                        items.append(int(ln))
+                    except ValueError:
+                        items.append(ln)  # type: ignore[arg-type]
+            payload[key] = items
         else:
             payload[key] = raw
     return payload
@@ -259,7 +293,14 @@ async def domain_diff(request: Request, domain: str) -> Response:
     form = await request.form()
     payload = _parse_form_payload(domain, form)
 
-    validate_resp = await validate_config(ValidateRequest(domain=domain, payload=payload))
+    # Merge proposed (allowlisted) keys with the full current domain config so
+    # the schema validator sees all required fields, not just the editable subset.
+    runtime_config = get_runtime_config()
+    current_domain = getattr(runtime_config, domain, None)
+    current = current_domain.model_dump() if current_domain is not None else {}
+    merged = {**current, **payload}
+
+    validate_resp = await validate_config(ValidateRequest(domain=domain, payload=merged))
     if not validate_resp.valid:
         errors_html = "".join(f"<li>{e}</li>" for e in validate_resp.errors)
         return HTMLResponse(
@@ -267,7 +308,6 @@ async def domain_diff(request: Request, domain: str) -> Response:
             f"<ul class='mb-0 mt-1'>{errors_html}</ul></div>"
         )
 
-    runtime_config = get_runtime_config()
     diff_resp = await diff_config(runtime_config, ValidateRequest(domain=domain, payload=payload))
 
     advisory = _DOMAIN_RESTART_ADVISORY.get(domain, "recommended")

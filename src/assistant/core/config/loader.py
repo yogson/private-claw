@@ -154,7 +154,7 @@ class ConfigLoader:
     def _redact_dict(self, data: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for k, v in data.items():
-            if any(s in k.lower() for s in _SENSITIVE_KEYS):
+            if k.lower() in _SENSITIVE_KEYS:
                 result[k] = _REDACTED
             elif isinstance(v, dict):
                 result[k] = self._redact_dict(v)

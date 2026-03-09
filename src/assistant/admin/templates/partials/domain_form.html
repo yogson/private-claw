@@ -12,12 +12,26 @@
   <div class="mb-3">
     <label class="form-label" for="f-{{ domain }}-{{ field.name }}">
       {{ field.label }}
-      {% if field.encoding == "line_list" %}
+      {% if field.type == "password" %}
+        <small class="text-muted ms-1">— leave blank to keep current value</small>
+      {% elif field.encoding == "line_list" %}
         <small class="text-muted ms-1">— one per line</small>
+      {% elif field.encoding == "int_list" %}
+        <small class="text-muted ms-1">— one integer per line</small>
       {% endif %}
     </label>
 
-    {% if field.type == "select" %}
+    {% if field.type == "password" %}
+    <input
+      type="password"
+      name="{{ field.name }}"
+      id="f-{{ domain }}-{{ field.name }}"
+      class="form-control form-control-sm"
+      placeholder="••••••  (currently set — enter new value to change)"
+      autocomplete="new-password"
+    />
+
+    {% elif field.type == "select" %}
     <select name="{{ field.name }}" id="f-{{ domain }}-{{ field.name }}" class="form-select form-select-sm">
       {% for opt in field.options %}
       <option value="{{ opt }}" {% if opt == field.value %}selected{% endif %}>{{ opt }}</option>
