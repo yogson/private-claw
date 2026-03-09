@@ -11,6 +11,37 @@ Primary implementation context:
 - Pydantic AI with Anthropic-first model strategy
 - No database in v1
 
+## Document Boundaries
+
+This document is the cross-domain specification and contract source for v1.
+
+Boundary governance and anti-duplication policy are defined in:
+- `docs/assistant_v1/COMPONENT_BOUNDARIES.md`
+
+Domain-specific behavior, detailed policies, and implementation contracts are owned by:
+- `docs/assistant_v1/domains/agent.md`
+- `docs/assistant_v1/domains/telegram.md`
+- `docs/assistant_v1/domains/memory.md`
+- `docs/assistant_v1/domains/capabilities.md`
+- `docs/assistant_v1/domains/subagents.md`
+- `docs/assistant_v1/domains/store.md`
+- `docs/assistant_v1/domains/observability.md`
+- `docs/assistant_v1/domains/api.md`
+- `docs/assistant_v1/domains/admin.md`
+
+Capability identifier catalog is owned by:
+- `docs/assistant_v1/CAPABILITY_CATALOG.md`
+
+Ownership rule:
+- Keep cross-domain contracts and global invariants here.
+- Keep component-owned behavior in domain documents.
+
+Cross-domain precedence:
+- Decomposition strategy is owned by `docs/assistant_v1/ASSISTANT_V1_ARCHITECTURE_ANALYSIS.md`.
+- Delivery sequencing and quality gates are owned by `docs/assistant_v1/ASSISTANT_V1_IMPLEMENTATION_PLAN.md`.
+- Capability IDs are owned by `docs/assistant_v1/CAPABILITY_CATALOG.md`.
+- Sub-agent field-level contract schema is owned by `docs/assistant_v1/SUBAGENT_ORCHESTRATION_CONTRACT.md`.
+
 ## System Interfaces
 
 ### External Interfaces
@@ -22,6 +53,7 @@ Primary implementation context:
 | `CMP_TOOL_WEB_RESEARCH` | Web search provider endpoint | Outbound | Research queries and retrieval |
 | `CMP_TOOL_CALENDAR_CONNECTOR` | Calendar provider API or local calendar CLI bridge | Inbound/Outbound | Calendar query and event actions |
 | `CMP_TOOL_MACOS_AUTOMATION` | macOS CLI/automation capabilities | Local | Notes/Reminders operations via controlled command bridge |
+| `CMP_TOOL_MCP_BRIDGE` | External MCP servers (for example chrome-devtools MCP) | Inbound/Outbound | Tool discovery and invocation via capability registry policy gates |
 
 ### Internal Interfaces
 
@@ -46,6 +78,7 @@ Event type enumeration:
 - `user_text_message`
 - `user_voice_message`
 - `user_attachment_message`
+- `user_callback_query`
 - `scheduler_trigger`
 - `system_control_event`
 
@@ -67,6 +100,7 @@ Common optional fields:
 Voice/attachment metadata:
 - `voice`: `file_id`, `duration_seconds`, `transcript_text?`, `transcript_confidence?`
 - `attachment`: `file_id`, `mime_type`, `file_size_bytes`, `caption?`
+- `callback_query`: `callback_id`, `callback_data`, `origin_message_id`, `ui_version`
 
 Scheduler-originated fields:
 - `job_id`
@@ -79,62 +113,48 @@ Validation requirements:
 - Event-specific fields must match allowed schema for the event type.
 - Duplicate `idempotency_key` from same source must be rejected.
 
+### Outbound Channel Response Contract (`INT_CHANNEL_RESPONSE`)
+
+Required fields:
+- `response_id`
+- `channel` (telegram)
+- `session_id`
+- `trace_id`
+- `message_type` (`text`, `interactive`)
+
+Text response payload:
+- `text`
+- `parse_mode?`
+
+Interactive response payload:
+- `text`
+- `ui_kind` (`inline_keyboard`)
+- `actions`: array of button definitions
+  - `label`
+  - `callback_id`
+  - `callback_data`
+  - `style?`
+- `ui_version`
+
+Validation and safety:
+- Interactive responses must include deterministic `callback_id` values.
+- `callback_data` must be signed or otherwise tamper-evident.
+- Callback handlers must validate `ui_version` to avoid stale action execution.
+
 ## Data Structures
 
-### Memory Models
+### Canonical Model Families
 
-Memory persisted as markdown files with YAML frontmatter by memory type.
+This specification defines cross-domain model families and ownership only.
+Detailed field-level schemas are owned by each domain document.
 
-| Model ID | Path Pattern | Required Metadata | Purpose |
-|---|---|---|---|
-| `CMP_DATA_MODEL_PROFILE_MEMORY` | `memory/profile/*.md` | `memory_id`, `type=profile`, `tags`, `entities`, `priority`, `confidence`, `last_used_at`, `updated_at`, `source` | Personal profile facts |
-| `CMP_DATA_MODEL_PREFERENCES_MEMORY` | `memory/preferences/*.md` | `memory_id`, `type=preference`, `tags`, `entities`, `priority`, `confidence`, `last_used_at`, `updated_at` | User preferences and defaults |
-| `CMP_DATA_MODEL_PROJECT_MEMORY` | `memory/projects/*.md` | `memory_id`, `type=project`, `status`, `tags`, `entities`, `priority`, `confidence`, `last_used_at`, `updated_at` | Project-specific notes and progress |
-| `CMP_DATA_MODEL_TASK_MEMORY` | `memory/tasks/*.md` | `memory_id`, `type=task`, `status`, `due_at?`, `tags`, `entities`, `priority`, `confidence`, `last_used_at`, `updated_at` | Actionable tasks/reminders |
-| `CMP_DATA_MODEL_FACT_MEMORY` | `memory/facts/*.md` | `memory_id`, `type=fact`, `scope`, `tags`, `entities`, `priority`, `confidence`, `last_used_at`, `updated_at` | Stable factual knowledge |
-| `CMP_DATA_MODEL_CONVERSATION_SUMMARY` | `memory/summaries/*.md` | `summary_id`, `window_start`, `window_end`, `tags`, `entities`, `priority`, `confidence`, `last_used_at`, `updated_at` | Conversation compaction and recall |
-| `CMP_DATA_MODEL_MEMORY_INDEX_TYPE` | `runtime/memory_indexes/index_by_type.json` | `type`, `memory_ids`, `updated_at` | Candidate generation by memory category |
-| `CMP_DATA_MODEL_MEMORY_INDEX_TAG` | `runtime/memory_indexes/index_by_tag.json` | `tag`, `memory_ids`, `updated_at` | Candidate generation by semantic tags |
-| `CMP_DATA_MODEL_MEMORY_INDEX_ENTITY` | `runtime/memory_indexes/index_by_entity.json` | `entity`, `memory_ids`, `updated_at` | Candidate generation by named entities |
-| `CMP_DATA_MODEL_MEMORY_INDEX_PROJECT` | `runtime/memory_indexes/index_by_project.json` | `project_key`, `memory_ids`, `updated_at` | Project/session-focused candidate retrieval |
-| `CMP_DATA_MODEL_MEMORY_INDEX_RECENCY` | `runtime/memory_indexes/index_by_recency.json` | `memory_ids`, `updated_at` | Recency-prioritized memory ranking |
-
-### Capability/Skill Plugin Models
-
-| Model ID | File Pattern | Required Fields | Purpose |
-|---|---|---|---|
-| `CMP_DATA_MODEL_TOOL_MANIFEST` | `plugins/capabilities/*/manifest.yaml` | `capability_id`, `version`, `capabilities`, `entrypoint`, `permissions` | Capability registration and policy |
-| `CMP_DATA_MODEL_SKILL_MANIFEST` | `plugins/skills/*/manifest.yaml` | `skill_id`, `version`, `entrypoint`, `required_capabilities`, `capabilities` | Skill registration and dependencies |
-| `CMP_DATA_MODEL_CAPABILITY_POLICY` | `config/capabilities.yaml` | `allowed_capabilities`, `denied_capabilities`, `command_allowlist` | Runtime safety policy |
-
-Capability manifest schema requirements:
-- `capability_id`: string, `cap.<domain>.<action>` naming convention.
-- `version`: semantic version string.
-- `entrypoint`: `<python_module>:<callable_name>` format.
-- `capabilities`: list of concrete capability IDs granted by this manifest.
-- `permissions` object:
-  - `read_only` (bool),
-  - `side_effecting` (bool),
-  - `requires_confirmation` (bool),
-  - `timeout_seconds` (int).
-- Discovery pattern: load manifests from `plugins/capabilities/*/manifest.yaml`; duplicate `capability_id` values are startup errors.
-
-Skill manifest schema requirements:
-- `skill_id`: stable identifier.
-- `entrypoint`: `<python_module>:<callable_name>`.
-- `required_capabilities`: list of capability IDs required for execution.
-- `capabilities`: optional additional capabilities requested dynamically.
-- `dependency_resolution`: all `required_capabilities` must be registered and enabled at load time; unresolved dependencies block skill activation.
-- Discovery pattern: load manifests from `plugins/skills/*/manifest.yaml`; duplicate `skill_id` values are startup errors.
-
-Capability policy schema requirements (`config/capabilities.yaml`):
-- `allowed_capabilities`: list of allowlisted capability IDs.
-- `denied_capabilities`: list of blocked capability IDs.
-- `command_allowlist`: list of allowed command templates with:
-  - `id`,
-  - `command_pattern`,
-  - `allowed_args_pattern`,
-  - `max_timeout_seconds`.
+| Model Family | Ownership Document | Purpose |
+|---|---|---|
+| Memory artifacts and indexes | `docs/assistant_v1/domains/memory.md` | Long-term recall and deterministic retrieval |
+| Capability/skill manifests and policy config | `docs/assistant_v1/domains/capabilities.md` | Runtime extension model and safety enforcement |
+| Scheduler jobs and audit records | `docs/assistant_v1/domains/agent.md` + scheduler implementation docs | Timed and maintenance execution |
+| Sub-agent runtime task models | `docs/assistant_v1/domains/subagents.md` | Delegation lifecycle and async execution records |
+| Store/session/idempotency/lock models | `docs/assistant_v1/domains/store.md` | Persistence, deduplication, and coordination |
 
 ### Scheduling Models
 
@@ -145,29 +165,20 @@ Capability policy schema requirements (`config/capabilities.yaml`):
 
 ### Sub-agent Models
 
-| Model ID | Path Pattern | Required Fields | Purpose |
-|---|---|---|---|
-| `CMP_DATA_MODEL_SUBAGENT_REQUEST` | Runtime object | `task_id`, `objective`, `model_id`, `budget`, `allowed_capabilities` | Parent request contract |
-| `CMP_DATA_MODEL_SUBAGENT_RESULT` | Runtime object | `task_id`, `status`, `artifacts`, `usage`, `duration_ms` | Sub-agent completion output |
-| `CMP_DATA_MODEL_SUBAGENT_TASK` | `runtime/subagents/tasks/*.json` | `task_id`, `task_type`, `status`, `created_at`, `expires_at`, `model_id`, `allowed_capabilities` | Persisted background task state |
-| `CMP_DATA_MODEL_SUBAGENT_HEARTBEAT` | `runtime/subagents/heartbeats/*.json` | `task_id`, `last_heartbeat_at`, `worker_id`, `status` | Liveness tracking for long-running tasks |
-| `CMP_DATA_MODEL_SUBAGENT_AUDIT` | `runtime/subagents/history/*.json` | `task_id`, `parent_trace_id`, `model_id`, `budget_used`, `status` | Auditable delegation records |
+Sub-agent model schemas and runtime lifecycle persistence are owned by:
+- `docs/assistant_v1/domains/subagents.md`
 
-Task model distinction:
+Task model distinction remains global and mandatory:
 - `CMP_DATA_MODEL_TASK_MEMORY`: user-facing task/reminder knowledge in long-term memory.
 - `CMP_DATA_MODEL_SUBAGENT_TASK`: runtime execution task state for background workers.
 - Relationship rule: sub-agent execution may update task memory, but these models are never interchangeable.
 
 ### Store Models
 
-| Model ID | Path Pattern | Required Fields | Purpose |
-|---|---|---|---|
-| `CMP_DATA_MODEL_SESSION_LOG` | `runtime/sessions/*.jsonl` | `session_id`, `event_id`, `timestamp`, `role`, `content` | Per-session turn history and metadata |
-| `CMP_DATA_MODEL_IDEMPOTENCY_RECORD` | `runtime/idempotency/*.json` | `key`, `source`, `created_at`, `ttl_seconds` | Duplicate event prevention |
-| `CMP_DATA_MODEL_LOCK_RECORD` | `runtime/locks/*.lock` | `lock_key`, `owner_id`, `acquired_at`, `expires_at` | Session/task lock coordination |
-| `CMP_DATA_MODEL_STORE_RECOVERY_MARKER` | `runtime/recovery/*.json` | `component`, `last_scan_at`, `status` | Startup consistency and recovery tracking |
+Store model schemas and filesystem/lock semantics are owned by:
+- `docs/assistant_v1/domains/store.md`
 
-Store facade component decomposition:
+Store facade component decomposition remains canonical:
 - `CMP_STORE_STATE_FACADE`: public store abstraction and routing layer.
 - `CMP_STORE_SESSION_PERSISTENCE`: session log append/read/replay paths.
 - `CMP_STORE_TASK_PERSISTENCE`: sub-agent/scheduler task state persistence.
@@ -208,42 +219,22 @@ Telegram voice input note:
 
 ### Memory Write Policy
 
+Global invariants:
 - Write only category-aligned memory artifacts: profile, preference, project, task, fact, summary.
 - Require confidence threshold for persistent preference/fact updates.
 - Ensure idempotent updates using stable `memory_id`.
-- Periodic consolidation merges stale/duplicate records into canonical entries.
+
+Detailed write/consolidation behavior is owned by:
+- `docs/assistant_v1/domains/memory.md`
 
 ### Memory Retrieval and Indexing Policy (No Vector Search)
 
+Global invariants:
 - v1 retrieval is deterministic and index-driven; no vector databases or embedding search are required.
-- Candidate generation must use index lookups by `type`, `tag`, `entity`, and `project`.
-- Ranking must use transparent weighted scoring:
-  - entity match,
-  - tag/type match,
-  - recency decay,
-  - priority,
-  - confidence.
-- Retrieval output must apply per-category top-K caps before prompt injection.
-- Retrieval operations must emit audit records with selected memory IDs and scoring metadata.
-- Index updates occur both:
-  - synchronously on memory write/update,
-  - asynchronously via scheduled reconciliation jobs.
-- Index rebuild/repair must trigger on:
-  - startup integrity check failure,
-  - checksum mismatch,
-  - missing index file,
-  - index version mismatch.
-- Corruption handling:
-  - mark index as degraded,
-  - rebuild from source memory artifacts,
-  - emit recovery audit event.
+- Retrieval must remain auditable and bounded by per-turn context limits.
 
-Suggested default top-K caps per request:
-- profile: up to 2
-- preferences: up to 3
-- projects/tasks: up to 4
-- facts: up to 3
-- summaries: up to 1
+Detailed retrieval/index policy, scoring, top-K caps, and optional small-model gates are owned by:
+- `docs/assistant_v1/domains/memory.md`
 
 ### Scheduler Behavior
 
@@ -254,58 +245,30 @@ Suggested default top-K caps per request:
 
 ### Capability and Skill Runtime
 
+Global invariants:
 - Registry discovers manifests at startup and validates schemas.
 - Capability invocation only proceeds when capability policy allows requested action.
-- Skill execution composes deterministic capability steps and may request sub-agent work.
 - All external side effects generate audit events.
+- Model-visible tool definitions are injected dynamically per turn from a ranked capability shortlist; full catalog is not injected by default.
+- External MCP tool invocations must be mapped to capability IDs and pass the same policy/confirmation gates as first-party capabilities.
+
+Detailed manifest schemas, dependency rules, and runtime policy handling are owned by:
+- `docs/assistant_v1/domains/capabilities.md`
+- `docs/assistant_v1/CAPABILITY_CATALOG.md`
 
 ### Sub-agent Spawning Contract
 
 Sub-agent spawning is available only through `INT_SUBAGENT_SPAWN`.
-Detailed contract baseline is documented in `SUBAGENT_ORCHESTRATION_CONTRACT.md`.
 Sub-agent execution is asynchronous and background-task oriented; the main agent receives immediate acknowledgement and continues turn completion.
 
-Required request fields:
-- `task_id`: unique parent-scoped identifier
-- `objective`: concise task objective
-- `model_id`: explicit allowed model identifier
-- `max_tokens`: upper token budget
-- `timeout_seconds`: hard wall clock limit
-- `allowed_capabilities`: explicit capability allowlist
-- `result_format`: expected output schema identifier
+Global invariants:
+- Every spawn must include explicit `model_id`.
+- Capability scope must be a subset of parent-permitted capabilities.
+- Task lifecycle must be persisted and auditable.
+- TTL/timeout/heartbeat controls are mandatory.
 
-Coordinator rules:
-- Reject spawn if `model_id` is not allowlisted.
-- Reject spawn when parent task budget would be exceeded.
-- Enforce max concurrent sub-agents per parent request.
-- Enforce capability subset relative to parent permission scope.
-- Enforce TTL (`expires_at`) and max runtime for each task.
-- Require heartbeat updates for long-running tasks and expire stale tasks.
-- Emit start/update/final audit events with usage metrics.
-
-Task lifecycle states:
-- `queued`, `running`, `waiting`, `completed`, `failed`, `timed_out`, `expired`, `cancelled`
-
-Task behavior requirements:
-- `queued` tasks are persisted before worker dispatch.
-- `running` tasks must update heartbeat within configured interval.
-- `waiting` state is used for monitor-style polling tasks.
-- `expired` tasks are terminal when TTL is reached.
-- Completion must trigger event/callback path for follow-up notification or action.
-
-Result fields:
-- `status`: completed, failed, timed_out, expired, cancelled
-- `summary`: concise result text
-- `artifacts`: structured attachments or references
-- `usage`: token and duration data
-- `safety_flags`: policy and guardrail outcomes
-
-Async acknowledgement fields:
-- `task_id`
-- `accepted` (true/false)
-- `rejection_reason` (when rejected)
-- `expires_at`
-- `next_check_at` (optional for monitor tasks)
+Detailed request/result schemas, lifecycle semantics, and coordinator rules are owned by:
+- `docs/assistant_v1/domains/subagents.md`
 
 ## Validation and Constraints
 
@@ -388,6 +351,7 @@ Async acknowledgement fields:
 - `config/channel.telegram.yaml`: bot token, webhook mode, allowlist.
 - `config/model.yaml`: default model, model allowlist, routing/budget policies.
 - `config/capabilities.yaml`: capability/skill/sub-agent capability rules.
+- `config/mcp_servers.yaml`: MCP server connection registry and server-level default tool policy.
 - `config/scheduler.yaml`: polling cadence, retry policy, lateness thresholds.
 - `config/store.yaml`: backend selection, lock TTL, atomic write settings, idempotency retention.
 
@@ -405,6 +369,7 @@ Configuration schema baseline:
 | `config/channel.telegram.yaml` | `bot_token`, `allowlist` | `webhook_url`, `polling_interval_seconds` | `polling_interval_seconds=2` |
 | `config/model.yaml` | `default_model_id`, `model_allowlist` | `quality_routing`, `max_tokens_default` | `quality_routing=quality_first` |
 | `config/capabilities.yaml` | `allowed_capabilities` | `denied_capabilities`, `command_allowlist` | `denied_capabilities=[]` |
+| `config/mcp_servers.yaml` | `servers` | `defaults`, `timeouts` | `defaults.enabled=true` |
 | `config/scheduler.yaml` | `tick_seconds`, `retry_policy` | `max_lateness_seconds` | `tick_seconds=10` |
 | `config/store.yaml` | `backend`, `lock_ttl_seconds`, `atomic_write` | `idempotency_retention_seconds` | `backend=filesystem`, `atomic_write=true` |
 
@@ -412,6 +377,13 @@ Validation policy:
 - Startup must fail when any required field is absent or invalid.
 - Optional fields must receive documented defaults.
 - Environment overrides must be validated using the same schema rules.
+
+Retrieval-related configuration keys:
+- `retrieval_llm_threshold_count` (int, optional, default: 20)
+- `retrieval_llm_ambiguity_delta` (float, optional, default: 0.05)
+- `retrieval_context_token_budget` (int, optional, default: 1200)
+- `retrieval_small_model_id` (string, optional)
+- `retrieval_small_model_timeout_seconds` (int, optional, default: 5)
 
 ### Identifier Namespace Mapping
 
@@ -423,22 +395,12 @@ Validation policy:
 
 ### Store Backend Strategy
 
-- v1 backend: filesystem store adapters only.
-- Required abstraction interfaces:
-  - `SessionStoreInterface`
-  - `TaskStoreInterface`
-  - `IdempotencyStoreInterface`
-  - `LockProviderInterface`
-- Future backend option: Redis adapter implementing the same interfaces without changing domain logic.
+Global invariants:
+- v1 backend is filesystem.
+- Store interfaces must remain backend-agnostic for future adapter swap.
 
-Atomic write pattern (filesystem backend):
-- Write content to temp file in same directory.
-- Flush and fsync temp file.
-- Atomic rename temp file to target path.
-- Release lock only after successful rename.
-- On failure:
-  - keep prior target file untouched,
-  - log failure and preserve temp artifact for cleanup/recovery scan.
+Detailed backend and atomic write semantics are owned by:
+- `docs/assistant_v1/domains/store.md`
 
 ### Security Requirements
 
@@ -457,18 +419,16 @@ Atomic write pattern (filesystem backend):
 
 ### Required Endpoint Groups
 
-- Health:
-  - Liveness and readiness checks.
-- Memory admin:
-  - Browse memory documents by category and date.
-  - Trigger memory consolidation.
-- Capability/skill admin:
-  - List loaded manifests and current enable/disable status.
-  - Toggle capability/skill availability (subject to policy).
-- Scheduler admin:
-  - List, create, disable, and inspect scheduled jobs.
-- Sub-agent audit:
-  - List recent sub-agent runs and policy outcomes.
+Endpoint groups remain mandatory for v1:
+- health
+- memory admin
+- capability/skill admin
+- scheduler admin
+- sub-agent audit
+
+Detailed endpoint contracts and admin UX ownership:
+- `docs/assistant_v1/domains/api.md`
+- `docs/assistant_v1/domains/admin.md`
 
 ### Authentication and Authorization
 

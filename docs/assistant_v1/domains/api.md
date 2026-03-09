@@ -15,6 +15,21 @@ Define the FastAPI gateway boundary for operational and integration endpoints in
 - Translate HTTP payloads to internal orchestration/store contracts.
 - Return normalized HTTP responses and error payloads.
 
+## Required Endpoint Groups (v1)
+
+- Health:
+  - Liveness and readiness checks.
+- Memory admin:
+  - Browse memory documents by category and date.
+  - Trigger memory consolidation.
+- Capability/skill admin:
+  - List loaded manifests and current enable/disable status.
+  - Toggle capability/skill availability (subject to policy).
+- Scheduler admin:
+  - List, create, disable, and inspect scheduled jobs.
+- Sub-agent audit:
+  - List recent sub-agent runs and policy outcomes.
+
 ## Inputs
 
 - HTTP requests from admin UI and API clients.

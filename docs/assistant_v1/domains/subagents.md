@@ -14,6 +14,7 @@ Define background-task sub-agents that run independently from the main turn-base
 - Validate sub-agent task creation requests.
 - Enforce model allowlist, capability subset, budget, timeout, concurrency, and TTL limits.
 - Launch and monitor asynchronous sub-agent workers.
+- Support Cursor-agent execution mode as a governed sub-agent backend.
 - Persist task state transitions and heartbeat updates.
 - Notify parent orchestration/event handlers on progress and completion.
 - Record full delegation trace and usage metadata.
@@ -27,6 +28,31 @@ Define background-task sub-agents that run independently from the main turn-base
   - TTL expired,
   - task cancelled,
   - task failed permanently.
+
+## Request and Result Contracts
+
+Required request fields:
+- `task_id`: unique parent-scoped identifier
+- `objective`: concise task objective
+- `model_id`: explicit allowed model identifier
+- `max_tokens`: upper token budget
+- `timeout_seconds`: hard wall clock limit
+- `allowed_capabilities`: explicit capability allowlist
+- `result_format`: expected output schema identifier
+
+Immediate async acknowledgement fields:
+- `task_id`
+- `accepted` (true/false)
+- `rejection_reason` (when rejected)
+- `expires_at`
+- `next_check_at` (optional for monitor tasks)
+
+Result fields:
+- `status`: completed, failed, timed_out, expired, cancelled
+- `summary`: concise result text
+- `artifacts`: structured attachments or references
+- `usage`: token and duration data
+- `safety_flags`: policy and guardrail outcomes
 
 ## Lifecycle State Machine
 
@@ -44,11 +70,21 @@ Required transitions:
 - `running -> waiting|completed|failed|timed_out|expired|cancelled`
 - `waiting -> running|completed|failed|expired|cancelled`
 
+Coordinator enforcement rules:
+- Reject spawn if `model_id` is not allowlisted.
+- Reject spawn when parent task budget would be exceeded.
+- Enforce max concurrent sub-agents per parent request.
+- Enforce capability subset relative to parent permission scope.
+- Enforce TTL (`expires_at`) and max runtime for each task.
+- Require heartbeat updates for long-running tasks and expire stale tasks.
+- Emit start/update/final audit events with usage metrics.
+
 ## Inputs
 
 - Task creation requests from `CMP_CORE_AGENT_ORCHESTRATOR`.
 - Runtime policy configuration (`model allowlist`, `budget`, `capabilities`, `ttl`).
 - Optional trigger payloads (CI status source, market threshold, research objective).
+- Optional Cursor-agent execution parameters (`cursor_agent_type`, `run_mode`, `attachments`).
 
 ## Outputs
 
@@ -65,6 +101,7 @@ Required transitions:
 - Every task must include `expires_at` or derive it from policy default TTL.
 - Long-running tasks must emit heartbeat updates.
 - Task state must be persisted atomically to support restart recovery.
+- Cursor-agent execution must be gated by explicit capability allowlist and run with the same budget/TTL/trace constraints.
 
 ## Risks
 
@@ -72,6 +109,7 @@ Required transitions:
 - Capability escalation if policy checks are bypassed.
 - Zombie tasks if heartbeat/TTL enforcement is missing.
 - Duplicate side effects if retry behavior is not idempotent.
+- Unintended high-impact actions from Cursor-agent runs without strict policy envelopes.
 
 ## Done Criteria
 
@@ -80,4 +118,5 @@ Required transitions:
 - Background tasks survive process restarts with consistent persisted state.
 - Progress/completion events can trigger follow-up actions or user notifications.
 - Parent-child traceability exists for all task lifecycle transitions.
+- Cursor-agent tasks execute only when explicitly authorized and produce the same auditable lifecycle records.
 

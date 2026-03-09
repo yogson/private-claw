@@ -44,7 +44,8 @@ Each memory artifact should expose metadata fields used by indexes:
 2. Generate candidates from deterministic indexes (type/tag/entity/project).
 3. Score candidates using transparent weighted scoring.
 4. Select top-K per category and build compact context block.
-5. Inject selected context into prompt and record retrieval audit.
+5. Optionally run small-model rerank/compression for ambiguous or oversized candidate sets.
+6. Inject selected context into prompt and record retrieval audit.
 
 ### Baseline Scoring (configurable)
 
@@ -71,6 +72,30 @@ Default behavior should prefer:
   - facts: up to 3
   - summaries: up to 1
 - If cap overflow occurs, keep highest-scored artifacts only.
+
+### Optional Small-Model Assist (Rerank/Compression)
+
+Default v1 path remains deterministic and non-LLM.
+
+Small-model assist may be used only for:
+- ambiguous ranking (top candidates have near-equal scores),
+- large candidate sets beyond configured threshold,
+- context compression when selected memory exceeds token budget.
+
+Small-model assist must not:
+- bypass deterministic candidate generation,
+- create new memory artifacts during retrieval phase,
+- exceed dedicated retrieval token/time budget.
+
+Recommended trigger gates:
+- candidate_count > `retrieval_llm_threshold_count` (example: 20),
+- top score delta < `retrieval_llm_ambiguity_delta` (example: 0.05),
+- projected context tokens > `retrieval_context_token_budget`.
+
+Output requirements when assist is used:
+- return reranked IDs from deterministic candidate set only,
+- optionally return compressed summaries for selected memories,
+- include audit marker `retrieval_mode=deterministic_plus_small_llm`.
 
 ### Maintenance Jobs
 

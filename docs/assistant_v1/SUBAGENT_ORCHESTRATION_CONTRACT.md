@@ -4,6 +4,12 @@
 
 This document defines the authoritative contract for sub-agent spawning in Personal AI Assistant v1.
 
+Boundary note:
+- This document owns field-level spawn/result/error contracts and coordinator enforcement contract.
+- `docs/assistant_v1/domains/subagents.md` owns runtime execution model, lifecycle behavior, and integration scope.
+- `docs/assistant_v1/ASSISTANT_V1_TECHNICAL_SPECIFICATION.md` owns cross-domain invariants only.
+- Boundary governance is defined in `docs/assistant_v1/COMPONENT_BOUNDARIES.md`.
+
 Component ownership:
 - Coordinator: `CMP_AGENT_SUBAGENT_COORDINATOR`
 - Parent caller: `CMP_CORE_AGENT_ORCHESTRATOR`
@@ -24,6 +30,11 @@ The coordinator is the sole authority for:
 - authorizing model and capability use,
 - enforcing budget/concurrency/time limits,
 - returning normalized results.
+
+Normative precedence:
+1. This document for contract shape and coordinator decision contract.
+2. `docs/assistant_v1/domains/subagents.md` for runtime behavior.
+3. `docs/assistant_v1/ASSISTANT_V1_TECHNICAL_SPECIFICATION.md` for global invariants.
 
 ## Spawn Request Contract
 

@@ -6,6 +6,19 @@ This document analyzes the architecture for Personal AI Assistant v1 and defines
 
 Transformation goal: move from project intent and constraints to a componentized architecture that can be implemented incrementally with clear traceability.
 
+## Document Boundaries
+
+This document owns target decomposition, dependency structure, and architecture-level constraints.
+
+This document does not own field-level runtime contracts or domain policy details. Those are owned by:
+- `docs/assistant_v1/ASSISTANT_V1_TECHNICAL_SPECIFICATION.md` (cross-domain interfaces/invariants)
+- `docs/assistant_v1/domains/*.md` (domain runtime behavior)
+- `docs/assistant_v1/SUBAGENT_ORCHESTRATION_CONTRACT.md` (sub-agent contract schema)
+- `docs/assistant_v1/CAPABILITY_CATALOG.md` (capability ID catalog)
+
+Boundary governance reference:
+- `docs/assistant_v1/COMPONENT_BOUNDARIES.md`
+
 ## Executive Summary
 
 Key transformation goals:

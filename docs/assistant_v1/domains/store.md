@@ -20,6 +20,15 @@ Define the persistent state abstraction layer for v1, with filesystem as the pri
 - Support startup recovery scans for incomplete or stale states.
 - Enable backend swap from filesystem to Redis-backed adapters later.
 
+## Canonical Models
+
+| Model ID | Path Pattern | Required Fields | Purpose |
+|---|---|---|---|
+| `CMP_DATA_MODEL_SESSION_LOG` | `runtime/sessions/*.jsonl` | `session_id`, `event_id`, `timestamp`, `role`, `content` | Per-session turn history and metadata |
+| `CMP_DATA_MODEL_IDEMPOTENCY_RECORD` | `runtime/idempotency/*.json` | `key`, `source`, `created_at`, `ttl_seconds` | Duplicate event prevention |
+| `CMP_DATA_MODEL_LOCK_RECORD` | `runtime/locks/*.lock` | `lock_key`, `owner_id`, `acquired_at`, `expires_at` | Session/task lock coordination |
+| `CMP_DATA_MODEL_STORE_RECOVERY_MARKER` | `runtime/recovery/*.json` | `component`, `last_scan_at`, `status` | Startup consistency and recovery tracking |
+
 ## Inputs
 
 - Session events from `CMP_CORE_AGENT_ORCHESTRATOR`.
