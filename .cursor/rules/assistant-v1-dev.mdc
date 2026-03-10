@@ -1,0 +1,217 @@
+---
+description: Development workflow for Personal AI Assistant v1. Use for implementing features, picking up tasks, and tracking progress.
+globs:
+  - src/assistant/**/*
+  - docs/assistant_v1/**/*
+  - config/**/*
+alwaysApply: false
+---
+
+# Assistant V1 Development Agent
+
+You are implementing the Personal AI Assistant v1 project. Follow this workflow for each development session.
+
+## Session Startup Protocol
+
+### 1. Load Project Context
+
+Read these files to understand the project:
+
+```
+docs/DEVELOPMENT.md                                        # Development workflow and code standards
+docs/assistant_v1/ASSISTANT_V1_TECHNICAL_SPECIFICATION.md  # Cross-domain contracts and interfaces
+docs/assistant_v1/ASSISTANT_V1_IMPLEMENTATION_PLAN.md      # Phase sequencing and quality gates
+docs/assistant_v1/CAPABILITY_CATALOG.md                    # Capability identifiers
+docs/assistant_v1/COMPONENT_BOUNDARIES.md                  # Ownership and anti-duplication rules
+```
+
+For domain-specific work, read the relevant domain doc:
+- `docs/assistant_v1/domains/agent.md` - Orchestrator and session lifecycle
+- `docs/assistant_v1/domains/telegram.md` - Telegram adapter
+- `docs/assistant_v1/domains/memory.md` - Memory store and retrieval
+- `docs/assistant_v1/domains/capabilities.md` - Capability/skill runtime
+- `docs/assistant_v1/domains/subagents.md` - Sub-agent coordination
+- `docs/assistant_v1/domains/store.md` - Persistence layer
+- `docs/assistant_v1/domains/observability.md` - Logging and tracing
+- `docs/assistant_v1/domains/api.md` - FastAPI endpoints
+- `docs/assistant_v1/domains/admin.md` - Admin UI
+
+### 2. Check Project Status
+
+Read the tracker to understand current state:
+
+```
+docs/assistant_v1/project_tracker.json
+```
+
+Identify:
+- Current project status (`project.status`)
+- Which phases are complete/in-progress
+- Which tasks are available (status: `not_started` or `in_progress`)
+
+### 3. Select Next Task
+
+Task selection priority:
+1. Continue any task with status `in_progress`
+2. Pick the first `not_started` task in the earliest incomplete phase
+3. Respect phase dependencies - don't start Phase N tasks if Phase N-1 is incomplete
+
+## Task Execution Protocol
+
+### Before Starting a Task
+
+1. **Update tracker** - Set task status to `in_progress` and add `started_date`
+2. **Read relevant docs** - Load domain docs referenced by the task's component IDs
+3. **Check scope_path** - Understand where code should be placed
+
+### During Implementation - INCREMENTAL DEVELOPMENT CYCLE
+
+Follow the incremental development loop from `docs/DEVELOPMENT.md`:
+
+1. **Small Code Changes** - Edit ONE MODULE at a time
+2. **Quick Format & Lint** - After finishing EACH module, run `make format lint`
+3. **Repeat** - Continue with next module
+4. **Never accumulate** - Don't make large changes across many files without intermediate checks
+
+### Code Style Rules
+
+- Write docstrings for public classes, methods, and functions only
+- DO NOT add docstrings for private methods/classes/functions
+- Keep modules concise and one-purpose-oriented
+- IMPORTANT: If a module grows over 200 lines, consider splitting
+- Name interfaces as `SomeThingInterface` (NOT `ISomething`)
+- All imports at the top of the module
+- Include component ID in module header:
+  ```python
+  """
+  Component ID: CMP_CORE_AGENT_ORCHESTRATOR
+  
+  Brief description of module purpose.
+  """
+  ```
+- NO late importing to prevent circular imports - plan modules properly instead
+- Follow SOLID principles (Single Responsibility, Open/Closed, Liskov, Interface Segregation, Dependency Inversion)
+- Check for code duplication during planning and after implementation
+
+### Code Structure
+
+```
+src/assistant/
+├── core/           # CMP_CORE_AGENT_ORCHESTRATOR
+├── api/            # CMP_API_FASTAPI_GATEWAY
+├── admin/          # CMP_ADMIN_MINIMAL_UI
+├── channels/
+│   └── telegram/   # CMP_CHANNEL_TELEGRAM_ADAPTER
+├── memory/         # CMP_MEMORY_FILESYSTEM_STORE
+├── store/          # CMP_STORE_STATE_FACADE and sub-components
+├── providers/      # CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER
+├── extensions/     # CMP_TOOL_RUNTIME_REGISTRY, CMP_SKILL_RUNTIME_ENGINE
+├── subagents/      # CMP_AGENT_SUBAGENT_COORDINATOR
+├── scheduler/      # CMP_AUTOMATION_SCHEDULER
+└── observability/  # CMP_OBSERVABILITY_LOGGING
+
+config/
+├── app.yaml
+├── channel.telegram.yaml
+├── model.yaml
+├── capabilities.yaml
+├── mcp_servers.yaml
+├── scheduler.yaml
+└── store.yaml
+
+tests/
+└── (mirror src/ structure)
+```
+
+### After Completing a Task
+
+1. **Add tests at feature completion** - Add concise, focused unit tests for the implemented behavior.
+2. **Add integration tests when needed** - If the feature interacts with existing functionality, add focused integration coverage for key interaction paths.
+3. **Keep tests pragmatic** - Cover happy paths and major corner cases; avoid overcomplicated test suites.
+4. **Final quality check** - Run `make format lint` and fix any issues
+5. **Update tracker** - Set task status to `implemented`, add `completed_date`, list `files_delivered`
+6. **Update phase** - If all phase tasks complete, set phase status to `completed`
+7. **Update project** - If first task started, set `project.status` to `in_progress` and `started_date`
+8. **Git add** - If new files/modules created, stage them for commit
+9. **Summarize** - Report what was implemented and any notes for the task
+
+## Tracker Update Format
+
+When updating `project_tracker.json`:
+
+```json
+{
+  "id": "1.1",
+  "status": "in_progress",
+  "started_date": "2024-XX-XX",
+  "notes": "Brief progress notes"
+}
+```
+
+When completing:
+
+```json
+{
+  "id": "1.1",
+  "status": "implemented",
+  "completed_date": "2024-XX-XX",
+  "notes": "Implementation summary",
+  "files_delivered": [
+    "src/assistant/core/bootstrap.py",
+    "src/assistant/core/config/loader.py"
+  ]
+}
+```
+
+## Status Values
+
+- `not_started` - Task not yet begun
+- `in_progress` - Currently being worked on
+- `implemented` - Code complete, pending integration testing
+- `completed` - Fully tested and integrated
+- `on_hold` - Blocked or paused
+- `cancelled` - No longer needed
+
+## Quality Requirements
+
+- All code must pass `make format lint`
+- Add tests when a feature is completed (do not defer coverage).
+- Unit tests must be concise and behavior-focused.
+- Add integration tests when feature behavior crosses existing module boundaries.
+- Cover happy paths and major corner cases; avoid overcomplicated or brittle tests.
+- Follow Python best practices (type hints, docstrings for public APIs)
+- Use Pydantic for data validation
+- Use FastAPI for endpoints
+- Use async/await patterns where appropriate
+- Keep functions focused and testable
+- Use structured logging with correlation IDs
+- Use environment variables for configuration
+- Validate configuration on startup
+
+### Development Commands
+
+```bash
+make start          # Start API service
+make format         # Auto-format code
+make lint           # Linting and type checking
+make format lint    # Run both (do this after each module!)
+```
+
+## Session End Protocol
+
+Before ending a session:
+1. Ensure tracker reflects current state
+2. Note any blockers or decisions in task notes
+3. Commit changes if requested
+
+## Quick Reference Commands
+
+Check project status:
+```bash
+cat docs/assistant_v1/project_tracker.json | jq '.project.status, .phases[].status'
+```
+
+Find next task:
+```bash
+cat docs/assistant_v1/project_tracker.json | jq '.phases[] | select(.status != "completed") | .tasks[] | select(.status == "not_started") | {id, name}' | head -20
+```
