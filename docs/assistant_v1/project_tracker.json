@@ -110,10 +110,19 @@
           "name": "Anthropic Adapter and Correlation Propagation [CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER]",
           "description": "Integrate Anthropic-first provider adapter baseline and propagate correlation IDs through model call paths.",
           "scope_path": "src/assistant/providers/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-10",
+          "completed_date": "2026-03-10",
+          "notes": "Implemented LLMProviderInterface + models, AnthropicAdapter with retry, correlation context var in observability. 16 unit tests all passing.",
+          "files_delivered": [
+            "src/assistant/observability/__init__.py",
+            "src/assistant/observability/correlation.py",
+            "src/assistant/providers/__init__.py",
+            "src/assistant/providers/interfaces.py",
+            "src/assistant/providers/anthropic.py",
+            "tests/assistant/observability/test_correlation.py",
+            "tests/assistant/providers/test_anthropic.py"
+          ]
         }
       ],
       "deliverables": [
