@@ -3,6 +3,7 @@
 ## Purpose
 
 Define background-task sub-agents that run independently from the main turn-based agent, with explicit model selection, lifecycle controls, TTL, and auditable execution.
+Primary sub-agent backend in v1 is Claude Code agents for coding-task offloading.
 
 ## Owned Components
 
@@ -14,7 +15,8 @@ Define background-task sub-agents that run independently from the main turn-base
 - Validate sub-agent task creation requests.
 - Enforce model allowlist, capability subset, budget, timeout, concurrency, and TTL limits.
 - Launch and monitor asynchronous sub-agent workers.
-- Support Cursor-agent execution mode as a governed sub-agent backend.
+- Support Claude Code agent execution as the primary governed sub-agent backend for coding tasks.
+- Support Cursor-agent execution mode as an optional governed backend for compatible workflows.
 - Persist task state transitions and heartbeat updates.
 - Notify parent orchestration/event handlers on progress and completion.
 - Record full delegation trace and usage metadata.
@@ -23,6 +25,7 @@ Define background-task sub-agents that run independently from the main turn-base
 
 - Main agent remains short-lived and never blocks on long-running sub-agent execution.
 - Sub-agents are background tasks with a specific purpose and explicit completion criteria.
+- Coding-heavy objectives should default to Claude Code agents unless policy or capability constraints require another backend.
 - Sub-agent tasks can be long-running until one of:
   - objective completed,
   - TTL expired,
@@ -84,6 +87,7 @@ Coordinator enforcement rules:
 - Task creation requests from `CMP_CORE_AGENT_ORCHESTRATOR`.
 - Runtime policy configuration (`model allowlist`, `budget`, `capabilities`, `ttl`).
 - Optional trigger payloads (CI status source, market threshold, research objective).
+- Optional Claude Code execution parameters (`claude_agent_profile`, `run_mode`, `attachments`, `workspace_scope`).
 - Optional Cursor-agent execution parameters (`cursor_agent_type`, `run_mode`, `attachments`).
 
 ## Outputs
@@ -101,6 +105,7 @@ Coordinator enforcement rules:
 - Every task must include `expires_at` or derive it from policy default TTL.
 - Long-running tasks must emit heartbeat updates.
 - Task state must be persisted atomically to support restart recovery.
+- Claude Code agent execution is the default route for coding-task delegation and must remain policy-gated with explicit capability and workspace scope constraints.
 - Cursor-agent execution must be gated by explicit capability allowlist and run with the same budget/TTL/trace constraints.
 
 ## Risks
@@ -109,6 +114,8 @@ Coordinator enforcement rules:
 - Capability escalation if policy checks are bypassed.
 - Zombie tasks if heartbeat/TTL enforcement is missing.
 - Duplicate side effects if retry behavior is not idempotent.
+- Workspace overreach if Claude Code agent scope boundaries are not enforced.
+- Unintended high-impact code changes from Claude Code agent runs without strict policy envelopes.
 - Unintended high-impact actions from Cursor-agent runs without strict policy envelopes.
 
 ## Done Criteria
@@ -118,5 +125,6 @@ Coordinator enforcement rules:
 - Background tasks survive process restarts with consistent persisted state.
 - Progress/completion events can trigger follow-up actions or user notifications.
 - Parent-child traceability exists for all task lifecycle transitions.
+- Claude Code agent tasks are used as the primary coding offload path and produce auditable lifecycle records equivalent to other backends.
 - Cursor-agent tasks execute only when explicitly authorized and produce the same auditable lifecycle records.
 
