@@ -5,15 +5,19 @@ Anthropic LLM provider adapter.
 
 Wraps the Anthropic async client, enforces model allowlist validation,
 and propagates the trace ID from every LLMRequest through structured logs.
-Error handling follows CMP_ERROR_PROVIDER_UNAVAILABLE with bounded retry via tenacity.
+Error handling follows CMP_ERROR_PROVIDER_UNAVAILABLE: only transient failures
+(connection errors, timeouts, HTTP 429 and 5xx) are retried with exponential
+backoff. Deterministic client-side errors (4xx except 429) are raised immediately.
 """
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import cast
 
 import anthropic
 from anthropic.types import MessageParam
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from assistant.core.config.schemas import ModelConfig
 from assistant.observability.correlation import get_trace_id, reset_trace_id, set_trace_id
@@ -21,9 +25,19 @@ from assistant.providers.interfaces import LLMRequest, LLMResponse, LLMUsage
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRY_ATTEMPTS = 3
-_RETRY_WAIT_MIN_SECONDS = 1
-_RETRY_WAIT_MAX_SECONDS = 8
+_DEFAULT_RETRY_ATTEMPTS = 3
+_RETRY_WAIT_MIN_SECONDS = 1.0
+_RETRY_WAIT_MAX_SECONDS = 8.0
+
+_TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 529})
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    if isinstance(exc, anthropic.APIConnectionError | anthropic.APITimeoutError):
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        return exc.status_code in _TRANSIENT_STATUS_CODES
+    return False
 
 
 class ModelNotAllowedError(ValueError):
@@ -34,29 +48,52 @@ class AnthropicAdapter:
     """Anthropic LLM provider adapter implementing LLMProviderInterface.
 
     Validates model IDs against the configured allowlist, propagates trace IDs
-    through every call, and retries transient API errors with exponential backoff.
+    through every call, and retries only transient API failures with exponential
+    backoff. Non-transient errors (4xx except 429) are raised immediately.
+
+    Args:
+        config: Model configuration including allowlist and token defaults.
+        max_retry_attempts: Total attempts (1 = no retries). Defaults to 3.
+        _retry_sleep: Async sleep callable used between retries. Pass an AsyncMock
+            in tests to avoid real delays.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        max_retry_attempts: int = _DEFAULT_RETRY_ATTEMPTS,
+        _retry_sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
         self._config = config
         self._client = anthropic.AsyncAnthropic()
+        self._max_retry_attempts = max_retry_attempts
+        self._retry_sleep: Callable[[float], Awaitable[None]] = _retry_sleep or asyncio.sleep
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Execute a completion request against the Anthropic API.
 
-        The trace_id from the request is set as the active correlation context
-        for the duration of the call so all downstream log statements carry it.
+        Sets the request trace_id as the active correlation context for the call.
+        Only transient failures trigger retries; deterministic 4xx errors raise immediately.
         Raises ModelNotAllowedError if the requested model is not in the allowlist.
-        Raises anthropic.APIError on unrecoverable provider failures after retries.
         """
         model_id = request.model_id or self._config.default_model_id
         self._validate_model(model_id)
 
         token = set_trace_id(request.trace_id)
         try:
-            return await self._call_with_retry(request, model_id)
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(self._max_retry_attempts),
+                wait=wait_exponential(min=_RETRY_WAIT_MIN_SECONDS, max=_RETRY_WAIT_MAX_SECONDS),
+                retry=retry_if_exception(_is_transient_error),
+                sleep=self._retry_sleep,
+                reraise=True,
+            ):
+                with attempt:
+                    return await self._do_call(request, model_id)
         finally:
             reset_trace_id(token)
+        raise RuntimeError("unreachable")  # pragma: no cover
 
     def _validate_model(self, model_id: str) -> None:
         if model_id not in self._config.model_allowlist:
@@ -65,21 +102,17 @@ class AnthropicAdapter:
                 f"{self._config.model_allowlist}"
             )
 
-    @retry(
-        stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
-        wait=wait_exponential(
-            min=_RETRY_WAIT_MIN_SECONDS,
-            max=_RETRY_WAIT_MAX_SECONDS,
-        ),
-        reraise=True,
-    )
-    async def _call_with_retry(self, request: LLMRequest, model_id: str) -> LLMResponse:
+    async def _do_call(self, request: LLMRequest, model_id: str) -> LLMResponse:
         trace_id = get_trace_id()
         messages = cast(
             list[MessageParam],
             [{"role": m.role.value, "content": m.content} for m in request.messages],
         )
-        max_tokens = request.max_tokens or self._config.max_tokens_default
+        max_tokens = (
+            request.max_tokens
+            if request.max_tokens is not None
+            else self._config.max_tokens_default
+        )
 
         logger.info(
             "anthropic.complete.start",

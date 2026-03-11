@@ -32,7 +32,7 @@ class LLMRequest(BaseModel):
     trace_id: str
     model_id: str | None = None
     system: str | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
 
 
 class LLMUsage(BaseModel):
