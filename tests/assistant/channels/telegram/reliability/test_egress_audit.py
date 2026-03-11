@@ -91,7 +91,8 @@ class TestEgressAuditOnNetworkError:
                 new_callable=AsyncMock,
                 side_effect=TelegramNetworkError(_send_method(), "refused"),
             ),
-            patch("asyncio.sleep", new_callable=AsyncMock),pytest.raises(TelegramSendError)
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(TelegramSendError),
         ):
             await egress.send(response, chat_id=456)
 
@@ -108,12 +109,15 @@ class TestEgressAuditOnApiError:
     async def test_api_error_emits_api_error_and_failure(self) -> None:
         egress, audit = _make_egress(max_attempts=3)
         response = _make_response()
-        with patch.object(
-            egress._bot,
-            "send_message",
-            new_callable=AsyncMock,
-            side_effect=TelegramAPIError(_send_method(), "Forbidden"),
-        ), pytest.raises(TelegramSendError):
+        with (
+            patch.object(
+                egress._bot,
+                "send_message",
+                new_callable=AsyncMock,
+                side_effect=TelegramAPIError(_send_method(), "Forbidden"),
+            ),
+            pytest.raises(TelegramSendError),
+        ):
             await egress.send(response, chat_id=456)
 
         audit.log_egress_api_error.assert_called_once()
@@ -172,7 +176,8 @@ class TestEgressAuditOnRetryAfter:
                 new_callable=AsyncMock,
                 side_effect=TelegramRetryAfter(_send_method(), "retry after 1", retry_after=1),
             ),
-            patch("asyncio.sleep", new_callable=AsyncMock),pytest.raises(TelegramSendError)
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(TelegramSendError),
         ):
             await egress.send(response, chat_id=456)
 

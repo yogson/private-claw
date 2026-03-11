@@ -43,6 +43,8 @@ class TelegramChannelConfig(BaseModel):
     mtproto_api_hash: str | None = None
     transcription_timeout_seconds: int = Field(default=10, ge=1)
     throttle_max_per_minute: int = Field(default=20, ge=1)
+    session_resume_hmac_secret: str = Field(default="")
+    session_resume_max_sessions: int = Field(default=5, ge=1)
 
     @model_validator(mode="after")
     def validate_when_enabled(self) -> "TelegramChannelConfig":

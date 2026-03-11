@@ -48,17 +48,21 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 
 ### Session Resume Selection Flow
 
-- v1 should support a guided "resume session" flow in Telegram:
-  - user requests recent sessions (for example: "resume", "show recent sessions"),
-  - adapter/orchestrator returns an interactive message with latest N resumable sessions,
+- v1 supports a guided "resume session" flow triggered by the `/sessions` bot command:
+  - user sends `/sessions` (or `/sessions@botname` in group contexts),
+  - adapter returns an interactive message with the latest N resumable sessions scoped to the requesting chat,
   - user selects one via inline button callback,
   - selected `session_id` becomes active for subsequent turns in the same chat context.
-- Session list entries should include compact user-facing metadata:
-  - session label (generated title or fallback),
+- Session list entries include compact user-facing metadata:
+  - session label (generated title or fallback from first user message),
   - last activity timestamp,
   - short preview snippet (bounded length, sanitized).
-- Resume callback payload must include signed context with action and target `session_id`.
-- Session selection must be scoped to the same allowlisted user/chat context; cross-user/session escalation is forbidden.
+- Resume callback payload is signed with HMAC-SHA256 and includes:
+  - bound `chat_id` (prevents cross-chat use of another chat's callback),
+  - Unix timestamp (TTL enforcement rejects callbacks older than 1 hour),
+  - target `session_id`.
+- Session listing is scoped to the requesting chat's sessions only; sessions from other chats are never returned.
+- Session selection must remain within the same allowlisted user/chat context; cross-user/session escalation is forbidden.
 
 ## Voice Handling Strategy
 

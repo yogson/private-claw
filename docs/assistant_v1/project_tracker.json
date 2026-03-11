@@ -247,9 +247,9 @@
       "name": "Telegram Channel and Normalized Event Intake",
       "description": "Enable Telegram-first interaction with deterministic event normalization for text, voice, attachment, and callbacks.",
       "priority": "HIGH",
-      "status": "in_progress",
+      "status": "completed",
       "started_date": "2026-03-11",
-      "completed_date": null,
+      "completed_date": "2026-03-11",
       "dependencies": [
         "phase_1",
         "phase_2"
@@ -346,10 +346,16 @@
           "name": "Telegram Recent Sessions Listing and Resume Selection [CMP_CHANNEL_TELEGRAM_ADAPTER]",
           "description": "Implement Telegram flow to list latest resumable sessions and switch active session via signed callback selection.",
           "scope_path": "src/assistant/channels/telegram/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "completed_date": "2026-03-11",
+          "notes": "Implemented SessionResumeService with HMAC-signed callbacks, session listing/metadata extraction, and TelegramAdapter session-context overrides. 39 focused unit tests added.",
+          "files_delivered": [
+            "src/assistant/channels/telegram/session_resume.py",
+            "src/assistant/channels/telegram/adapter.py",
+            "src/assistant/core/config/schemas.py",
+            "tests/assistant/channels/telegram/test_session_resume.py"
+          ],
+          "started_date": "2026-03-11"
         }
       ],
       "deliverables": [
@@ -625,4 +631,3 @@
     "Authoritative tracker for assistant_v1 scope is docs/assistant_v1/project_tracker.json."
   ]
 }
-
