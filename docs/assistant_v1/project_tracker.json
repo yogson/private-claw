@@ -185,10 +185,15 @@
           "name": "Atomic Writes and Lock TTL Recovery [CMP_STORE_STATE_FACADE]",
           "description": "Implement atomic write semantics, lock TTL behavior, and recovery marker lifecycle.",
           "scope_path": "src/assistant/store/runtime/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-11",
+          "completed_date": "2026-03-11",
+          "notes": "Implemented StoreRuntimeManager providing operational controls and monitoring: background cleanup of expired locks/idempotency records (configurable interval), recovery marker history tracking with component filtering, comprehensive store statistics, lock diagnostics with contention detection, administrative operations (force release locks, manual recovery trigger), atomic write and lock TTL verification tests. Integrated into StoreFacade with optional enable flag. 16 unit tests, all store tests passing (69 total).",
+          "files_delivered": [
+            "src/assistant/store/runtime/__init__.py",
+            "src/assistant/store/runtime/manager.py",
+            "tests/assistant/store/test_runtime_manager.py"
+          ]
         },
         {
           "id": "2.3",
@@ -518,7 +523,7 @@
         {
           "id": "6.5",
           "name": "Expanded Admin Operational Controls [CMP_ADMIN_MINIMAL_UI]",
-          "description": "Expand admin panels for memory browser, capability/MCP toggles, scheduler/sub-agent audits, and backup/export flows.",
+          "description": "Expand admin panels for memory browser, capability/MCP toggles, scheduler/sub-agent audits, backup/export flows, and StoreRuntimeManager-backed store runtime diagnostics/remediation controls.",
           "scope_path": "src/assistant/admin/operations/",
           "status": "not_started",
           "completed_date": null,
@@ -539,14 +544,14 @@
       "deliverables": [
         "Scheduler runtime with persisted jobs and history",
         "Reminder creation/update/list/cancel support",
-        "Admin operational controls for runtime modules and MCP state",
+        "Admin operational controls for runtime modules and MCP state, including StoreRuntimeManager-backed store diagnostics/recovery controls",
         "Backup/export routines and documented restore process",
         "Deployment and operations runbook"
       ],
       "success_criteria": [
         "Scheduled reminders fire within expected latency window",
         "Reminder lifecycle operations remain durable across restarts",
-        "Admin can verify and control health, memory, capability/MCP, scheduler, and sub-agent state",
+        "Admin can verify and control health, memory, capability/MCP, scheduler, sub-agent state, and store runtime diagnostics/remediation actions",
         "Backup and restore process is reproducible",
         "Smoke checks pass for critical user and scheduler paths"
       ]

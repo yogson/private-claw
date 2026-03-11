@@ -178,7 +178,7 @@ Parallel constraints:
   2. Implement reminder CRUD lifecycle through orchestration, API, and Telegram response path (`CMP_AUTOMATION_SCHEDULER`, `CMP_API_FASTAPI_GATEWAY`, `CMP_CORE_AGENT_ORCHESTRATOR`).
   3. Implement retry, missed-run handling, and execution audit semantics (`CMP_AUTOMATION_SCHEDULER`, `CMP_OBSERVABILITY_LOGGING`).
   4. Integrate maintenance jobs for memory consolidation/index rebuild routines (`CMP_AUTOMATION_SCHEDULER`, `CMP_MEMORY_FILESYSTEM_STORE`).
-  5. Expand admin operational panels: memory browser, capability/MCP toggles, sub-agent/scheduler audits, backup/export flows (`CMP_ADMIN_MINIMAL_UI`, `CMP_API_FASTAPI_GATEWAY`).
+  5. Expand admin operational panels: memory browser, capability/MCP toggles, sub-agent/scheduler audits, backup/export flows, and store runtime diagnostics/remediation controls backed by `StoreRuntimeManager` (`CMP_ADMIN_MINIMAL_UI`, `CMP_API_FASTAPI_GATEWAY`, `CMP_STORE_STATE_FACADE`).
   6. Define and validate `tmux` runtime runbook and smoke checklist (`CMP_OBSERVABILITY_LOGGING`).
 - Dependencies:
   - Phase 1
@@ -189,13 +189,13 @@ Parallel constraints:
 - Deliverables:
   - Scheduler runtime with persisted jobs and history.
   - Reminder creation/update/list/cancel support.
-  - Admin operational controls for runtime modules and MCP state.
+  - Admin operational controls for runtime modules and MCP state, including store runtime diagnostics and recovery actions via `StoreRuntimeManager`.
   - Backup/export routines and documented restore process.
   - Deployment and operations runbook.
 - Success Criteria:
   - Scheduled reminders fire within expected latency window.
   - Reminder lifecycle operations are durable across restart scenarios.
-  - Admin can verify and control health, memory, capability/MCP, scheduler, and sub-agent state.
+  - Admin can verify and control health, memory, capability/MCP, scheduler, sub-agent state, and store runtime health/remediation actions.
   - Backup/restore process is reproducible.
   - Smoke checks pass for critical user and scheduler paths.
 

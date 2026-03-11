@@ -8,6 +8,7 @@ Backend implementations (filesystem, future Redis) implement these interfaces.
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from assistant.store.models import (
@@ -194,6 +195,68 @@ class TaskStoreInterface(ABC):
         """Find and mark expired tasks. Returns list of expired tasks."""
 
 
+class StoreRuntimeManagerInterface(ABC):
+    """Abstract interface for store runtime management (CMP_STORE_STATE_FACADE)."""
+
+    @abstractmethod
+    async def start(self) -> None:
+        """Start background runtime management tasks."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop background runtime management tasks."""
+
+    @abstractmethod
+    async def cleanup_expired_resources(self) -> dict[str, Any]:
+        """Clean up expired locks and idempotency records."""
+
+    @abstractmethod
+    async def force_release_lock(self, lock_key: str) -> bool:
+        """Force release a lock regardless of owner."""
+
+    @abstractmethod
+    async def list_active_locks(self) -> list[LockRecord]:
+        """List all currently held locks."""
+
+    @abstractmethod
+    async def get_lock_diagnostics(self) -> dict[str, Any]:
+        """Get lock diagnostics including contention detection."""
+
+    @abstractmethod
+    async def save_recovery_marker(self, marker: RecoveryMarker) -> None:
+        """Save a recovery marker to history."""
+
+    @abstractmethod
+    async def get_recovery_history(
+        self, component: str | None = None, limit: int = 10
+    ) -> list[RecoveryMarker]:
+        """Get recovery marker history."""
+
+    @abstractmethod
+    async def trigger_recovery_scan(self) -> RecoveryMarker:
+        """Manually trigger a recovery scan."""
+
+    @abstractmethod
+    async def get_store_statistics(self) -> dict[str, Any]:
+        """Get comprehensive store statistics."""
+
+    @abstractmethod
+    async def verify_atomic_write_integrity(self, test_path: Path) -> dict[str, Any]:
+        """Verify atomic write semantics."""
+
+    @abstractmethod
+    async def verify_lock_ttl_behavior(self) -> dict[str, Any]:
+        """Verify lock TTL expiration behavior."""
+
+    @abstractmethod
+    async def detect_lock_contention(self, time_window_seconds: int = 300) -> dict[str, Any]:
+        """Detect potential lock contention issues."""
+
+    @abstractmethod
+    async def get_recovery_summary(self) -> dict[str, Any]:
+        """Get summary of recent recovery scans."""
+
+
 class StoreFacadeInterface(ABC):
     """
     Abstract interface for the store facade (CMP_STORE_STATE_FACADE).
@@ -220,6 +283,11 @@ class StoreFacadeInterface(ABC):
     @abstractmethod
     def locks(self) -> LockCoordinatorInterface:
         """Access lock coordinator component."""
+
+    @property
+    @abstractmethod
+    def runtime(self) -> StoreRuntimeManagerInterface | None:
+        """Access runtime management component (if enabled)."""
 
     @abstractmethod
     async def initialize(self) -> None:

@@ -29,11 +29,15 @@ Define the FastAPI gateway boundary for operational and integration endpoints in
   - List, create, disable, and inspect scheduled jobs.
 - Sub-agent audit:
   - List recent sub-agent runs and policy outcomes.
+- Store runtime admin (`StoreRuntimeManager`-backed):
+  - Read store statistics, lock diagnostics/contention, and recovery summary/history.
+  - Trigger store recovery scan and expired-resource cleanup.
+  - Execute emergency lock remediation (`force_release_lock`) with auditable operator context.
 
 ## Inputs
 
 - HTTP requests from admin UI and API clients.
-- Internal service responses from orchestrator, scheduler, memory, and store domains.
+- Internal service responses from orchestrator, scheduler, memory, and store domains (including `StoreRuntimeManager` runtime operations).
 
 ## Outputs
 

@@ -34,11 +34,13 @@ Selection rationale:
   - memory/index status,
   - scheduler job state,
   - sub-agent lifecycle and policy outcomes,
-  - capability and MCP runtime readiness.
+  - capability and MCP runtime readiness,
+  - store runtime state via `StoreRuntimeManager` (lock diagnostics/contention, cleanup timestamps, recovery scan history/status).
 - Provide bounded controls:
   - capability and skill enable/disable actions via policy-aware API routes,
   - scheduler create/pause/cancel operations,
-  - maintenance actions (for example memory index rebuild trigger).
+  - maintenance actions (for example memory index rebuild trigger),
+  - store remediation actions via API (`StoreRuntimeManager` force lock release, manual recovery scan trigger, expired-resource cleanup trigger).
 - Provide configuration management UX:
   - inspect effective config (base file + env override projection),
   - edit allowed config keys with validation, diff preview, and apply flow,
@@ -143,7 +145,7 @@ Safety requirements for MCP admin controls:
 
 - API responses from `CMP_API_FASTAPI_GATEWAY`.
 - Authenticated operator actions.
-- System/audit state snapshots from capability, scheduler, memory, and sub-agent domains.
+- System/audit state snapshots from capability, scheduler, memory, sub-agent, and store runtime domains.
 
 ## Outputs
 

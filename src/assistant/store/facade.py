@@ -19,6 +19,7 @@ from assistant.store.interfaces import (
     LockCoordinatorInterface,
     SessionStoreInterface,
     StoreFacadeInterface,
+    StoreRuntimeManagerInterface,
     TaskStoreInterface,
 )
 from assistant.store.models import (
@@ -29,6 +30,7 @@ from assistant.store.models import (
     TaskStatus,
     TurnTerminalStatus,
 )
+from assistant.store.runtime.manager import StoreRuntimeManager
 
 
 class StoreFacade(StoreFacadeInterface):
@@ -43,6 +45,8 @@ class StoreFacade(StoreFacadeInterface):
         data_root: Path,
         lock_ttl_seconds: int = 30,
         idempotency_ttl_seconds: int = 86400,
+        enable_runtime_manager: bool = True,
+        cleanup_interval_seconds: int = 300,
     ) -> None:
         self._data_root = data_root
         self._runtime_dir = data_root / "runtime"
@@ -59,6 +63,10 @@ class StoreFacade(StoreFacadeInterface):
         self._idempotency = FilesystemIdempotencyLedger(
             self._idempotency_dir, idempotency_ttl_seconds
         )
+
+        self._runtime_manager: StoreRuntimeManager | None = None
+        if enable_runtime_manager:
+            self._runtime_manager = StoreRuntimeManager(self, data_root, cleanup_interval_seconds)
 
         self._initialized = False
         self._last_recovery: RecoveryMarker | None = None
@@ -79,6 +87,11 @@ class StoreFacade(StoreFacadeInterface):
     def locks(self) -> LockCoordinatorInterface:
         return self._locks
 
+    @property
+    def runtime(self) -> StoreRuntimeManagerInterface | None:
+        """Access runtime management component (if enabled)."""
+        return self._runtime_manager
+
     async def initialize(self) -> None:
         """Initialize store and run startup recovery scan."""
         if self._initialized:
@@ -92,10 +105,17 @@ class StoreFacade(StoreFacadeInterface):
         ensure_directory(self._recovery_dir)
 
         self._last_recovery = await self.run_recovery_scan()
+
+        if self._runtime_manager is not None:
+            await self._runtime_manager.save_recovery_marker(self._last_recovery)
+            await self._runtime_manager.start()
+
         self._initialized = True
 
     async def shutdown(self) -> None:
         """Graceful shutdown of store components."""
+        if self._runtime_manager is not None:
+            await self._runtime_manager.stop()
         self._initialized = False
 
     async def run_recovery_scan(self) -> RecoveryMarker:

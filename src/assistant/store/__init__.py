@@ -10,8 +10,10 @@ from assistant.store.interfaces import (
     LockCoordinatorInterface,
     SessionStoreInterface,
     StoreFacadeInterface,
+    StoreRuntimeManagerInterface,
     TaskStoreInterface,
 )
+from assistant.store.runtime.manager import StoreRuntimeManager
 
 __all__ = [
     "StoreFacade",
@@ -20,4 +22,6 @@ __all__ = [
     "TaskStoreInterface",
     "IdempotencyLedgerInterface",
     "LockCoordinatorInterface",
+    "StoreRuntimeManager",
+    "StoreRuntimeManagerInterface",
 ]
