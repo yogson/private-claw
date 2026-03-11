@@ -27,7 +27,10 @@ from assistant.core.events.models import (
 )
 from assistant.core.orchestrator import (
     Orchestrator,
+    _extract_raw_text_for_multimodal,
     _extract_user_text,
+    _format_attachment_context,
+    _gather_attachments,
     _records_to_messages,
 )
 from assistant.providers.interfaces import LLMResponse, MessageRole
@@ -114,6 +117,75 @@ class TestExtractUserText:
     def test_empty_fallback(self) -> None:
         event = _minimal_event(text=None)
         assert _extract_user_text(event) == "[Empty or unsupported input]"
+
+
+class TestExtractRawTextForMultimodal:
+    def test_returns_none_for_attachment_only(self) -> None:
+        event = _minimal_event(text=None)
+        event = event.model_copy(
+            update={
+                "attachment": AttachmentMeta(
+                    file_id="f1",
+                    mime_type="image/jpeg",
+                    file_size_bytes=100,
+                    caption=None,
+                )
+            }
+        )
+        assert _extract_raw_text_for_multimodal(event) is None
+
+    def test_returns_caption_when_present(self) -> None:
+        event = _minimal_event(text=None)
+        event = event.model_copy(
+            update={
+                "attachment": AttachmentMeta(
+                    file_id="f1",
+                    mime_type="image/jpeg",
+                    file_size_bytes=100,
+                    caption="check this!",
+                )
+            }
+        )
+        assert _extract_raw_text_for_multimodal(event) == "check this!"
+
+
+class TestGatherAttachments:
+    def test_single_attachment(self) -> None:
+        event = _minimal_event(text=None)
+        event = event.model_copy(
+            update={
+                "attachment": AttachmentMeta(
+                    file_id="f1",
+                    mime_type="image/jpeg",
+                    file_size_bytes=1024,
+                    caption=None,
+                )
+            }
+        )
+        assert _gather_attachments(event) == [event.attachment]
+
+    def test_skips_empty_file_id(self) -> None:
+        event = _minimal_event(text=None)
+        event = event.model_copy(
+            update={"attachment": AttachmentMeta(file_id="", mime_type="x", file_size_bytes=0)}
+        )
+        assert _gather_attachments(event) == []
+
+
+class TestFormatAttachmentContext:
+    def test_empty(self) -> None:
+        assert _format_attachment_context([]) == ""
+
+    def test_single_image(self) -> None:
+        att = AttachmentMeta(
+            file_id="f1",
+            mime_type="image/jpeg",
+            file_size_bytes=1024,
+            caption=None,
+        )
+        assert "[User attached:" in _format_attachment_context([att])
+        assert "image" in _format_attachment_context([att])
+        assert "image/jpeg" in _format_attachment_context([att])
 
 
 class TestRecordsToMessages:
@@ -278,6 +350,145 @@ class TestOrchestratorExecuteTurn:
         assert len(append_call) == 3
         assert append_call[0].record_type == SessionRecordType.USER_MESSAGE
         assert append_call[0].payload["content"] == "Hi"
+        assert append_call[0].payload["attachments"] == []
         assert append_call[1].record_type == SessionRecordType.ASSISTANT_MESSAGE
         assert append_call[1].payload["content"] == "Model response"
         assert append_call[2].record_type == SessionRecordType.TURN_TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_attachment_reaches_llm(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_provider: MagicMock,
+    ) -> None:
+        mock_store.sessions.session_exists = AsyncMock(return_value=True)
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+        orch = Orchestrator(
+            store=mock_store,
+            provider=mock_provider,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+        )
+        event = _minimal_event(text="check this!")
+        event = event.model_copy(
+            update={
+                "event_type": EventType.USER_ATTACHMENT_MESSAGE,
+                "attachment": AttachmentMeta(
+                    file_id="photo-123",
+                    mime_type="image/jpeg",
+                    file_size_bytes=45000,
+                    caption=None,
+                ),
+            }
+        )
+        await orch.execute_turn(event)
+        call_args = mock_provider.complete.call_args[0][0]
+        assert len(call_args.messages) == 1
+        content = call_args.messages[0].content
+        assert "check this!" in content
+        assert "[User attached:" in content
+        assert "image" in content
+        assert "image/jpeg" in content
+        append_call = mock_store.sessions.append.call_args[0][0]
+        assert append_call[0].payload["attachments"] == [
+            {
+                "file_id": "photo-123",
+                "mime_type": "image/jpeg",
+                "file_size_bytes": 45000,
+                "caption": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_attachment_with_downloader_sends_content_blocks(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_provider: MagicMock,
+    ) -> None:
+        mock_store.sessions.session_exists = AsyncMock(return_value=True)
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+
+        async def mock_download(
+            file_id: str, mime_type: str, file_size_bytes: int, trace_id: str
+        ) -> bytes | None:
+            return b"\xff\xd8\xff"  # minimal JPEG header
+
+        mock_downloader = MagicMock()
+        mock_downloader.download = AsyncMock(side_effect=mock_download)
+
+        orch = Orchestrator(
+            store=mock_store,
+            provider=mock_provider,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            attachment_downloader=mock_downloader,
+        )
+        event = _minimal_event(text="check this!")
+        event = event.model_copy(
+            update={
+                "event_type": EventType.USER_ATTACHMENT_MESSAGE,
+                "attachment": AttachmentMeta(
+                    file_id="photo-123",
+                    mime_type="image/jpeg",
+                    file_size_bytes=100,
+                    caption=None,
+                ),
+            }
+        )
+        await orch.execute_turn(event)
+        call_args = mock_provider.complete.call_args[0][0]
+        assert len(call_args.messages) == 1
+        msg = call_args.messages[0]
+        assert msg.content_blocks is not None
+        assert len(msg.content_blocks) == 2
+        assert msg.content_blocks[0] == {"type": "text", "text": "check this!"}
+        assert msg.content_blocks[1]["type"] == "image"
+        assert msg.content_blocks[1]["source"]["type"] == "base64"
+        assert msg.content_blocks[1]["source"]["media_type"] == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_no_placeholder_in_content_blocks(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_provider: MagicMock,
+    ) -> None:
+        mock_store.sessions.session_exists = AsyncMock(return_value=True)
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+
+        async def mock_download(
+            file_id: str, mime_type: str, file_size_bytes: int, trace_id: str
+        ) -> bytes | None:
+            return b"\xff\xd8\xff"
+
+        mock_downloader = MagicMock()
+        mock_downloader.download = AsyncMock(side_effect=mock_download)
+
+        orch = Orchestrator(
+            store=mock_store,
+            provider=mock_provider,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            attachment_downloader=mock_downloader,
+        )
+        event = _minimal_event(text=None)
+        event = event.model_copy(
+            update={
+                "event_type": EventType.USER_ATTACHMENT_MESSAGE,
+                "attachment": AttachmentMeta(
+                    file_id="photo-123",
+                    mime_type="image/jpeg",
+                    file_size_bytes=100,
+                    caption=None,
+                ),
+            }
+        )
+        await orch.execute_turn(event)
+        call_args = mock_provider.complete.call_args[0][0]
+        msg = call_args.messages[0]
+        assert msg.content_blocks is not None
+        assert len(msg.content_blocks) == 1
+        assert msg.content_blocks[0]["type"] == "image"
+        assert "[Empty or unsupported input]" not in str(msg.content_blocks)

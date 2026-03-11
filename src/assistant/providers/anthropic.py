@@ -21,7 +21,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 
 from assistant.core.config.schemas import ModelConfig
 from assistant.observability.correlation import get_trace_id, reset_trace_id, set_trace_id
-from assistant.providers.interfaces import LLMRequest, LLMResponse, LLMUsage
+from assistant.providers.interfaces import LLMMessage, LLMRequest, LLMResponse, LLMUsage
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +102,20 @@ class AnthropicAdapter:
                 f"{self._config.model_allowlist}"
             )
 
+    def _message_to_content(self, message: LLMMessage) -> list[dict[str, object]]:
+        """Convert LLMMessage to Anthropic content blocks."""
+        if message.content_blocks:
+            return message.content_blocks
+        return [{"type": "text", "text": message.content or ""}]
+
     async def _do_call(self, request: LLMRequest, model_id: str) -> LLMResponse:
         trace_id = get_trace_id()
         messages = cast(
             list[MessageParam],
-            [{"role": m.role.value, "content": m.content} for m in request.messages],
+            [
+                {"role": m.role.value, "content": self._message_to_content(m)}
+                for m in request.messages
+            ],
         )
         max_tokens = (
             request.max_tokens

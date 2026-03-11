@@ -8,7 +8,7 @@ can swap providers without changing call sites.
 """
 
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -19,10 +19,16 @@ class MessageRole(StrEnum):
 
 
 class LLMMessage(BaseModel):
-    """A single message in a conversation turn."""
+    """A single message in a conversation turn.
+
+    For text-only: use content (str). For multimodal (text + images/PDFs):
+    use content_blocks (list of Anthropic-style blocks). When content_blocks
+    is set, it takes precedence over content.
+    """
 
     role: MessageRole
-    content: str
+    content: str = ""
+    content_blocks: list[dict[str, Any]] | None = None
 
 
 class LLMRequest(BaseModel):

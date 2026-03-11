@@ -5,12 +5,15 @@ Minimal orchestrator for turn-based event handling. Executes direct model path
 with session replay, idempotency, and lock-protected persistence.
 """
 
+import base64
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
+from assistant.core.attachments import AttachmentDownloaderInterface
 from assistant.core.config.schemas import RuntimeConfig
-from assistant.core.events.models import OrchestratorEvent
+from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.observability.correlation import reset_trace_id, set_trace_id
 from assistant.providers.interfaces import (
     LLMMessage,
@@ -34,9 +37,14 @@ _REPLAY_BUDGET = 50
 _LOCK_KEY_PREFIX = "session:"
 _LOCK_OWNER_PREFIX = "orchestrator:"
 
+_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+_PDF_MIME_TYPE = "application/pdf"
+
+
+_PLACEHOLDER_EMPTY = "[Empty or unsupported input]"
+
 
 def _extract_user_text(event: OrchestratorEvent) -> str:
-    """Extract user-facing text from an orchestrator event."""
     if event.text and event.text.strip():
         return event.text.strip()
     if event.voice and event.voice.transcript_text:
@@ -49,11 +57,111 @@ def _extract_user_text(event: OrchestratorEvent) -> str:
                 return att.caption.strip()
     if event.callback_query:
         return f"[Callback: {event.callback_query.callback_data[:100]}]"
-    return "[Empty or unsupported input]"
+    return _PLACEHOLDER_EMPTY
+
+
+def _extract_raw_text_for_multimodal(event: OrchestratorEvent) -> str | None:
+    if event.text and event.text.strip():
+        return event.text.strip()
+    if event.voice and event.voice.transcript_text:
+        return event.voice.transcript_text.strip()
+    if event.attachment and event.attachment.caption:
+        return event.attachment.caption.strip()
+    if event.attachments:
+        for att in event.attachments:
+            if att.caption:
+                return att.caption.strip()
+    if event.callback_query:
+        return f"[Callback: {event.callback_query.callback_data[:100]}]"
+    return None
+
+
+def _gather_attachments(event: OrchestratorEvent) -> list[AttachmentMeta]:
+    out: list[AttachmentMeta] = []
+    if event.attachment and event.attachment.file_id:
+        out.append(event.attachment)
+    for att in event.attachments or []:
+        if att.file_id:
+            out.append(att)
+    return out
+
+
+def _format_attachment_context(attachments: list[AttachmentMeta]) -> str:
+    if not attachments:
+        return ""
+    parts = []
+    for att in attachments:
+        size_str = f"{att.file_size_bytes / 1024:.1f} KB" if att.file_size_bytes else "unknown size"
+        media_type = "image" if att.mime_type.startswith("image/") else "file"
+        parts.append(f"{media_type} ({att.mime_type}, {size_str})")
+    return "\n\n[User attached: " + "; ".join(parts) + "]"
+
+
+def _is_multimodal_supported(mime_type: str) -> bool:
+    return mime_type in _IMAGE_MIME_TYPES or mime_type == _PDF_MIME_TYPE
+
+
+async def _build_user_content_blocks(
+    raw_text: str | None,
+    attachments: list[AttachmentMeta],
+    downloader: AttachmentDownloaderInterface | None,
+    trace_id: str,
+) -> list[dict[str, Any]] | None:
+    if not downloader or not attachments:
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    if raw_text and raw_text.strip() and raw_text != _PLACEHOLDER_EMPTY:
+        blocks.append({"type": "text", "text": raw_text.strip()})
+
+    for att in attachments:
+        if not _is_multimodal_supported(att.mime_type):
+            continue
+        try:
+            data = await downloader.download(
+                att.file_id, att.mime_type, att.file_size_bytes, trace_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "orchestrator.attachment_download_error",
+                file_id=att.file_id,
+                error=str(exc),
+                trace_id=trace_id,
+            )
+            continue
+        if data is None:
+            continue
+        b64 = base64.standard_b64encode(data).decode("utf-8")
+        if att.mime_type in _IMAGE_MIME_TYPES:
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": att.mime_type,
+                        "data": b64,
+                    },
+                }
+            )
+        elif att.mime_type == _PDF_MIME_TYPE:
+            blocks.append(
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": b64,
+                    },
+                }
+            )
+
+    has_media = any(b.get("type") in ("image", "document") for b in blocks)
+    if not has_media or not blocks:
+        return None
+    return blocks
 
 
 def _records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
-    """Convert session replay records to LLM message format."""
     messages: list[LLMMessage] = []
     for r in records:
         if r.record_type == SessionRecordType.USER_MESSAGE:
@@ -81,11 +189,13 @@ class Orchestrator:
         provider: LLMProviderInterface,
         config: RuntimeConfig,
         idempotency: IngressIdempotencyService,
+        attachment_downloader: AttachmentDownloaderInterface | None = None,
     ) -> None:
         self._store = store
         self._provider = provider
         self._config = config
         self._idempotency = idempotency
+        self._attachment_downloader = attachment_downloader
 
     async def execute_turn(self, event: OrchestratorEvent) -> str | None:
         """
@@ -121,9 +231,24 @@ class Orchestrator:
 
     async def _run_turn(self, event: OrchestratorEvent) -> str:
         user_text = _extract_user_text(event)
+        attachments = _gather_attachments(event)
+        attachment_context = _format_attachment_context(attachments)
+        user_content = (user_text + attachment_context).strip() or _PLACEHOLDER_EMPTY
+
         turn_id = event.event_id
         session_id = event.session_id
         trace_id = event.trace_id
+
+        raw_text = _extract_raw_text_for_multimodal(event)
+        content_blocks = await _build_user_content_blocks(
+            raw_text, attachments, self._attachment_downloader, trace_id
+        )
+        if content_blocks is not None:
+            user_message = LLMMessage(
+                role=MessageRole.USER, content="", content_blocks=content_blocks
+            )
+        else:
+            user_message = LLMMessage(role=MessageRole.USER, content=user_content)
 
         token = set_trace_id(trace_id)
         try:
@@ -135,7 +260,7 @@ class Orchestrator:
                 response_text = _DEFAULT_GREETING
                 logger.info("orchestrator.greeting", session_id=session_id)
             else:
-                messages.append(LLMMessage(role=MessageRole.USER, content=user_text))
+                messages.append(user_message)
                 request = LLMRequest(
                     messages=messages,
                     trace_id=trace_id,
@@ -148,9 +273,10 @@ class Orchestrator:
             await self._persist_turn(
                 session_id=session_id,
                 turn_id=turn_id,
-                user_text=user_text,
+                user_text=user_content,
                 assistant_text=response_text,
                 trace_id=trace_id,
+                attachments=[a.model_dump() for a in attachments],
             )
 
             return response_text
@@ -164,8 +290,8 @@ class Orchestrator:
         user_text: str,
         assistant_text: str,
         trace_id: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Append user message, assistant message, and turn terminal to session log."""
         now = datetime.now(UTC)
         next_seq = await self._store.sessions.get_next_sequence(session_id)
 
@@ -175,6 +301,7 @@ class Orchestrator:
         user_payload = UserMessagePayload(
             message_id=user_msg_id,
             content=user_text,
+            attachments=attachments or [],
             source_event_id=turn_id,
         )
 
