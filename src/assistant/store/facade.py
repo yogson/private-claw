@@ -28,6 +28,7 @@ from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
     TaskStatus,
+    ToolResultPayload,
     TurnTerminalStatus,
 )
 from assistant.store.runtime.manager import StoreRuntimeManager
@@ -158,7 +159,7 @@ class StoreFacade(StoreFacadeInterface):
         return marker
 
     async def _scan_sessions(self) -> tuple[int, int, list[str]]:
-        """Scan sessions for incomplete turns and malformed records, repairing where possible."""
+        """Scan sessions for incomplete turns, orphan tool calls, and malformed records."""
         issues = 0
         repaired = 0
         details: list[str] = []
@@ -179,7 +180,6 @@ class StoreFacade(StoreFacadeInterface):
             incomplete_turns = turn_ids - terminal_turns
             if incomplete_turns:
                 issues += len(incomplete_turns)
-
                 repair_records = await self._create_synthetic_terminals(
                     session_id, records, incomplete_turns
                 )
@@ -189,6 +189,16 @@ class StoreFacade(StoreFacadeInterface):
                     details.append(
                         f"Session {session_id}: repaired {len(repair_records)} incomplete turns"
                     )
+                    records = await self._sessions.read_session(session_id)
+
+            orphan_repairs = await self._create_orphan_tool_results(session_id, records)
+            if orphan_repairs:
+                issues += len(orphan_repairs)
+                await self._sessions.append_raw(orphan_repairs)
+                repaired += len(orphan_repairs)
+                details.append(
+                    f"Session {session_id}: repaired {len(orphan_repairs)} orphan tool calls"
+                )
 
         return issues, repaired, details
 
@@ -221,6 +231,53 @@ class StoreFacade(StoreFacadeInterface):
             next_seq += 1
 
         return synthetic_records
+
+    async def _create_orphan_tool_results(
+        self, session_id: str, records: list[SessionRecord]
+    ) -> list[SessionRecord]:
+        tool_calls: dict[str, SessionRecord] = {}
+        result_ids: set[str] = set()
+
+        for record in records:
+            if record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
+                tool_call_id = record.payload.get("tool_call_id", "")
+                if tool_call_id:
+                    tool_calls[tool_call_id] = record
+            elif record.record_type == SessionRecordType.TOOL_RESULT:
+                result_id = record.payload.get("tool_call_id", "")
+                if result_id:
+                    result_ids.add(result_id)
+
+        orphan_ids = set(tool_calls.keys()) - result_ids
+        if not orphan_ids:
+            return []
+
+        now = datetime.now(UTC)
+        next_seq = records[-1].sequence + 1 if records else 0
+        synthetic: list[SessionRecord] = []
+
+        for tool_call_id in sorted(orphan_ids):
+            source_record = tool_calls[tool_call_id]
+            payload = ToolResultPayload(
+                message_id=f"recovery-result-{tool_call_id}",
+                tool_call_id=tool_call_id,
+                tool_name=source_record.payload.get("tool_name", "unknown"),
+                error="interrupted",
+            )
+            synthetic.append(
+                SessionRecord(
+                    session_id=session_id,
+                    sequence=next_seq,
+                    event_id=f"recovery-tool-result-{tool_call_id}-{now.timestamp()}",
+                    turn_id=source_record.turn_id,
+                    timestamp=now,
+                    record_type=SessionRecordType.TOOL_RESULT,
+                    payload=payload.model_dump(),
+                )
+            )
+            next_seq += 1
+
+        return synthetic
 
     async def _scan_tasks(self) -> tuple[int, int, list[str]]:
         """Scan tasks for stale running tasks."""

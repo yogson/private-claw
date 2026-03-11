@@ -152,6 +152,22 @@ class SessionStoreInterface(ABC):
     async def list_sessions(self) -> list[str]:
         """List all session IDs."""
 
+    @abstractmethod
+    async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
+        """
+        Reconstruct model-facing history for context assembly.
+
+        Correctness guarantees are enforced unconditionally — independent of
+        whether startup recovery has run:
+        - Only complete turns (those with a turn_terminal record) are included.
+        - assistant_tool_call records without a matching tool_result are excluded
+          (open tool calls must not appear in the replayed suffix).
+        - tool_result records without a matching assistant_tool_call are excluded.
+        - The newest session-scoped system_message is prepended when present.
+        - Context budget is enforced by dropping the oldest complete turns first.
+        - Output is deterministic for the same persisted input and budget.
+        """
+
 
 class TaskStoreInterface(ABC):
     """Abstract interface for task persistence (CMP_STORE_TASK_PERSISTENCE)."""

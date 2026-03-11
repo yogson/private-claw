@@ -170,3 +170,104 @@ async def test_recovery_scan_multiple_incomplete_turns(data_root: Path) -> None:
     all_records = await store.sessions.read_session("test-session")
     terminal_records = [r for r in all_records if r.record_type == SessionRecordType.TURN_TERMINAL]
     assert len(terminal_records) == 3
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_repairs_orphan_tool_calls(data_root: Path) -> None:
+    """Recovery scan adds synthetic tool_result for orphan tool_calls."""
+    store = StoreFacade(data_root)
+    await store.initialize()
+
+    now = datetime.now(UTC)
+    records = [
+        SessionRecord(
+            session_id="test-session",
+            sequence=0,
+            event_id="event-0",
+            turn_id="turn-1",
+            timestamp=now,
+            record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+            payload={
+                "message_id": "m0",
+                "tool_call_id": "call-orphan",
+                "tool_name": "my_tool",
+                "arguments_json": "{}",
+            },
+        ),
+        SessionRecord(
+            session_id="test-session",
+            sequence=1,
+            event_id="event-1",
+            turn_id="turn-1",
+            timestamp=now,
+            record_type=SessionRecordType.TURN_TERMINAL,
+            payload={"status": "completed"},
+        ),
+    ]
+    await store.sessions.append_raw(records)
+
+    marker = await store.run_recovery_scan()
+
+    assert marker.issues_found >= 1
+    assert marker.issues_repaired >= 1
+
+    all_records = await store.sessions.read_session("test-session")
+    tool_results = [r for r in all_records if r.record_type == SessionRecordType.TOOL_RESULT]
+    assert len(tool_results) == 1
+    assert tool_results[0].payload["tool_call_id"] == "call-orphan"
+    assert tool_results[0].payload["error"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_no_repair_when_tool_result_present(data_root: Path) -> None:
+    """No orphan repair when every tool_call already has a matching tool_result."""
+    store = StoreFacade(data_root)
+    await store.initialize()
+
+    now = datetime.now(UTC)
+    records = [
+        SessionRecord(
+            session_id="test-session",
+            sequence=0,
+            event_id="event-0",
+            turn_id="turn-1",
+            timestamp=now,
+            record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+            payload={
+                "message_id": "m0",
+                "tool_call_id": "call-matched",
+                "tool_name": "my_tool",
+                "arguments_json": "{}",
+            },
+        ),
+        SessionRecord(
+            session_id="test-session",
+            sequence=1,
+            event_id="event-1",
+            turn_id="turn-1",
+            timestamp=now,
+            record_type=SessionRecordType.TOOL_RESULT,
+            payload={
+                "message_id": "m1",
+                "tool_call_id": "call-matched",
+                "tool_name": "my_tool",
+                "result": "ok",
+            },
+        ),
+        SessionRecord(
+            session_id="test-session",
+            sequence=2,
+            event_id="event-2",
+            turn_id="turn-1",
+            timestamp=now,
+            record_type=SessionRecordType.TURN_TERMINAL,
+            payload={"status": "completed"},
+        ),
+    ]
+    await store.sessions.append_raw(records)
+
+    marker = await store.run_recovery_scan()
+
+    assert marker.status == RecoveryStatus.HEALTHY
+    all_records = await store.sessions.read_session("test-session")
+    assert len(all_records) == 3

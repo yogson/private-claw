@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from assistant.store.filesystem.atomic import ensure_directory, file_append_lines
+from assistant.store.filesystem.replay import build_replay
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import SessionRecord
 
@@ -174,6 +175,15 @@ class FilesystemSessionStore(SessionStoreInterface):
             if record is not None:
                 sessions.append(record.session_id)
         return sessions
+
+    async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
+        """
+        Reconstruct model-facing history for the given session.
+
+        Delegates to build_replay() with all persisted records.
+        """
+        records = await self.read_session(session_id)
+        return build_replay(records, budget)
 
     async def get_session_metadata(self, session_id: str) -> dict[str, Any] | None:
         """Get metadata about a session (record count, last activity, etc)."""

@@ -200,10 +200,18 @@
           "name": "Session History Append/Read/Replay [CMP_STORE_SESSION_PERSISTENCE]",
           "description": "Implement session history append, read, and replay contracts for per-turn agent lifecycle continuity.",
           "scope_path": "src/assistant/store/session/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-11",
+          "completed_date": "2026-03-11",
+          "notes": "Implemented replay module (build_replay), replay_for_turn on SessionStoreInterface and FilesystemSessionStore, orphan tool-call detection and synthetic tool_result repair in StoreFacade._scan_sessions. 29 tests passing.",
+          "files_delivered": [
+            "src/assistant/store/filesystem/replay.py",
+            "src/assistant/store/interfaces.py",
+            "src/assistant/store/filesystem/session.py",
+            "src/assistant/store/facade.py",
+            "tests/assistant/store/test_replay.py",
+            "tests/assistant/store/test_facade.py"
+          ]
         },
         {
           "id": "2.4",
