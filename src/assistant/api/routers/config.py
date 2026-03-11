@@ -19,7 +19,13 @@ router = APIRouter(prefix="/admin/config", tags=["admin-config"])
 
 _ALLOWLISTED_KEYS: dict[str, set[str]] = {
     "app": {"log_level", "timezone"},
-    "telegram": {"bot_token", "allowlist", "webhook_url", "webhook_secret_token"},
+    "telegram": {
+        "bot_token",
+        "allowlist",
+        "poll_timeout_seconds",
+        "poll_interval_seconds",
+        "startup_drop_pending_updates",
+    },
     "model": {"default_model_id", "model_allowlist", "quality_routing", "max_tokens_default"},
     "capabilities": {"allowed_capabilities", "denied_capabilities", "command_allowlist"},
     "scheduler": {"tick_seconds", "max_lateness_seconds", "max_jobs"},

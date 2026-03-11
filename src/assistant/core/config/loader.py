@@ -1,5 +1,5 @@
 """
-Component ID: CMP_CORE_AGENT_ORCHESTRATOR
+Component ID: CMP_CORE_CONFIG_LOADER
 
 Config domain loader: reads YAML files, applies env overrides with provenance
 tracking, validates all domains, and returns RuntimeConfig.

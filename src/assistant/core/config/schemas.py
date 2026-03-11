@@ -1,5 +1,5 @@
 """
-Component ID: CMP_CORE_AGENT_ORCHESTRATOR
+Component ID: CMP_CORE_CONFIG_SCHEMAS
 
 Pydantic schemas for all configuration domains.
 Each schema corresponds to one config/*.yaml file.
@@ -32,13 +32,17 @@ class AppConfig(BaseModel):
 
 
 class TelegramChannelConfig(BaseModel):
-    """Telegram channel configuration (config/channel.telegram.yaml)."""
+    """Telegram channel configuration (config/channel.telegram.yaml).
+
+    Uses polling for update delivery (no webhook). Suitable for local/single-user usage.
+    """
 
     enabled: bool = False
     bot_token: str = ""
     allowlist: list[int] = Field(default_factory=list)
-    webhook_url: str = ""
-    webhook_secret_token: str = ""
+    poll_timeout_seconds: int = Field(default=30, ge=1)
+    poll_interval_seconds: float = Field(default=0.0, ge=0)
+    startup_drop_pending_updates: bool = Field(default=False)
     mtproto_api_id: int | None = None
     mtproto_api_hash: str | None = None
     transcription_timeout_seconds: int = Field(default=10, ge=1)
@@ -53,8 +57,6 @@ class TelegramChannelConfig(BaseModel):
                 raise ValueError("bot_token must not be empty when enabled=true")
             if not self.allowlist:
                 raise ValueError("allowlist must contain at least one user ID when enabled=true")
-            if not self.webhook_url.strip():
-                raise ValueError("webhook_url must not be empty when enabled=true")
         has_api_id = self.mtproto_api_id is not None
         has_api_hash = self.mtproto_api_hash is not None
         if has_api_id != has_api_hash:

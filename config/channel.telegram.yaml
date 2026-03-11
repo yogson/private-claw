@@ -1,9 +1,10 @@
-# Telegram channel configuration
+# Telegram channel configuration (polling mode)
 # Environment override prefix: ASSISTANT_CHANNEL_TELEGRAM_
 
-enabled: false          # Set to true only after providing bot_token and allowlist
+enabled: false
 bot_token: ""           # Set via ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN env var
 allowlist: []           # List of allowed Telegram user IDs (integers)
-webhook_url: ""         # Required when enabled=true (webhook-only mode)
-webhook_secret_token: "" # Optional: validates X-Telegram-Bot-Api-Secret-Token
-throttle_max_per_minute: 20  # Max inbound messages per user per minute (anti-loop)
+poll_timeout_seconds: 30
+poll_interval_seconds: 0.0
+startup_drop_pending_updates: false
+throttle_max_per_minute: 20

@@ -56,6 +56,27 @@
       value="{{ field.value }}"
     />
 
+    {% elif field.type == "float" %}
+    <input
+      type="number"
+      name="{{ field.name }}"
+      id="f-{{ domain }}-{{ field.name }}"
+      class="form-control form-control-sm"
+      value="{{ field.value }}"
+      step="0.1"
+    />
+
+    {% elif field.type == "checkbox" %}
+    <div class="form-check">
+      <input
+        type="checkbox"
+        name="{{ field.name }}"
+        id="f-{{ domain }}-{{ field.name }}"
+        class="form-check-input"
+        {% if field.value %}checked{% endif %}
+      />
+    </div>
+
     {% else %}
     <input
       type="text"

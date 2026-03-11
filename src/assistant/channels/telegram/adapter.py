@@ -66,7 +66,7 @@ class TelegramAdapter:
         )
         self._session_resume: SessionResumeService | None = None
         if session_store is not None:
-            secret = config.session_resume_hmac_secret or config.webhook_secret_token
+            secret = config.session_resume_hmac_secret
             self._session_resume = SessionResumeService(
                 session_store=session_store,
                 hmac_secret=secret,
@@ -81,7 +81,7 @@ class TelegramAdapter:
 
         Returns None for unsupported update types.
         Unauthorized users are rejected; UnauthorizedUserError is logged and
-        re-raised so the caller can handle the webhook response appropriately.
+        re-raised so the caller can handle the response appropriately.
         Voice events will not have MTProto transcript; use process_update_async().
         Active session overrides (set via session-resume flow) are applied to
         the returned event's session_id.
@@ -218,17 +218,6 @@ class TelegramAdapter:
         if active and active != event.session_id:
             return event.model_copy(update={"session_id": active})
         return event
-
-    async def set_webhook(self) -> None:
-        """Registers Telegram webhook for this bot token."""
-        await self._egress.set_webhook(
-            webhook_url=self._config.webhook_url,
-            secret_token=self._config.webhook_secret_token,
-        )
-
-    async def delete_webhook(self) -> None:
-        """Removes Telegram webhook for this bot token."""
-        await self._egress.delete_webhook()
 
     async def close(self) -> None:
         """Closes underlying network resources."""

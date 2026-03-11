@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the Telegram interaction boundary for Personal AI Assistant v1, including inbound webhook updates, outbound responses, multimodal ingestion, and channel-level safety controls.
+Define the Telegram interaction boundary for Personal AI Assistant v1, including inbound polling updates, outbound responses, multimodal ingestion, and channel-level safety controls.
 
 ## Owned Components
 
@@ -12,7 +12,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 
 ## Scope
 
-- Receive and validate Telegram webhook updates.
+- Receive and validate Telegram updates via long-polling (no webhook or public URL required).
 - Enforce user allowlist checks.
 - Normalize text, attachment, and voice events into internal event contracts.
 - For voice messages, invoke Telegram MTProto transcription worker synchronously and map successful output to `transcript_text` before orchestrator handoff.
@@ -24,7 +24,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 
 ## Inputs
 
-- Telegram webhook updates.
+- Telegram updates (delivered via long-polling).
 - Runtime channel configuration and allowlist.
 - Telegram voice message metadata and MTProto transcription worker result (`transcript_text` when available).
 - Telegram callback query payloads from inline UI interactions.

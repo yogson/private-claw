@@ -61,7 +61,7 @@ _DOMAIN_ORDER = ["app", "telegram", "model", "capabilities", "mcp_servers", "sch
 # ---------------------------------------------------------------------------
 _DOMAIN_RESTART_ADVISORY: dict[str, str] = {
     "app": "recommended",  # log_level / timezone — no consumer wired yet
-    "telegram": "recommended",  # allowlist / webhook settings — adapter not fully wired yet
+    "telegram": "recommended",  # allowlist / polling settings — adapter not fully wired yet
     "model": "recommended",  # model routing — no consumer wired yet
     "capabilities": "recommended",  # capability policy — no consumer wired yet
     "scheduler": "recommended",  # tick / lateness / jobs — no consumer wired yet
@@ -90,8 +90,9 @@ _FIELD_DEFS: dict[str, dict[str, Any]] = {
     # telegram
     "bot_token": {"type": "password"},
     "allowlist": {"type": "textarea", "encoding": "int_list"},
-    "webhook_url": {"type": "text"},
-    "webhook_secret_token": {"type": "password"},
+    "poll_timeout_seconds": {"type": "number"},
+    "poll_interval_seconds": {"type": "float"},
+    "startup_drop_pending_updates": {"type": "checkbox"},
     # model
     "default_model_id": {"type": "text"},
     "model_allowlist": {"type": "textarea", "encoding": "line_list"},
@@ -152,9 +153,12 @@ def _parse_form_payload(domain: str, form: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for key in allowed_keys:
         raw = form.get(key)
+        defn = _FIELD_DEFS.get(key, {"type": "text"})
+        if defn.get("type") == "checkbox":
+            payload[key] = raw in ("on", "true", "yes", "1")
+            continue
         if raw is None:
             continue
-        defn = _FIELD_DEFS.get(key, {"type": "text"})
         encoding = defn.get("encoding")
         if defn.get("type") == "password":
             if not str(raw).strip():
@@ -163,6 +167,11 @@ def _parse_form_payload(domain: str, form: Any) -> dict[str, Any]:
         elif defn.get("type") == "number":
             try:
                 payload[key] = int(raw)
+            except (ValueError, TypeError):
+                payload[key] = raw
+        elif defn.get("type") == "float":
+            try:
+                payload[key] = float(raw)
             except (ValueError, TypeError):
                 payload[key] = raw
         elif encoding == "line_list":

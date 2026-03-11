@@ -354,7 +354,7 @@ Detailed request/result schemas, lifecycle semantics, and coordinator rules are 
 ### Configuration Domains
 
 - `config/app.yaml`: runtime mode, data root, timezone.
-- `config/channel.telegram.yaml`: bot token, webhook mode, allowlist.
+- `config/channel.telegram.yaml`: bot token, polling settings, allowlist.
 - `config/model.yaml`: default model, model allowlist, routing/budget policies.
 - `config/capabilities.yaml`: capability/skill/sub-agent capability rules.
 - `config/mcp_servers.yaml`: MCP server connection registry and server-level default tool policy.
@@ -372,7 +372,7 @@ Configuration schema baseline:
 | File | Required Fields | Optional Fields | Example Defaults |
 |---|---|---|---|
 | `config/app.yaml` | `runtime_mode`, `data_root`, `timezone` | `log_level` | `runtime_mode=prod`, `timezone=UTC` |
-| `config/channel.telegram.yaml` | `bot_token`, `allowlist` | `webhook_url`, `polling_interval_seconds`, `mtproto_api_id`, `mtproto_api_hash`, `transcription_timeout_seconds` | `polling_interval_seconds=2` |
+| `config/channel.telegram.yaml` | `bot_token`, `allowlist` | `poll_timeout_seconds`, `poll_interval_seconds`, `startup_drop_pending_updates`, `mtproto_api_id`, `mtproto_api_hash`, `transcription_timeout_seconds`, `throttle_max_per_minute` | `poll_timeout_seconds=30`, `poll_interval_seconds=0` |
 | `config/model.yaml` | `default_model_id`, `model_allowlist` | `quality_routing`, `max_tokens_default` | `quality_routing=quality_first` |
 | `config/capabilities.yaml` | `allowed_capabilities` | `denied_capabilities`, `command_allowlist` | `denied_capabilities=[]` |
 | `config/mcp_servers.yaml` | `servers` | `defaults`, `timeouts` | `defaults.enabled=true` |

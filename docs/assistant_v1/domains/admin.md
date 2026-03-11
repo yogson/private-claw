@@ -57,7 +57,7 @@ Admin UI must cover operational configuration domains defined in `docs/assistant
 | Config Domain | Primary File | Admin Surface | Editable in v1 | Notes |
 |---|---|---|---|---|
 | App runtime | `config/app.yaml` | Runtime mode, data root, timezone, log level | Partial | `data_root` edits require confirmation and restart warning |
-| Telegram channel | `config/channel.telegram.yaml` | Allowlist, polling/webhook mode (token redacted) | Partial | Secrets never displayed in cleartext |
+| Telegram channel | `config/channel.telegram.yaml` | Allowlist, polling settings (token redacted) | Partial | Secrets never displayed in cleartext |
 | Model routing | `config/model.yaml` | Default model, allowlist, routing mode | Partial | Must validate against provider/model allowlist |
 | Capability policy | `config/capabilities.yaml` | Allowed/denied capability sets, command allowlist view | Yes | High-risk changes require explicit confirmation |
 | MCP registry | `config/mcp_servers.yaml` | Server list, transport/connection metadata, enablement state | Yes | Credentials/headers are redacted and env-referenced only |

@@ -21,7 +21,6 @@ def _make_config(allowlist: list[int] | None = None) -> TelegramChannelConfig:
         enabled=True,
         bot_token="12345:test-token",
         allowlist=allowlist or [123456],
-        webhook_url="https://example.com/telegram/webhook",
     )
 
 

@@ -349,7 +349,6 @@ class TestAdapterSessionResume:
             enabled=True,
             bot_token="12345:token",
             allowlist=[_CHAT_ID],
-            webhook_url="https://example.com/tg",
             session_resume_hmac_secret=_SECRET,
         )
         store = None

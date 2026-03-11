@@ -212,7 +212,6 @@ class TestAdapterProcessUpdateAsync:
             enabled=True,
             bot_token="12345:test-token",
             allowlist=[123456],
-            webhook_url="https://example.com/wh",
         )
         adapter = TelegramAdapter(config)
         update = {
@@ -237,7 +236,6 @@ class TestAdapterProcessUpdateAsync:
             enabled=True,
             bot_token="12345:test-token",
             allowlist=[123456],
-            webhook_url="https://example.com/wh",
         )
         adapter = TelegramAdapter(config)
         event = await adapter.process_update_async(_make_voice_update())

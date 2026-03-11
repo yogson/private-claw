@@ -2,7 +2,7 @@
 Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 
 Outbound Telegram message delivery via aiogram with bounded retry policy.
-Handles text and interactive (inline keyboard) response types and webhook lifecycle.
+Handles text and interactive (inline keyboard) response types.
 """
 
 import asyncio
@@ -172,12 +172,6 @@ class TelegramEgress:
         await self._bot.answer_callback_query(
             callback_query_id=callback_id, text=_CALLBACK_ACK_TEXT
         )
-
-    async def set_webhook(self, webhook_url: str, secret_token: str = "") -> None:
-        await self._bot.set_webhook(url=webhook_url, secret_token=secret_token or None)
-
-    async def delete_webhook(self) -> None:
-        await self._bot.delete_webhook(drop_pending_updates=False)
 
     async def close(self) -> None:
         await self._bot.session.close()

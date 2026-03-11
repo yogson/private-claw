@@ -45,23 +45,9 @@ class TestLoad:
 
     def test_telegram_enabled_validates_token(self, config_dir: Path) -> None:
         (config_dir / "channel.telegram.yaml").write_text(
-            yaml.dump(
-                {
-                    "enabled": True,
-                    "bot_token": "",
-                    "allowlist": [99],
-                    "webhook_url": "https://example.com/telegram/webhook",
-                }
-            )
+            yaml.dump({"enabled": True, "bot_token": "", "allowlist": [99]})
         )
         with pytest.raises(ConfigLoadError, match="bot_token"):
-            ConfigLoader(config_dir).load()
-
-    def test_telegram_enabled_validates_webhook_url(self, config_dir: Path) -> None:
-        (config_dir / "channel.telegram.yaml").write_text(
-            yaml.dump({"enabled": True, "bot_token": "abc", "allowlist": [99], "webhook_url": ""})
-        )
-        with pytest.raises(ConfigLoadError, match="webhook_url"):
             ConfigLoader(config_dir).load()
 
 
@@ -77,20 +63,6 @@ class TestEffectiveConfig:
         )
         result = ConfigLoader(config_dir).effective_config()
         assert result["config"]["telegram"]["bot_token"] == "***REDACTED***"
-
-    def test_redacts_webhook_secret_token(self, config_dir: Path) -> None:
-        (config_dir / "channel.telegram.yaml").write_text(
-            yaml.dump(
-                {
-                    "enabled": False,
-                    "bot_token": "real-secret",
-                    "allowlist": [],
-                    "webhook_secret_token": "telegram-secret",
-                }
-            )
-        )
-        result = ConfigLoader(config_dir).effective_config()
-        assert result["config"]["telegram"]["webhook_secret_token"] == "***REDACTED***"
 
     def test_provenance_file_for_yaml_fields(self, config_dir: Path) -> None:
         result = ConfigLoader(config_dir).effective_config()
