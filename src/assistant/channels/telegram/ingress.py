@@ -12,7 +12,7 @@ from typing import Any
 
 import structlog
 
-from assistant.channels.telegram.allowlist import AllowlistGuard
+from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.models import (
     AttachmentMeta,
@@ -22,6 +22,8 @@ from assistant.channels.telegram.models import (
     NormalizedEvent,
     VoiceMeta,
 )
+from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
+from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard, ThrottledError
 from assistant.observability.correlation import get_trace_id as _get_trace_id
 
 logger = structlog.get_logger(__name__)
@@ -40,16 +42,21 @@ class TelegramIngress:
     types are silently dropped and logged.
 
     Pass a VoiceTranscriptionService to enable MTProto transcription enrichment
-    via normalize_async().
+    via normalize_async(). Pass ChannelThrottleGuard and ChannelAuditLogger to
+    activate per-user rate limiting and structured audit telemetry.
     """
 
     def __init__(
         self,
         guard: AllowlistGuard,
         transcription_service: VoiceTranscriptionService | None = None,
+        throttle_guard: ChannelThrottleGuard | None = None,
+        audit_logger: ChannelAuditLogger | None = None,
     ) -> None:
         self._guard = guard
         self._transcription_service = transcription_service
+        self._throttle_guard = throttle_guard
+        self._audit_logger = audit_logger
 
     def normalize(self, update: dict[str, Any]) -> NormalizedEvent | None:
         """
@@ -108,7 +115,32 @@ class TelegramIngress:
         user_id = self._extract_user_id(message)
         if user_id is None:
             return None
-        self._guard.require_allowed(user_id)
+
+        pre_trace_id = _get_trace_id() or str(uuid.uuid4())
+
+        try:
+            self._guard.require_allowed(user_id)
+        except UnauthorizedUserError:
+            if self._audit_logger is not None:
+                self._audit_logger.log_ingress_blocked(
+                    user_id=user_id,
+                    reason="not_in_allowlist",
+                    trace_id=pre_trace_id,
+                )
+            raise
+
+        if self._throttle_guard is not None:
+            try:
+                self._throttle_guard.check(user_id, trace_id=pre_trace_id)
+            except ThrottledError as exc:
+                if self._audit_logger is not None:
+                    self._audit_logger.log_ingress_throttled(
+                        user_id=user_id,
+                        count=exc.count,
+                        limit=exc.limit,
+                        trace_id=pre_trace_id,
+                    )
+                raise
 
         chat_id = message.get("chat", {}).get("id", user_id)
         session_id = f"tg:{chat_id}"
@@ -117,26 +149,35 @@ class TelegramIngress:
         created_at = self._parse_date(message.get("date"))
 
         if "voice" in message:
-            return self._build_voice_event(
+            event = self._build_voice_event(
                 message, user_id, session_id, event_id, trace_id, created_at
             )
-        if self._has_document_or_photo(message):
-            return self._build_attachment_event(
+        elif self._has_document_or_photo(message):
+            event = self._build_attachment_event(
                 message, user_id, session_id, event_id, trace_id, created_at
             )
-        text = message.get("text") or message.get("caption", "")
-        return NormalizedEvent(
-            event_id=event_id,
-            event_type=EventType.USER_TEXT_MESSAGE,
-            source=EventSource.TELEGRAM,
-            session_id=session_id,
-            user_id=str(user_id),
-            created_at=created_at,
-            trace_id=trace_id,
-            text=text or None,
-            idempotency_key=f"telegram:{message.get('message_id', event_id)}",
-            metadata={"chat_id": chat_id, "message_id": message.get("message_id")},
-        )
+        else:
+            text = message.get("text") or message.get("caption", "")
+            event = NormalizedEvent(
+                event_id=event_id,
+                event_type=EventType.USER_TEXT_MESSAGE,
+                source=EventSource.TELEGRAM,
+                session_id=session_id,
+                user_id=str(user_id),
+                created_at=created_at,
+                trace_id=trace_id,
+                text=text or None,
+                idempotency_key=f"telegram:{message.get('message_id', event_id)}",
+                metadata={"chat_id": chat_id, "message_id": message.get("message_id")},
+            )
+
+        if self._audit_logger is not None:
+            self._audit_logger.log_ingress_authorized(
+                user_id=user_id,
+                event_type=event.event_type.value,
+                trace_id=event.trace_id,
+            )
+        return event
 
     def _normalize_callback_query(self, cq: dict[str, Any]) -> NormalizedEvent | None:
         from_user = cq.get("from") or {}
@@ -144,7 +185,32 @@ class TelegramIngress:
         if user_id_raw is None:
             return None
         user_id = int(user_id_raw)
-        self._guard.require_allowed(user_id)
+
+        pre_trace_id = _get_trace_id() or str(uuid.uuid4())
+
+        try:
+            self._guard.require_allowed(user_id)
+        except UnauthorizedUserError:
+            if self._audit_logger is not None:
+                self._audit_logger.log_ingress_blocked(
+                    user_id=user_id,
+                    reason="not_in_allowlist",
+                    trace_id=pre_trace_id,
+                )
+            raise
+
+        if self._throttle_guard is not None:
+            try:
+                self._throttle_guard.check(user_id, trace_id=pre_trace_id)
+            except ThrottledError as exc:
+                if self._audit_logger is not None:
+                    self._audit_logger.log_ingress_throttled(
+                        user_id=user_id,
+                        count=exc.count,
+                        limit=exc.limit,
+                        trace_id=pre_trace_id,
+                    )
+                raise
 
         event_id = str(uuid.uuid4())
         trace_id = _get_trace_id() or event_id
@@ -158,7 +224,7 @@ class TelegramIngress:
             origin_message_id=message.get("message_id"),
             ui_version="1",
         )
-        return NormalizedEvent(
+        event = NormalizedEvent(
             event_id=event_id,
             event_type=EventType.USER_CALLBACK_QUERY,
             source=EventSource.TELEGRAM,
@@ -170,6 +236,13 @@ class TelegramIngress:
             idempotency_key=f"telegram:cq:{cq.get('id', event_id)}",
             metadata={"chat_id": chat_id},
         )
+        if self._audit_logger is not None:
+            self._audit_logger.log_ingress_authorized(
+                user_id=user_id,
+                event_type=event.event_type.value,
+                trace_id=event.trace_id,
+            )
+        return event
 
     def _build_voice_event(
         self,

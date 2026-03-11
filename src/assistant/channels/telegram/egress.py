@@ -14,6 +14,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramR
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from assistant.channels.telegram.models import ChannelResponse, MessageType
+from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,7 @@ class TelegramEgress:
     Sends ChannelResponse objects to Telegram via the Bot API.
 
     Applies bounded exponential-backoff retry on transient failures.
+    Pass a ChannelAuditLogger to emit structured retry telemetry for all send attempts.
     """
 
     def __init__(
@@ -47,10 +49,12 @@ class TelegramEgress:
         bot_token: str,
         max_attempts: int = _MAX_RETRY_ATTEMPTS,
         base_delay: float = _RETRY_BASE_DELAY_SECONDS,
+        audit_logger: ChannelAuditLogger | None = None,
     ) -> None:
         self._bot = Bot(token=bot_token)
         self._max_attempts = max_attempts
         self._base_delay = base_delay
+        self._audit_logger = audit_logger
 
     async def send(self, response: ChannelResponse, chat_id: int) -> bool:
         """
@@ -63,6 +67,13 @@ class TelegramEgress:
 
         for attempt in range(1, self._max_attempts + 1):
             attempts_made = attempt
+            if self._audit_logger is not None:
+                self._audit_logger.log_egress_attempt(
+                    chat_id=chat_id,
+                    response_id=response.response_id,
+                    attempt=attempt,
+                    trace_id=response.trace_id,
+                )
             try:
                 await self._bot.send_message(
                     chat_id=chat_id,
@@ -70,48 +81,91 @@ class TelegramEgress:
                     parse_mode=response.parse_mode,
                     reply_markup=self._build_inline_keyboard(response),
                 )
-                logger.info(
-                    "telegram.egress.sent",
-                    chat_id=chat_id,
-                    response_id=response.response_id,
-                    trace_id=response.trace_id,
-                    attempt=attempt,
-                )
+                if self._audit_logger is not None:
+                    self._audit_logger.log_egress_success(
+                        chat_id=chat_id,
+                        response_id=response.response_id,
+                        attempts=attempt,
+                        trace_id=response.trace_id,
+                    )
+                else:
+                    logger.info(
+                        "telegram.egress.sent",
+                        chat_id=chat_id,
+                        response_id=response.response_id,
+                        trace_id=response.trace_id,
+                        attempt=attempt,
+                    )
                 return True
             except TelegramRetryAfter as exc:
                 last_error = str(exc)
-                logger.warning(
-                    "telegram.egress.retry_after",
-                    chat_id=chat_id,
-                    attempt=attempt,
-                    retry_after=exc.retry_after,
-                    error=last_error,
-                )
+                if self._audit_logger is not None:
+                    self._audit_logger.log_egress_retry_after(
+                        chat_id=chat_id,
+                        response_id=response.response_id,
+                        attempt=attempt,
+                        retry_after=float(exc.retry_after),
+                        trace_id=response.trace_id,
+                    )
+                else:
+                    logger.warning(
+                        "telegram.egress.retry_after",
+                        chat_id=chat_id,
+                        attempt=attempt,
+                        retry_after=exc.retry_after,
+                        error=last_error,
+                    )
                 if attempt < self._max_attempts:
                     await asyncio.sleep(float(exc.retry_after))
                 continue
             except TelegramNetworkError as exc:
                 last_error = str(exc)
-                logger.warning(
-                    "telegram.egress.network_error",
-                    chat_id=chat_id,
-                    attempt=attempt,
-                    error=last_error,
-                )
+                if self._audit_logger is not None:
+                    self._audit_logger.log_egress_network_error(
+                        chat_id=chat_id,
+                        response_id=response.response_id,
+                        attempt=attempt,
+                        error=last_error,
+                        trace_id=response.trace_id,
+                    )
+                else:
+                    logger.warning(
+                        "telegram.egress.network_error",
+                        chat_id=chat_id,
+                        attempt=attempt,
+                        error=last_error,
+                    )
             except TelegramAPIError as exc:
                 last_error = str(exc)
-                logger.warning(
-                    "telegram.egress.api_error",
-                    chat_id=chat_id,
-                    attempt=attempt,
-                    error=last_error,
-                )
+                if self._audit_logger is not None:
+                    self._audit_logger.log_egress_api_error(
+                        chat_id=chat_id,
+                        response_id=response.response_id,
+                        attempt=attempt,
+                        error=last_error,
+                        trace_id=response.trace_id,
+                    )
+                else:
+                    logger.warning(
+                        "telegram.egress.api_error",
+                        chat_id=chat_id,
+                        attempt=attempt,
+                        error=last_error,
+                    )
                 break
 
             if attempt < self._max_attempts:
                 delay = self._base_delay * (self._backoff_factor**attempt)
                 await asyncio.sleep(delay)
 
+        if self._audit_logger is not None:
+            self._audit_logger.log_egress_failure(
+                chat_id=chat_id,
+                response_id=response.response_id,
+                attempts=attempts_made,
+                error=last_error,
+                trace_id=response.trace_id,
+            )
         raise TelegramSendError(chat_id=chat_id, attempts=attempts_made, last_error=last_error)
 
     async def acknowledge_callback(self, callback_id: str) -> None:

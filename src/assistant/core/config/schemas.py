@@ -42,6 +42,7 @@ class TelegramChannelConfig(BaseModel):
     mtproto_api_id: int | None = None
     mtproto_api_hash: str | None = None
     transcription_timeout_seconds: int = Field(default=10, ge=1)
+    throttle_max_per_minute: int = Field(default=20, ge=1)
 
     @model_validator(mode="after")
     def validate_when_enabled(self) -> "TelegramChannelConfig":

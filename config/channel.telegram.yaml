@@ -6,3 +6,4 @@ bot_token: ""           # Set via ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN env var
 allowlist: []           # List of allowed Telegram user IDs (integers)
 webhook_url: ""         # Required when enabled=true (webhook-only mode)
 webhook_secret_token: "" # Optional: validates X-Telegram-Bot-Api-Secret-Token
+throttle_max_per_minute: 20  # Max inbound messages per user per minute (anti-loop)

@@ -3,7 +3,7 @@ Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 
 TelegramAdapter: composed entry point for Telegram ingress and egress.
 Wires together AllowlistGuard, TelegramIngress (with optional transcription),
-and TelegramEgress.
+TelegramEgress, ChannelThrottleGuard, and ChannelAuditLogger.
 """
 
 from typing import Any
@@ -16,6 +16,8 @@ from assistant.channels.telegram.egress import TelegramEgress
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.ingress import TelegramIngress
 from assistant.channels.telegram.models import ChannelResponse, NormalizedEvent
+from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
+from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard
 from assistant.core.config.schemas import TelegramChannelConfig
 
 logger = structlog.get_logger(__name__)
@@ -27,7 +29,8 @@ class TelegramAdapter:
 
     Exposes process_update() for sync ingress normalization and
     process_update_async() for voice-transcription-enriched normalization.
-    Enforces allowlist on every inbound update.
+    Enforces allowlist and per-user throttle on every inbound update.
+    Emits structured audit telemetry for ingress and egress events.
 
     Pass a VoiceTranscriptionService at construction to enable synchronous
     MTProto transcript enrichment for voice messages.
@@ -40,8 +43,18 @@ class TelegramAdapter:
     ) -> None:
         self._config = config
         guard = AllowlistGuard(config.allowlist)
-        self._ingress = TelegramIngress(guard, transcription_service=transcription_service)
-        self._egress = TelegramEgress(bot_token=config.bot_token)
+        audit_logger = ChannelAuditLogger()
+        throttle_guard = ChannelThrottleGuard(max_per_window=config.throttle_max_per_minute)
+        self._ingress = TelegramIngress(
+            guard,
+            transcription_service=transcription_service,
+            throttle_guard=throttle_guard,
+            audit_logger=audit_logger,
+        )
+        self._egress = TelegramEgress(
+            bot_token=config.bot_token,
+            audit_logger=audit_logger,
+        )
 
     def process_update(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
         """
