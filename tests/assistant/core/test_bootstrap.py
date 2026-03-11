@@ -37,3 +37,12 @@ def test_bootstrap_exits_on_invalid_config(config_dir: Path) -> None:
     (config_dir / "app.yaml").unlink()
     with pytest.raises(SystemExit, match="Startup failed"):
         bootstrap(config_dir)
+
+
+def test_bootstrap_uses_env_config_dir(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASSISTANT_CONFIG_DIR", str(config_dir))
+    cfg = bootstrap()
+    assert isinstance(cfg, RuntimeConfig)

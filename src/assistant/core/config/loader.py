@@ -5,6 +5,7 @@ Config domain loader: reads YAML files, applies env overrides with provenance
 tracking, validates all domains, and returns RuntimeConfig.
 """
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from assistant.core.config.schemas import (
 _REDACTED = "***REDACTED***"
 _SENSITIVE_KEYS = {"bot_token", "api_key", "secret", "token", "password"}
 _SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "api_key")
+_DEFAULT_CONFIG_DIR = "config"
+_CONFIG_DIR_ENV_VAR = "ASSISTANT_CONFIG_DIR"
 
 # Maps domain name → (yaml filename, Pydantic schema class, env prefix)
 _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
@@ -43,11 +46,27 @@ class ConfigLoadError(Exception):
     """Raised when config loading or validation fails at startup."""
 
 
+def resolve_config_dir(config_dir: str | Path | None = None) -> Path:
+    """Resolve the active config directory from argument/env/default.
+
+    Priority:
+    1) explicit function argument
+    2) ASSISTANT_CONFIG_DIR env var
+    3) repository default `config`
+    """
+    if config_dir is not None:
+        return Path(config_dir)
+    env_config_dir = os.environ.get(_CONFIG_DIR_ENV_VAR, "").strip()
+    if env_config_dir:
+        return Path(env_config_dir)
+    return Path(_DEFAULT_CONFIG_DIR)
+
+
 class ConfigLoader:
     """Loads and validates all configuration domains from YAML files and env overrides."""
 
-    def __init__(self, config_dir: str | Path = "config") -> None:
-        self._config_dir = Path(config_dir)
+    def __init__(self, config_dir: str | Path | None = None) -> None:
+        self._config_dir = resolve_config_dir(config_dir)
 
     def load(self) -> RuntimeConfig:
         """Load all config domains and return aggregated RuntimeConfig.

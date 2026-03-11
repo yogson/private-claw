@@ -5,7 +5,6 @@ Admin config endpoints: read effective config, validate candidate config,
 preview diff, and apply config updates with live runtime state reload.
 """
 
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -13,7 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ValidationError
 
 from assistant.api.deps import AdminAuthDep, RuntimeConfigDep, update_runtime_config_domain
-from assistant.core.config.loader import ConfigLoader
+from assistant.core.config.loader import ConfigLoader, resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 
 router = APIRouter(prefix="/admin/config", tags=["admin-config"])
@@ -225,7 +224,7 @@ async def apply_config(
     if filename is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown domain")
 
-    config_path = Path("config") / filename
+    config_path = resolve_config_dir() / filename
     tmp_path = config_path.with_suffix(".yaml.tmp")
     try:
         with open(tmp_path, "w") as f:

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from assistant.core.config.loader import ConfigLoader, ConfigLoadError
+from assistant.core.config.loader import ConfigLoader, ConfigLoadError, resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 
 
@@ -128,3 +128,19 @@ class TestReloadDomain:
 
     def test_reload_unknown_domain_returns_none(self, config_dir: Path) -> None:
         assert ConfigLoader(config_dir).reload_domain("nonexistent") is None
+
+
+class TestResolveConfigDir:
+    def test_uses_explicit_config_dir_over_env(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        other_dir = config_dir.parent / "other-config"
+        other_dir.mkdir()
+        monkeypatch.setenv("ASSISTANT_CONFIG_DIR", str(other_dir))
+        assert resolve_config_dir(config_dir) == config_dir
+
+    def test_uses_env_config_dir_when_explicit_not_provided(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ASSISTANT_CONFIG_DIR", str(config_dir))
+        assert resolve_config_dir() == config_dir
