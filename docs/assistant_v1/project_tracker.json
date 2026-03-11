@@ -145,9 +145,9 @@
       "name": "Store Foundation and Runtime State Integrity",
       "description": "Establish durable persistence, idempotency, and lock-protected atomic state updates for runtime domains.",
       "priority": "CRITICAL",
-      "status": "in_progress",
+      "status": "completed",
       "started_date": "2026-03-11",
-      "completed_date": null,
+      "completed_date": "2026-03-11",
       "dependencies": [
         "phase_1"
       ],
@@ -218,10 +218,15 @@
           "name": "Ingress Idempotency Registration and Check [CMP_STORE_IDEMPOTENCY_LEDGER]",
           "description": "Implement idempotency key registration and duplicate-check path for channel and API ingress.",
           "scope_path": "src/assistant/store/idempotency/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-11",
+          "completed_date": "2026-03-11",
+          "notes": "IngressIdempotencyService wraps IdempotencyLedgerInterface with source-namespaced key building (source:event_id), is_duplicate check, register (raises DuplicateIngressError on dup), and atomic check_and_register. 11 unit tests passing.",
+          "files_delivered": [
+            "src/assistant/store/idempotency/__init__.py",
+            "src/assistant/store/idempotency/service.py",
+            "tests/assistant/store/test_ingress_idempotency.py"
+          ]
         }
       ],
       "deliverables": [

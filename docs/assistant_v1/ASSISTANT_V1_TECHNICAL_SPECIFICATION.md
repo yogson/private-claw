@@ -66,7 +66,7 @@ Cross-domain precedence:
 | `INT_SUBAGENT_SPAWN` | `CMP_CORE_AGENT_ORCHESTRATOR` | `CMP_AGENT_SUBAGENT_COORDINATOR` | Sub-agent task spawning with explicit model |
 | `INT_STORE_SESSION_RW` | Agent/Channel/Scheduler components | `CMP_STORE_STATE_FACADE` | Session and runtime state persistence |
 | `INT_STORE_TASK_RW` | Sub-agent/Scheduler components | `CMP_STORE_STATE_FACADE` | Task state persistence and lifecycle updates |
-| `INT_STORE_IDEMPOTENCY` | `CMP_CHANNEL_TELEGRAM_ADAPTER` | `CMP_STORE_STATE_FACADE` | Duplicate update detection and registration |
+| `INT_STORE_IDEMPOTENCY` | Telegram/API adapters | `CMP_STORE_STATE_FACADE` | Duplicate ingress event detection and registration |
 | `INT_STORE_LOCK` | Agent/Sub-agent/Scheduler components | `CMP_STORE_STATE_FACADE` | Lock acquire/release with TTL |
 | `INT_MEMORY_INDEX_UPDATE` | Memory/Scheduler components | `CMP_MEMORY_FILESYSTEM_STORE` | Index update/rebuild/repair operations |
 | `INT_CHANNEL_RESPONSE` | `CMP_CORE_AGENT_ORCHESTRATOR` | Channel adapters | Outbound normalized response contract |

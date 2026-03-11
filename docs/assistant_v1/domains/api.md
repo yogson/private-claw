@@ -13,6 +13,7 @@ Define the FastAPI gateway boundary for operational and integration endpoints in
 - Expose health, admin, scheduler, memory, and sub-agent audit endpoints.
 - Validate authentication for admin operations.
 - Translate HTTP payloads to internal orchestration/store contracts.
+- Provide ingress idempotency integration for API-triggered events before orchestration dispatch.
 - Return normalized HTTP responses and error payloads.
 
 ## Required Endpoint Groups (v1)
@@ -49,6 +50,7 @@ Define the FastAPI gateway boundary for operational and integration endpoints in
 
 - Must not contain business logic; only transport and contract mapping.
 - Must enforce admin token/shared-secret checks on protected routes.
+- Must apply store-backed idempotency checks for API ingress events carrying idempotency keys.
 - Must remain backward-compatible with documented v1 endpoint contracts.
 
 ## Risks
