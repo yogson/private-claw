@@ -43,7 +43,10 @@ class TestLoad:
         assert "app.yaml" in msg
         assert "store.yaml" in msg
 
-    def test_telegram_enabled_validates_token(self, config_dir: Path) -> None:
+    def test_telegram_enabled_validates_token(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN", raising=False)
         (config_dir / "channel.telegram.yaml").write_text(
             yaml.dump({"enabled": True, "bot_token": "", "allowlist": [99]})
         )

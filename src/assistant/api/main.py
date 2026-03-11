@@ -5,9 +5,10 @@ FastAPI application entry point: bootstraps config and mounts routers.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
+import uuid
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from typing import cast
+from pathlib import Path
 
 import structlog
 from dotenv import load_dotenv
@@ -23,6 +24,11 @@ from assistant.channels.telegram.ingestion.factory import build_transcription_se
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.channels.telegram.polling import run_polling
 from assistant.core.bootstrap import bootstrap
+from assistant.core.events.mapper import NormalizedEventMapper
+from assistant.core.orchestrator import Orchestrator
+from assistant.providers.anthropic import AnthropicAdapter
+from assistant.store.facade import StoreFacade
+from assistant.store.idempotency.service import IngressIdempotencyService
 
 logger = structlog.get_logger(__name__)
 
@@ -31,20 +37,51 @@ logger = structlog.get_logger(__name__)
 load_dotenv()
 
 
-async def _default_telegram_event_handler(event: NormalizedEvent) -> ChannelResponse:
-    """
-    Temporary bridge until orchestrator wiring is available.
+def _build_orchestrator_handler(
+    adapter: TelegramAdapter, orchestrator: Orchestrator
+) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
+    mapper = NormalizedEventMapper()
 
-    Ensures polling events reach a concrete handler and produce a response object.
-    """
-    return ChannelResponse(
-        response_id=event.event_id,
-        channel="telegram",
-        session_id=event.session_id,
-        trace_id=event.trace_id,
-        message_type=MessageType.TEXT,
-        text=event.text or "Received.",
-    )
+    async def _handler(event: NormalizedEvent) -> ChannelResponse | None:
+        if adapter.is_session_resume_request(event):
+            chat_id = int(event.metadata.get("chat_id", 0))
+            return await adapter.build_session_menu_response(
+                chat_id, event.session_id, event.trace_id
+            )
+        if adapter.is_session_resume_callback(event):
+            session_id = adapter.handle_session_resume_callback(event)
+            if session_id:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Switched to session. Continue your conversation.",
+                )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Invalid or expired session selection.",
+            )
+
+        orch_event = mapper.map(event)
+        response_text = await orchestrator.execute_turn(orch_event)
+        if response_text is None:
+            return None
+        return ChannelResponse(
+            response_id=event.event_id,
+            channel="telegram",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+            message_type=MessageType.TEXT,
+            text=response_text,
+        )
+
+    return _handler
 
 
 @asynccontextmanager
@@ -53,22 +90,44 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     set_runtime_config(runtime_config)
     app.state.runtime_config = runtime_config
     app.state.telegram_adapter = None
-    app.state.telegram_event_handler = _default_telegram_event_handler
 
+    store: StoreFacade | None = None
     polling_task: asyncio.Task[None] | None = None
     polling_stop = asyncio.Event()
 
     if runtime_config.telegram.enabled:
+        data_root = Path(runtime_config.app.data_root)
+        store = StoreFacade(
+            data_root=data_root,
+            lock_ttl_seconds=runtime_config.store.lock_ttl_seconds,
+            idempotency_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
+        )
+        await store.initialize()
+
+        idempotency = IngressIdempotencyService(
+            store.idempotency,
+            default_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
+        )
+        provider = AnthropicAdapter(runtime_config.model)
+        orchestrator = Orchestrator(
+            store=store,
+            provider=provider,
+            config=runtime_config,
+            idempotency=idempotency,
+        )
+
         transcription_service = build_transcription_service(runtime_config.telegram)
         adapter = TelegramAdapter(
-            runtime_config.telegram, transcription_service=transcription_service
+            runtime_config.telegram,
+            transcription_service=transcription_service,
+            session_store=store.sessions,
         )
         app.state.telegram_adapter = adapter
 
+        handler = _build_orchestrator_handler(adapter, orchestrator)
+
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
-            handler = app.state.telegram_event_handler
-            result = await handler(event)
-            return cast(ChannelResponse | None, result)
+            return await handler(event)
 
         polling_task = asyncio.create_task(
             run_polling(
@@ -94,6 +153,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if adapter is not None:
             await adapter.close()
             logger.info("telegram.polling.stopped")
+        if store is not None:
+            await store.shutdown()
 
 
 app = FastAPI(
