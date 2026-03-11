@@ -42,6 +42,24 @@ class TestTelegramChannelConfig:
         assert cfg.enabled is True
         assert cfg.allowlist == [42]
 
+    def test_mtproto_both_absent_is_valid(self) -> None:
+        cfg = TelegramChannelConfig(mtproto_api_id=None, mtproto_api_hash=None)
+        assert cfg.mtproto_api_id is None
+        assert cfg.mtproto_api_hash is None
+
+    def test_mtproto_both_present_is_valid(self) -> None:
+        cfg = TelegramChannelConfig(mtproto_api_id=12345, mtproto_api_hash="abc123hash")
+        assert cfg.mtproto_api_id == 12345
+        assert cfg.mtproto_api_hash == "abc123hash"
+
+    def test_mtproto_only_api_id_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="mtproto_api_id and mtproto_api_hash"):
+            TelegramChannelConfig(mtproto_api_id=12345, mtproto_api_hash=None)
+
+    def test_mtproto_only_api_hash_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="mtproto_api_id and mtproto_api_hash"):
+            TelegramChannelConfig(mtproto_api_id=None, mtproto_api_hash="abc123hash")
+
 
 class TestModelConfig:
     def test_valid(self) -> None:

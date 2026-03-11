@@ -91,7 +91,7 @@ Parallel constraints:
 - Tasks:
   1. Implement Telegram adapter ingress/egress with allowlist enforcement and outbound retry policy (`CMP_CHANNEL_TELEGRAM_ADAPTER`).
   2. Implement normalized inbound event mapping to `INT_ORCH_EVENT_INPUT` including callback and idempotency fields (`CMP_CHANNEL_TELEGRAM_ADAPTER`, `CMP_CORE_AGENT_ORCHESTRATOR`).
-  3. Implement voice and attachment metadata handling with transcript fallback behavior (`CMP_CHANNEL_TELEGRAM_ADAPTER`).
+  3. Implement voice and attachment metadata handling with synchronous MTProto transcription intake and `transcript_text` mapping (`CMP_CHANNEL_TELEGRAM_ADAPTER`).
   4. Integrate per-channel throttling and channel audit logging (`CMP_CHANNEL_TELEGRAM_ADAPTER`, `CMP_OBSERVABILITY_LOGGING`).
   5. Implement Telegram recent-session listing and callback-based session resume selection flow (`CMP_CHANNEL_TELEGRAM_ADAPTER`, `CMP_CORE_AGENT_ORCHESTRATOR`, `CMP_STORE_SESSION_PERSISTENCE`).
 - Dependencies:
@@ -100,7 +100,7 @@ Parallel constraints:
 - Deliverables:
   - Telegram adapter and response pipeline.
   - Event normalization and callback handling path.
-  - Attachment/voice handlers and fallback responses.
+  - Attachment/voice handlers with synchronous transcription attempt and fallback-state handling.
   - Channel-level throttling/retry and audit telemetry.
   - Interactive recent-session picker and active-session switch path for Telegram users.
 - Success Criteria:

@@ -18,6 +18,7 @@ from assistant.api.routers import config as config_router
 from assistant.api.routers import health
 from assistant.api.routers import telegram as telegram_router
 from assistant.channels.telegram.adapter import TelegramAdapter
+from assistant.channels.telegram.ingestion.factory import build_transcription_service
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.core.bootstrap import bootstrap
 
@@ -53,7 +54,10 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.telegram_event_handler = _default_telegram_event_handler
 
     if runtime_config.telegram.enabled:
-        adapter = TelegramAdapter(runtime_config.telegram)
+        transcription_service = build_transcription_service(runtime_config.telegram)
+        adapter = TelegramAdapter(
+            runtime_config.telegram, transcription_service=transcription_service
+        )
         await adapter.set_webhook()
         app.state.telegram_adapter = adapter
         logger.info("telegram.webhook.registered", webhook_url=runtime_config.telegram.webhook_url)

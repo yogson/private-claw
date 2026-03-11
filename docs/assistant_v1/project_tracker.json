@@ -301,12 +301,21 @@
         {
           "id": "3.3",
           "name": "Voice and Attachment Metadata Intake [CMP_CHANNEL_TELEGRAM_ADAPTER]",
-          "description": "Implement voice and attachment metadata handling with transcript fallback behavior.",
+          "description": "Implement voice and attachment metadata handling with synchronous Telegram MTProto transcription intake and transcript_text mapping.",
           "scope_path": "src/assistant/channels/telegram/ingestion/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-11",
+          "completed_date": "2026-03-11",
+          "notes": "Implemented TranscriptionWorkerInterface (abstract contract for MTProto worker), VoiceTranscriptionService (timeout + structured audit logging, returns (transcript_text, failure_reason) tuple, never raises). Added mtproto_api_id/mtproto_api_hash/transcription_timeout_seconds to TelegramChannelConfig schema. TelegramIngress gains optional transcription_service param and normalize_async() which enriches voice events via MTProto before handoff; on failure stores audit_transcription_failure in event metadata. TelegramAdapter gains process_update_async() for voice-enriched normalization. 14 unit tests all passing.",
+          "files_delivered": [
+            "src/assistant/core/config/schemas.py",
+            "src/assistant/channels/telegram/ingestion/__init__.py",
+            "src/assistant/channels/telegram/ingestion/interfaces.py",
+            "src/assistant/channels/telegram/ingestion/transcription.py",
+            "src/assistant/channels/telegram/ingress.py",
+            "src/assistant/channels/telegram/adapter.py",
+            "tests/assistant/channels/telegram/test_transcription.py"
+          ]
         },
         {
           "id": "3.4",

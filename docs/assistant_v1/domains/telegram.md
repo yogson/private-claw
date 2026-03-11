@@ -15,7 +15,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Receive and validate Telegram webhook updates.
 - Enforce user allowlist checks.
 - Normalize text, attachment, and voice events into internal event contracts.
-- For voice messages, extract Telegram-provided voice-to-text transcription when available and pass transcript text to orchestrator.
+- For voice messages, invoke Telegram MTProto transcription worker synchronously and map successful output to `transcript_text` before orchestrator handoff.
 - Send final assistant responses and operational notices to Telegram.
 - Support interactive Telegram UI elements (inline keyboards/buttons) for guided user flows.
 - Process callback query events from button clicks and map them to normalized events.
@@ -26,7 +26,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 
 - Telegram webhook updates.
 - Runtime channel configuration and allowlist.
-- Telegram voice message metadata including platform-provided transcript fields (when present).
+- Telegram voice message metadata and MTProto transcription worker result (`transcript_text` when available).
 - Telegram callback query payloads from inline UI interactions.
 
 ## Outputs
@@ -62,18 +62,19 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 
 ## Voice Handling Strategy
 
-- v1 does not require a separate transcription service.
-- Voice input path relies on Telegram-native transcription fields when Telegram provides them.
-- Adapter converts transcript into canonical text payload used by main agent flow.
-- If transcript is missing, adapter responds with: "I could not extract voice text from Telegram. Please resend as text or try another voice message."
-- If transcript is partial or low confidence, adapter echoes parsed text and requests user confirmation before high-impact capability execution.
+- v1 uses a dedicated Telegram MTProto transcription worker (Pyrogram/Telethon user client) to access Telegram built-in voice transcription.
+- Ingress flow is synchronous for voice messages: adapter requests transcription during intake and waits up to configured timeout.
+- On success, adapter writes `transcript_text` on the voice metadata model and passes normalized event downstream in the same turn.
+- On timeout, unsupported media, or permission/quota failures, adapter must continue intake with `transcript_text=null` and emit structured audit metadata.
+- Bot API remains the transport for normal bot ingress/egress; MTProto worker is used only for transcription requests/results.
+- No external speech-to-text infrastructure is introduced in v1 baseline.
 
 ## Constraints
 
 - Single-user allowlist model in v1.
 - No direct business logic execution in adapter layer.
 - Multimodal handling must degrade gracefully if processing fails.
-- Do not introduce external speech-to-text infrastructure in v1 baseline.
+- Telegram transcription worker requires user-client credentials (`api_id`, `api_hash`) and operational access to chats where voice messages are transcribed.
 - Callback payloads must be validated and protected against replay/tampering.
 
 ## Risks
@@ -87,7 +88,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Allowlisted requests are accepted and normalized.
 - Unauthorized requests are blocked and logged.
 - Text/attachment/voice messages flow through the same normalized contract.
-- Voice messages with Telegram transcript are converted into text for main-agent processing.
+- Voice messages trigger synchronous transcription attempt; successful transcriptions are persisted as `transcript_text` in normalized voice metadata.
 - Interactive responses with inline buttons are rendered and callback actions are handled correctly.
 - Session resume flow lists recent sessions and reliably switches active session on user selection.
 - Outbound send failures follow retry policy and emit diagnostics.

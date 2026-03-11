@@ -2,8 +2,8 @@
 Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 
 Telegram update normalization to INT_ORCH_EVENT_INPUT contract.
-Handles text messages and callback_query updates.
-Voice and attachment metadata extraction is handled in subsequent ingestion modules.
+Handles text, voice, attachment, and callback_query updates.
+normalize_async() enriches voice events via the MTProto transcription service.
 """
 
 import uuid
@@ -13,6 +13,7 @@ from typing import Any
 import structlog
 
 from assistant.channels.telegram.allowlist import AllowlistGuard
+from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.models import (
     AttachmentMeta,
     CallbackQueryMeta,
@@ -37,10 +38,18 @@ class TelegramIngress:
 
     Enforces allowlist before normalization. Unknown or unsupported update
     types are silently dropped and logged.
+
+    Pass a VoiceTranscriptionService to enable MTProto transcription enrichment
+    via normalize_async().
     """
 
-    def __init__(self, guard: AllowlistGuard) -> None:
+    def __init__(
+        self,
+        guard: AllowlistGuard,
+        transcription_service: VoiceTranscriptionService | None = None,
+    ) -> None:
         self._guard = guard
+        self._transcription_service = transcription_service
 
     def normalize(self, update: dict[str, Any]) -> NormalizedEvent | None:
         """
@@ -48,6 +57,8 @@ class TelegramIngress:
 
         Returns None if the update type is unsupported or the user is not allowed.
         The caller must handle UnauthorizedUserError if it propagates.
+        Voice events use inline Telegram transcript only; use normalize_async()
+        to enrich voice events via the MTProto transcription service.
         """
         if "message" in update:
             return self._normalize_message(update["message"])
@@ -55,6 +66,43 @@ class TelegramIngress:
             return self._normalize_callback_query(update["callback_query"])
         logger.debug("telegram.ingress.unsupported_update", keys=list(update.keys()))
         return None
+
+    async def normalize_async(self, update: dict[str, Any]) -> NormalizedEvent | None:
+        """
+        Normalize a Telegram update with async MTProto transcription enrichment.
+
+        For voice messages without an inline transcript, calls the configured
+        VoiceTranscriptionService to enrich voice.transcript_text before
+        returning the event. On failure, the event proceeds with transcript_text=None
+        and failure reason stored in metadata.audit_transcription_failure.
+        Falls back to sync normalize() for non-voice updates or when no service
+        is configured.
+        """
+        event = self.normalize(update)
+        if (
+            event is None
+            or event.event_type != EventType.USER_VOICE_MESSAGE
+            or event.voice is None
+            or event.voice.transcript_text is not None
+            or self._transcription_service is None
+        ):
+            return event
+
+        transcript, failure_reason = await self._transcription_service.transcribe(
+            file_id=event.voice.file_id,
+            duration_seconds=event.voice.duration_seconds,
+            trace_id=event.trace_id,
+        )
+
+        if transcript:
+            enriched_voice = event.voice.model_copy(update={"transcript_text": transcript})
+            return event.model_copy(update={"voice": enriched_voice, "text": transcript})
+
+        if failure_reason:
+            updated_metadata = {**event.metadata, "audit_transcription_failure": failure_reason}
+            return event.model_copy(update={"metadata": updated_metadata})
+
+        return event
 
     def _normalize_message(self, message: dict[str, Any]) -> NormalizedEvent | None:
         user_id = self._extract_user_id(message)

@@ -198,10 +198,11 @@ Store facade component decomposition remains canonical:
 6. Observability/audit records emitted with correlation IDs.
 
 Telegram voice input note:
-- For v1, voice handling uses Telegram-provided transcript text when available.
-- No external transcription service is required in baseline architecture.
-- If no transcript is available, adapter responds with: "I could not extract voice text from Telegram. Please resend as text or try another voice message."
-- If transcript is partial/low confidence, adapter includes extracted text and asks for user confirmation before executing high-impact actions.
+- For v1, voice handling performs synchronous transcription via a Telegram MTProto user-client worker.
+- The channel adapter calls the worker during intake and maps successful result to `voice.transcript_text` before `INT_ORCH_EVENT_INPUT` handoff.
+- Bot API remains the inbound/outbound transport; transcription calls are MTProto-only.
+- No external speech-to-text service is required in baseline architecture.
+- If transcription fails/times out/is unsupported, event intake proceeds with `voice.transcript_text=null` and failure reason in channel metadata/audit logs.
 
 ### Session Lifecycle Policy
 
@@ -371,7 +372,7 @@ Configuration schema baseline:
 | File | Required Fields | Optional Fields | Example Defaults |
 |---|---|---|---|
 | `config/app.yaml` | `runtime_mode`, `data_root`, `timezone` | `log_level` | `runtime_mode=prod`, `timezone=UTC` |
-| `config/channel.telegram.yaml` | `bot_token`, `allowlist` | `webhook_url`, `polling_interval_seconds` | `polling_interval_seconds=2` |
+| `config/channel.telegram.yaml` | `bot_token`, `allowlist` | `webhook_url`, `polling_interval_seconds`, `mtproto_api_id`, `mtproto_api_hash`, `transcription_timeout_seconds` | `polling_interval_seconds=2` |
 | `config/model.yaml` | `default_model_id`, `model_allowlist` | `quality_routing`, `max_tokens_default` | `quality_routing=quality_first` |
 | `config/capabilities.yaml` | `allowed_capabilities` | `denied_capabilities`, `command_allowlist` | `denied_capabilities=[]` |
 | `config/mcp_servers.yaml` | `servers` | `defaults`, `timeouts` | `defaults.enabled=true` |

@@ -51,7 +51,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
         return {"ok": True}
 
     try:
-        event = adapter.process_update(update)
+        event = await adapter.process_update_async(update)
     except UnauthorizedUserError as exc:
         logger.warning("telegram.webhook.unauthorized", user_id=exc.user_id)
         return {"ok": True}

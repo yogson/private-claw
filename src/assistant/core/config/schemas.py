@@ -39,6 +39,9 @@ class TelegramChannelConfig(BaseModel):
     allowlist: list[int] = Field(default_factory=list)
     webhook_url: str = ""
     webhook_secret_token: str = ""
+    mtproto_api_id: int | None = None
+    mtproto_api_hash: str | None = None
+    transcription_timeout_seconds: int = Field(default=10, ge=1)
 
     @model_validator(mode="after")
     def validate_when_enabled(self) -> "TelegramChannelConfig":
@@ -49,6 +52,12 @@ class TelegramChannelConfig(BaseModel):
                 raise ValueError("allowlist must contain at least one user ID when enabled=true")
             if not self.webhook_url.strip():
                 raise ValueError("webhook_url must not be empty when enabled=true")
+        has_api_id = self.mtproto_api_id is not None
+        has_api_hash = self.mtproto_api_hash is not None
+        if has_api_id != has_api_hash:
+            raise ValueError(
+                "mtproto_api_id and mtproto_api_hash must both be set or both be absent"
+            )
         return self
 
 

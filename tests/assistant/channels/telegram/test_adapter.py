@@ -10,6 +10,8 @@ from aiogram.types import Chat, Message, Update, User
 
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.allowlist import UnauthorizedUserError
+from assistant.channels.telegram.ingestion.interfaces import TranscriptionWorkerInterface
+from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.models import ChannelResponse, EventType, MessageType
 from assistant.core.config.schemas import TelegramChannelConfig
 
@@ -83,6 +85,62 @@ class TestTelegramAdapterIngress:
         event = adapter.process_update(update)
         assert event is not None
         assert event.event_type == EventType.USER_TEXT_MESSAGE
+
+
+class TestTranscriptionInjection:
+    @pytest.mark.asyncio
+    async def test_injected_service_enriches_voice_via_async_path(self) -> None:
+        class _Worker(TranscriptionWorkerInterface):
+            async def transcribe(self, file_id: str, duration_seconds: int) -> str | None:
+                return "injected transcript"
+
+        svc = VoiceTranscriptionService(_Worker(), timeout_seconds=5)
+        adapter = TelegramAdapter(_make_config(), transcription_service=svc)
+
+        voice_update = {
+            "message": {
+                "message_id": 20,
+                "from": {"id": 123456},
+                "chat": {"id": 123456},
+                "date": 1700000000,
+                "voice": {"file_id": "voice_x", "duration": 4},
+            }
+        }
+        event = await adapter.process_update_async(voice_update)
+        assert event is not None
+        assert event.event_type == EventType.USER_VOICE_MESSAGE
+        assert event.text == "injected transcript"
+        assert event.voice is not None
+        assert event.voice.transcript_text == "injected transcript"
+
+    @pytest.mark.asyncio
+    async def test_no_service_voice_returns_fallback_text(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        voice_update = {
+            "message": {
+                "message_id": 21,
+                "from": {"id": 123456},
+                "chat": {"id": 123456},
+                "date": 1700000000,
+                "voice": {"file_id": "voice_y", "duration": 3},
+            }
+        }
+        event = await adapter.process_update_async(voice_update)
+        assert event is not None
+        assert event.voice is not None
+        assert event.voice.transcript_text is None
+
+    @pytest.mark.asyncio
+    async def test_process_update_async_unexpected_exception_returns_none(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        with patch.object(
+            adapter._ingress,
+            "normalize_async",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ):
+            result = await adapter.process_update_async(_text_update())
+        assert result is None
 
 
 class TestTelegramAdapterEgress:

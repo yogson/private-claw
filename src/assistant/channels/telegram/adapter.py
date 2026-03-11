@@ -2,7 +2,8 @@
 Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 
 TelegramAdapter: composed entry point for Telegram ingress and egress.
-Wires together AllowlistGuard, TelegramIngress, and TelegramEgress.
+Wires together AllowlistGuard, TelegramIngress (with optional transcription),
+and TelegramEgress.
 """
 
 from typing import Any
@@ -12,6 +13,7 @@ from aiogram.types import Update
 
 from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
 from assistant.channels.telegram.egress import TelegramEgress
+from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.ingress import TelegramIngress
 from assistant.channels.telegram.models import ChannelResponse, NormalizedEvent
 from assistant.core.config.schemas import TelegramChannelConfig
@@ -23,14 +25,22 @@ class TelegramAdapter:
     """
     Composed Telegram channel adapter.
 
-    Exposes process_update() for ingress normalization and send_response()
-    for outbound delivery. Enforces allowlist on every inbound update.
+    Exposes process_update() for sync ingress normalization and
+    process_update_async() for voice-transcription-enriched normalization.
+    Enforces allowlist on every inbound update.
+
+    Pass a VoiceTranscriptionService at construction to enable synchronous
+    MTProto transcript enrichment for voice messages.
     """
 
-    def __init__(self, config: TelegramChannelConfig) -> None:
+    def __init__(
+        self,
+        config: TelegramChannelConfig,
+        transcription_service: VoiceTranscriptionService | None = None,
+    ) -> None:
         self._config = config
         guard = AllowlistGuard(config.allowlist)
-        self._ingress = TelegramIngress(guard)
+        self._ingress = TelegramIngress(guard, transcription_service=transcription_service)
         self._egress = TelegramEgress(bot_token=config.bot_token)
 
     def process_update(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
@@ -40,6 +50,7 @@ class TelegramAdapter:
         Returns None for unsupported update types.
         Unauthorized users are rejected; UnauthorizedUserError is logged and
         re-raised so the caller can handle the webhook response appropriately.
+        Voice events will not have MTProto transcript; use process_update_async().
         """
         try:
             update_payload = (
@@ -52,6 +63,27 @@ class TelegramAdapter:
             raise
         except Exception:
             logger.exception("telegram.adapter.process_update.error")
+            return None
+
+    async def process_update_async(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
+        """
+        Normalize a Telegram update with MTProto transcription enrichment for voice.
+
+        For voice messages, calls the configured VoiceTranscriptionService before
+        returning the event. Falls back to sync normalization when transcription
+        is not configured or fails.
+        """
+        try:
+            update_payload = (
+                update.model_dump(mode="python", exclude_none=True, by_alias=True)
+                if isinstance(update, Update)
+                else update
+            )
+            return await self._ingress.normalize_async(update_payload)
+        except UnauthorizedUserError:
+            raise
+        except Exception:
+            logger.exception("telegram.adapter.process_update_async.error")
             return None
 
     async def send_response(self, response: ChannelResponse, chat_id: int) -> bool:
