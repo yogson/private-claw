@@ -69,7 +69,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="Personal AI Assistant v1",
+    title="Private Claw 🦞 v1",
     version="1.0.0",
     lifespan=_lifespan,
 )

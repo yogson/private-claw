@@ -1,8 +1,9 @@
 """
 Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 
-Normalized event and channel response Pydantic models.
-Implements INT_ORCH_EVENT_INPUT and INT_CHANNEL_RESPONSE contracts.
+Channel-level normalized event and channel response Pydantic models.
+Sub-models for INT_ORCH_EVENT_INPUT are owned by core.events.models and
+re-exported here for backward compatibility.
 """
 
 from datetime import datetime
@@ -11,46 +12,30 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from assistant.core.events.models import (
+    AttachmentMeta,
+    CallbackQueryMeta,
+    EventSource,
+    EventType,
+    VoiceMeta,
+)
 
-class EventType(StrEnum):
-    USER_TEXT_MESSAGE = "user_text_message"
-    USER_VOICE_MESSAGE = "user_voice_message"
-    USER_ATTACHMENT_MESSAGE = "user_attachment_message"
-    USER_CALLBACK_QUERY = "user_callback_query"
-    SCHEDULER_TRIGGER = "scheduler_trigger"
-    SYSTEM_CONTROL_EVENT = "system_control_event"
+__all__ = [
+    "AttachmentMeta",
+    "CallbackQueryMeta",
+    "EventSource",
+    "EventType",
+    "VoiceMeta",
+    "MessageType",
+    "ActionButton",
+    "ChannelResponse",
+    "NormalizedEvent",
+]
 
 
 class MessageType(StrEnum):
     TEXT = "text"
     INTERACTIVE = "interactive"
-
-
-class VoiceMeta(BaseModel):
-    """Voice message metadata (INT_ORCH_EVENT_INPUT voice field)."""
-
-    file_id: str
-    duration_seconds: int
-    transcript_text: str | None = None
-    transcript_confidence: float | None = None
-
-
-class AttachmentMeta(BaseModel):
-    """Attachment message metadata (INT_ORCH_EVENT_INPUT attachment field)."""
-
-    file_id: str
-    mime_type: str
-    file_size_bytes: int
-    caption: str | None = None
-
-
-class CallbackQueryMeta(BaseModel):
-    """Callback query metadata (INT_ORCH_EVENT_INPUT callback_query field)."""
-
-    callback_id: str
-    callback_data: str
-    origin_message_id: int | None = None
-    ui_version: str = "1"
 
 
 class NormalizedEvent(BaseModel):
@@ -62,7 +47,7 @@ class NormalizedEvent(BaseModel):
 
     event_id: str
     event_type: EventType
-    source: str
+    source: EventSource
     session_id: str
     user_id: str
     created_at: datetime

@@ -285,10 +285,18 @@
           "name": "Normalized Event Mapping to INT_ORCH_EVENT_INPUT [CMP_CORE_AGENT_ORCHESTRATOR]",
           "description": "Implement normalized inbound event mapping including callback and idempotency fields.",
           "scope_path": "src/assistant/core/events/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-11",
+          "completed_date": "2026-03-11",
+          "notes": "Defined canonical OrchestratorEvent (INT_ORCH_EVENT_INPUT) in core/events/models.py with all spec fields including scheduler-originated fields (SchedulerMeta, SchedulerTriggerKind). Moved shared sub-models (EventType, VoiceMeta, AttachmentMeta, CallbackQueryMeta) to core ownership; channels/telegram/models.py imports and re-exports them for backward compatibility. NormalizedEventMapper in core/events/mapper.py converts channel NormalizedEvent -> OrchestratorEvent with full field mapping. 14 unit tests passing.",
+          "files_delivered": [
+            "src/assistant/core/events/__init__.py",
+            "src/assistant/core/events/models.py",
+            "src/assistant/core/events/mapper.py",
+            "src/assistant/channels/telegram/models.py",
+            "tests/assistant/core/events/__init__.py",
+            "tests/assistant/core/events/test_mapper.py"
+          ]
         },
         {
           "id": "3.3",

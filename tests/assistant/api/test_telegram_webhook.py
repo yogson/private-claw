@@ -100,10 +100,11 @@ def test_webhook_acknowledges_callback(client: TestClient) -> None:
             "message": {"message_id": 11, "chat": {"id": 123456, "type": "private"}},
         },
     }
-    with patch.object(
-        app.state.telegram_adapter, "acknowledge_callback", new_callable=AsyncMock
-    ) as mock_ack, patch.object(
-        app.state.telegram_adapter, "send_response", new_callable=AsyncMock
+    with (
+        patch.object(
+            app.state.telegram_adapter, "acknowledge_callback", new_callable=AsyncMock
+        ) as mock_ack,
+        patch.object(app.state.telegram_adapter, "send_response", new_callable=AsyncMock),
     ):
         response = client.post(
             "/telegram/webhook",

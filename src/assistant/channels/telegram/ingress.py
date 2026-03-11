@@ -16,6 +16,7 @@ from assistant.channels.telegram.allowlist import AllowlistGuard
 from assistant.channels.telegram.models import (
     AttachmentMeta,
     CallbackQueryMeta,
+    EventSource,
     EventType,
     NormalizedEvent,
     VoiceMeta,
@@ -79,7 +80,7 @@ class TelegramIngress:
         return NormalizedEvent(
             event_id=event_id,
             event_type=EventType.USER_TEXT_MESSAGE,
-            source="telegram",
+            source=EventSource.TELEGRAM,
             session_id=session_id,
             user_id=str(user_id),
             created_at=created_at,
@@ -112,7 +113,7 @@ class TelegramIngress:
         return NormalizedEvent(
             event_id=event_id,
             event_type=EventType.USER_CALLBACK_QUERY,
-            source="telegram",
+            source=EventSource.TELEGRAM,
             session_id=session_id,
             user_id=str(user_id),
             created_at=datetime.now(UTC),
@@ -145,7 +146,7 @@ class TelegramIngress:
         return NormalizedEvent(
             event_id=event_id,
             event_type=EventType.USER_VOICE_MESSAGE,
-            source="telegram",
+            source=EventSource.TELEGRAM,
             session_id=session_id,
             user_id=str(user_id),
             created_at=created_at,
@@ -170,7 +171,7 @@ class TelegramIngress:
         return NormalizedEvent(
             event_id=event_id,
             event_type=EventType.USER_ATTACHMENT_MESSAGE,
-            source="telegram",
+            source=EventSource.TELEGRAM,
             session_id=session_id,
             user_id=str(user_id),
             created_at=created_at,
