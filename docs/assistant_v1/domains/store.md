@@ -143,6 +143,8 @@ On process start:
 ## Constraints
 
 - Filesystem backend is mandatory baseline for v1.
+- v1 deployment target is local single-user, single-process runtime.
+- Multi-worker or multi-process coordination guarantees are out of scope for v1 filesystem backend and are planned for future backend upgrades (for example Redis-backed adapters).
 - All writes must be atomic and path-safe within application data root.
 - Lock operations must be bounded by TTL to avoid deadlocks.
 - Store interfaces must remain backend-agnostic to allow future adapters.
