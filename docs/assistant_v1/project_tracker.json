@@ -23,9 +23,9 @@
       "name": "Core, Config System, and Admin Config Control Plane",
       "description": "Establish runtime foundation, canonical configuration domains, and admin-first config control flows.",
       "priority": "CRITICAL",
-      "status": "in_progress",
+      "status": "completed",
       "started_date": "2026-03-09",
-      "completed_date": null,
+      "completed_date": "2026-03-11",
       "dependencies": [],
       "tasks": [
         {
@@ -145,8 +145,8 @@
       "name": "Store Foundation and Runtime State Integrity",
       "description": "Establish durable persistence, idempotency, and lock-protected atomic state updates for runtime domains.",
       "priority": "CRITICAL",
-      "status": "not_started",
-      "started_date": null,
+      "status": "in_progress",
+      "started_date": "2026-03-11",
       "completed_date": null,
       "dependencies": [
         "phase_1"
@@ -157,10 +157,28 @@
           "name": "Store Facade and Internal Persistence Modules [CMP_STORE_STATE_FACADE]",
           "description": "Implement store facade and session/task/idempotency/lock persistence components with filesystem backend baseline.",
           "scope_path": "src/assistant/store/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-11",
+          "completed_date": "2026-03-11",
+          "notes": "Implemented store facade with filesystem backend: StoreFacade provides unified access to SessionStore (JSONL append-only logs), TaskStore (JSON task state), IdempotencyLedger (duplicate prevention with TTL), and LockCoordinator (file-based locks with TTL). Includes atomic write utilities and startup recovery scan. 47 unit tests all passing.",
+          "files_delivered": [
+            "src/assistant/store/__init__.py",
+            "src/assistant/store/models.py",
+            "src/assistant/store/interfaces.py",
+            "src/assistant/store/facade.py",
+            "src/assistant/store/filesystem/__init__.py",
+            "src/assistant/store/filesystem/atomic.py",
+            "src/assistant/store/filesystem/lock.py",
+            "src/assistant/store/filesystem/idempotency.py",
+            "src/assistant/store/filesystem/session.py",
+            "src/assistant/store/filesystem/task.py",
+            "tests/assistant/store/__init__.py",
+            "tests/assistant/store/test_lock.py",
+            "tests/assistant/store/test_idempotency.py",
+            "tests/assistant/store/test_session.py",
+            "tests/assistant/store/test_task.py",
+            "tests/assistant/store/test_facade.py"
+          ]
         },
         {
           "id": "2.2",
@@ -258,19 +276,31 @@
           "completed_date": null,
           "notes": "",
           "files_delivered": []
+        },
+        {
+          "id": "3.5",
+          "name": "Telegram Recent Sessions Listing and Resume Selection [CMP_CHANNEL_TELEGRAM_ADAPTER]",
+          "description": "Implement Telegram flow to list latest resumable sessions and switch active session via signed callback selection.",
+          "scope_path": "src/assistant/channels/telegram/",
+          "status": "not_started",
+          "completed_date": null,
+          "notes": "",
+          "files_delivered": []
         }
       ],
       "deliverables": [
         "Telegram adapter and response pipeline",
         "Event normalization and callback handling path",
         "Attachment and voice handlers with fallback responses",
-        "Channel-level throttling/retry and audit telemetry"
+        "Channel-level throttling/retry and audit telemetry",
+        "Interactive recent-session picker and active-session switch path"
       ],
       "success_criteria": [
         "Authorized Telegram interactions complete reliably",
         "Normalized event schema remains stable for supported Telegram event types",
         "Unauthorized users are blocked and audited",
-        "Failed outbound sends follow configured retry behavior"
+        "Failed outbound sends follow configured retry behavior",
+        "Telegram user can list latest sessions and resume selected session via signed callback flow"
       ]
     },
     {
