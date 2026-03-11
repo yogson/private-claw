@@ -121,11 +121,10 @@ def test_parse_form_payload_int_list_strips_blank_lines() -> None:
     assert payload["allowlist"] == [111, 222]
 
 
-def test_parse_form_payload_telegram_polling_interval() -> None:
-    form = _FakeForm({"polling_interval_seconds": "5"})
+def test_parse_form_payload_telegram_webhook_url() -> None:
+    form = _FakeForm({"webhook_url": "https://example.com/telegram/webhook"})
     payload = _parse_form_payload("telegram", form)
-    assert payload["polling_interval_seconds"] == 5
-    assert isinstance(payload["polling_interval_seconds"], int)
+    assert payload["webhook_url"] == "https://example.com/telegram/webhook"
 
 
 def test_parse_form_payload_telegram_bot_token_included_when_non_empty() -> None:
@@ -145,3 +144,15 @@ def test_parse_form_payload_telegram_bot_token_excluded_when_whitespace_only() -
     form = _FakeForm({"allowlist": "111", "bot_token": "   "})
     payload = _parse_form_payload("telegram", form)
     assert "bot_token" not in payload
+
+
+def test_parse_form_payload_telegram_webhook_secret_included_when_non_empty() -> None:
+    form = _FakeForm({"allowlist": "111", "webhook_secret_token": "secret"})
+    payload = _parse_form_payload("telegram", form)
+    assert payload["webhook_secret_token"] == "secret"
+
+
+def test_parse_form_payload_telegram_webhook_secret_excluded_when_blank() -> None:
+    form = _FakeForm({"allowlist": "111", "webhook_secret_token": ""})
+    payload = _parse_form_payload("telegram", form)
+    assert "webhook_secret_token" not in payload

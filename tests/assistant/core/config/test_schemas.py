@@ -28,8 +28,17 @@ class TestTelegramChannelConfig:
         with pytest.raises(ValidationError, match="allowlist must contain at least one"):
             TelegramChannelConfig(enabled=True, bot_token="tok:abc", allowlist=[])
 
+    def test_enabled_requires_webhook_url(self) -> None:
+        with pytest.raises(ValidationError, match="webhook_url must not be empty"):
+            TelegramChannelConfig(enabled=True, bot_token="tok:abc", allowlist=[42], webhook_url="")
+
     def test_enabled_valid(self) -> None:
-        cfg = TelegramChannelConfig(enabled=True, bot_token="tok:abc", allowlist=[42])
+        cfg = TelegramChannelConfig(
+            enabled=True,
+            bot_token="tok:abc",
+            allowlist=[42],
+            webhook_url="https://example.com/telegram/webhook",
+        )
         assert cfg.enabled is True
         assert cfg.allowlist == [42]
 

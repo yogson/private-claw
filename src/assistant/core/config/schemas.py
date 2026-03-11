@@ -38,7 +38,7 @@ class TelegramChannelConfig(BaseModel):
     bot_token: str = ""
     allowlist: list[int] = Field(default_factory=list)
     webhook_url: str = ""
-    polling_interval_seconds: int = Field(default=2, ge=1)
+    webhook_secret_token: str = ""
 
     @model_validator(mode="after")
     def validate_when_enabled(self) -> "TelegramChannelConfig":
@@ -47,6 +47,8 @@ class TelegramChannelConfig(BaseModel):
                 raise ValueError("bot_token must not be empty when enabled=true")
             if not self.allowlist:
                 raise ValueError("allowlist must contain at least one user ID when enabled=true")
+            if not self.webhook_url.strip():
+                raise ValueError("webhook_url must not be empty when enabled=true")
         return self
 
 

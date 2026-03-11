@@ -4,5 +4,5 @@
 enabled: false          # Set to true only after providing bot_token and allowlist
 bot_token: ""           # Set via ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN env var
 allowlist: []           # List of allowed Telegram user IDs (integers)
-webhook_url: ""         # Optional: HTTPS URL for webhook mode; leave empty for polling
-polling_interval_seconds: 2
+webhook_url: ""         # Required when enabled=true (webhook-only mode)
+webhook_secret_token: "" # Optional: validates X-Telegram-Bot-Api-Secret-Token

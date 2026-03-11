@@ -25,6 +25,7 @@ from assistant.core.config.schemas import (
 
 _REDACTED = "***REDACTED***"
 _SENSITIVE_KEYS = {"bot_token", "api_key", "secret", "token", "password"}
+_SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "api_key")
 
 # Maps domain name → (yaml filename, Pydantic schema class, env prefix)
 _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
@@ -154,7 +155,7 @@ class ConfigLoader:
     def _redact_dict(self, data: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for k, v in data.items():
-            if k.lower() in _SENSITIVE_KEYS:
+            if self._is_sensitive_key(k):
                 result[k] = _REDACTED
             elif isinstance(v, dict):
                 result[k] = self._redact_dict(v)
@@ -165,3 +166,10 @@ class ConfigLoader:
             else:
                 result[k] = v
         return result
+
+    @staticmethod
+    def _is_sensitive_key(key: str) -> bool:
+        lowered = key.lower()
+        return lowered in _SENSITIVE_KEYS or any(
+            marker in lowered for marker in _SENSITIVE_KEY_MARKERS
+        )

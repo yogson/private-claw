@@ -61,7 +61,7 @@ _DOMAIN_ORDER = ["app", "telegram", "model", "capabilities", "mcp_servers", "sch
 # ---------------------------------------------------------------------------
 _DOMAIN_RESTART_ADVISORY: dict[str, str] = {
     "app": "recommended",  # log_level / timezone — no consumer wired yet
-    "telegram": "recommended",  # allowlist / polling interval — adapter not wired yet
+    "telegram": "recommended",  # allowlist / webhook settings — adapter not fully wired yet
     "model": "recommended",  # model routing — no consumer wired yet
     "capabilities": "recommended",  # capability policy — no consumer wired yet
     "scheduler": "recommended",  # tick / lateness / jobs — no consumer wired yet
@@ -90,7 +90,8 @@ _FIELD_DEFS: dict[str, dict[str, Any]] = {
     # telegram
     "bot_token": {"type": "password"},
     "allowlist": {"type": "textarea", "encoding": "int_list"},
-    "polling_interval_seconds": {"type": "number"},
+    "webhook_url": {"type": "text"},
+    "webhook_secret_token": {"type": "password"},
     # model
     "default_model_id": {"type": "text"},
     "model_allowlist": {"type": "textarea", "encoding": "line_list"},
