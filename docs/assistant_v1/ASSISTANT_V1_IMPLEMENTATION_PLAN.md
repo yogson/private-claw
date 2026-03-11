@@ -93,6 +93,7 @@ Parallel constraints:
   2. Implement normalized inbound event mapping to `INT_ORCH_EVENT_INPUT` including callback and idempotency fields (`CMP_CHANNEL_TELEGRAM_ADAPTER`, `CMP_CORE_AGENT_ORCHESTRATOR`).
   3. Implement voice and attachment metadata handling with transcript fallback behavior (`CMP_CHANNEL_TELEGRAM_ADAPTER`).
   4. Integrate per-channel throttling and channel audit logging (`CMP_CHANNEL_TELEGRAM_ADAPTER`, `CMP_OBSERVABILITY_LOGGING`).
+  5. Implement Telegram recent-session listing and callback-based session resume selection flow (`CMP_CHANNEL_TELEGRAM_ADAPTER`, `CMP_CORE_AGENT_ORCHESTRATOR`, `CMP_STORE_SESSION_PERSISTENCE`).
 - Dependencies:
   - Phase 1
   - Phase 2
@@ -101,11 +102,13 @@ Parallel constraints:
   - Event normalization and callback handling path.
   - Attachment/voice handlers and fallback responses.
   - Channel-level throttling/retry and audit telemetry.
+  - Interactive recent-session picker and active-session switch path for Telegram users.
 - Success Criteria:
   - Authorized Telegram interactions complete reliably.
   - Normalized event schema remains stable for all supported Telegram event types.
   - Unauthorized users are blocked and audited.
   - Failed outbound sends follow configured retry behavior.
+  - Telegram user can list latest sessions and resume selected session with signed callback validation.
 
 ### Phase 4: Filesystem Memory and Retrieval Quality
 

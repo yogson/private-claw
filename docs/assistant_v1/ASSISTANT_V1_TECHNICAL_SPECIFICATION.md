@@ -101,6 +101,7 @@ Voice/attachment metadata:
 - `voice`: `file_id`, `duration_seconds`, `transcript_text?`, `transcript_confidence?`
 - `attachment`: `file_id`, `mime_type`, `file_size_bytes`, `caption?`
 - `callback_query`: `callback_id`, `callback_data`, `origin_message_id`, `ui_version`
+  - session-resume callbacks should carry signed action metadata including `action=resume_session` and `target_session_id`.
 
 Scheduler-originated fields:
 - `job_id`
@@ -210,6 +211,10 @@ Telegram voice input note:
   - Persist initial session record before first response write.
 - Active session policy:
   - Single user may have multiple active sessions keyed by channel/chat context.
+- User-selectable resume policy:
+  - Telegram flow may present latest resumable sessions for the current user/chat and accept callback selection.
+  - Selected `target_session_id` becomes active for subsequent turns in that chat context.
+  - Resume selection must fail closed if callback signature, user scope, or chat scope validation fails.
 - Session TTL/expiry:
   - Sessions remain resumable by default; inactivity archival threshold is configurable.
 - Restart behavior:

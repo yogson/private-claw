@@ -19,6 +19,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Send final assistant responses and operational notices to Telegram.
 - Support interactive Telegram UI elements (inline keyboards/buttons) for guided user flows.
 - Process callback query events from button clicks and map them to normalized events.
+- Support session-resume selection flows where user can list recent sessions and pick one to continue.
 - Apply retry and throttling behavior for channel reliability.
 
 ## Inputs
@@ -44,6 +45,20 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
   - confirmation/cancellation actions.
 - Button payloads must include stable callback identifiers and signed context data.
 - Callback events are normalized and handled through the same turn lifecycle as text messages.
+
+### Session Resume Selection Flow
+
+- v1 should support a guided "resume session" flow in Telegram:
+  - user requests recent sessions (for example: "resume", "show recent sessions"),
+  - adapter/orchestrator returns an interactive message with latest N resumable sessions,
+  - user selects one via inline button callback,
+  - selected `session_id` becomes active for subsequent turns in the same chat context.
+- Session list entries should include compact user-facing metadata:
+  - session label (generated title or fallback),
+  - last activity timestamp,
+  - short preview snippet (bounded length, sanitized).
+- Resume callback payload must include signed context with action and target `session_id`.
+- Session selection must be scoped to the same allowlisted user/chat context; cross-user/session escalation is forbidden.
 
 ## Voice Handling Strategy
 
@@ -74,5 +89,6 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Text/attachment/voice messages flow through the same normalized contract.
 - Voice messages with Telegram transcript are converted into text for main-agent processing.
 - Interactive responses with inline buttons are rendered and callback actions are handled correctly.
+- Session resume flow lists recent sessions and reliably switches active session on user selection.
 - Outbound send failures follow retry policy and emit diagnostics.
 
