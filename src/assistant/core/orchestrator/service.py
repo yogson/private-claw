@@ -4,6 +4,8 @@ Component ID: CMP_CORE_AGENT_ORCHESTRATOR
 Orchestrator service executing turn lifecycle with persistence and idempotency.
 """
 
+from typing import Any
+
 import structlog
 
 from assistant.core.config.schemas import RuntimeConfig
@@ -16,7 +18,6 @@ from assistant.core.orchestrator.payloads import (
     extract_raw_text_for_multimodal,
     extract_user_text,
     format_attachment_context,
-    format_retrieved_memory_context,
     gather_attachments,
     records_to_messages,
 )
@@ -28,6 +29,7 @@ from assistant.core.orchestrator.persistence import (
 )
 from assistant.memory.retrieval.models import RetrievalQuery
 from assistant.memory.retrieval.service import RetrievalService
+from assistant.memory.store.models import MemoryType
 from assistant.memory.write.service import MemoryWriteService
 from assistant.observability.correlation import reset_trace_id, set_trace_id
 from assistant.providers.interfaces import LLMMessage, MessageRole
@@ -108,6 +110,7 @@ class Orchestrator:
         self,
         *,
         messages: list[LLMMessage],
+        current_user_message: LLMMessage,
         user_content: str,
         attachments: list[AttachmentMeta],
         session_id: str,
@@ -126,12 +129,22 @@ class Orchestrator:
         deps = TurnDeps(
             writes_approved=[],
             seen_intent_ids=set(),
+            memory_search_handler=self._memory_search if self._memory_retrieval else None,
         )
         response_text, new_msgs, _usage = await adapter.run_turn(
             messages=msg_dicts,
             deps=deps,
             trace_id=trace_id,
         )
+        prompt_trace: dict[str, Any] | None = None
+        if self._config.model.prompt_trace_enabled:
+            prompt_trace = {
+                "system_prompt": adapter.system_prompt,
+                "user_prompt": {
+                    "content": current_user_message.content,
+                    "content_blocks": current_user_message.content_blocks,
+                },
+            }
         memory_plans = _new_messages_to_plans(new_msgs)
         initial_persisted = False
         try:
@@ -145,6 +158,7 @@ class Orchestrator:
                 attachments=[a.model_dump() for a in attachments],
                 memory_plans=memory_plans,
                 invalid_memory_intents=0,
+                prompt_trace=prompt_trace,
             )
             initial_persisted = True
             outcomes = apply_approved_memory_intents(memory_plans, self._memory_writer)
@@ -182,25 +196,16 @@ class Orchestrator:
         session_id = event.session_id
         trace_id = event.trace_id
 
-        memory_context = ""
-        if self._memory_retrieval is not None and user_text != _PLACEHOLDER_EMPTY:
-            retrieval_query = RetrievalQuery(user_query_text=user_text)
-            retrieval_result = self._memory_retrieval.retrieve(retrieval_query)
-            memory_context = format_retrieved_memory_context(retrieval_result)
-
         raw_text = extract_raw_text_for_multimodal(event)
         content_blocks = await build_user_content_blocks(
             raw_text, attachments, self._attachment_downloader, trace_id
         )
         if content_blocks is not None:
-            if memory_context:
-                content_blocks.insert(0, {"type": "text", "text": memory_context})
             user_message = LLMMessage(
                 role=MessageRole.USER, content="", content_blocks=content_blocks
             )
         else:
-            content = f"{memory_context}\n\n{user_content}" if memory_context else user_content
-            user_message = LLMMessage(role=MessageRole.USER, content=content)
+            user_message = LLMMessage(role=MessageRole.USER, content=user_content)
 
         token = set_trace_id(trace_id)
         try:
@@ -210,6 +215,7 @@ class Orchestrator:
 
             return await self._run_turn_pydantic_ai(
                 messages=messages,
+                current_user_message=user_message,
                 user_content=user_content,
                 attachments=attachments,
                 session_id=session_id,
@@ -218,3 +224,48 @@ class Orchestrator:
             )
         finally:
             reset_trace_id(token)
+
+    def _memory_search(
+        self, query: str, limit: int, memory_types: list[str] | None
+    ) -> dict[str, Any]:
+        if self._memory_retrieval is None:
+            return {
+                "status": "unavailable",
+                "reason": "memory retrieval unavailable",
+                "matches": [],
+            }
+        intent_types: list[MemoryType] = []
+        for raw in memory_types or []:
+            try:
+                intent_types.append(MemoryType(raw))
+            except ValueError:
+                continue
+        retrieval_query = RetrievalQuery(
+            user_query_text=query.strip() if query else "",
+            intent_types=intent_types,
+        )
+        retrieval_result = self._memory_retrieval.retrieve(retrieval_query)
+        bounded_limit = max(1, min(limit, 5))
+        matches: list[dict[str, Any]] = []
+        for scored in retrieval_result.scored_artifacts[:bounded_limit]:
+            artifact = scored.artifact
+            fm = artifact.frontmatter
+            body = artifact.body.strip()
+            if len(body) > 500:
+                body = body[:500] + "... [truncated]"
+            matches.append(
+                {
+                    "memory_id": fm.memory_id,
+                    "type": fm.type.value,
+                    "score": round(scored.score, 4),
+                    "entities": fm.entities,
+                    "tags": fm.tags,
+                    "body": body,
+                }
+            )
+        return {
+            "status": "ok",
+            "query": query,
+            "matches": matches,
+            "retrieval_mode": retrieval_result.audit.retrieval_mode,
+        }

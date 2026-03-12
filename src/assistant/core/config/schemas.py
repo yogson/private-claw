@@ -79,6 +79,7 @@ class ModelConfig(BaseModel):
     model_allowlist: list[str]
     quality_routing: QualityRouting = QualityRouting.QUALITY_FIRST
     max_tokens_default: int = Field(default=4096, ge=1)
+    prompt_trace_enabled: bool = False
 
     @field_validator("model_allowlist")
     @classmethod

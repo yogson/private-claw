@@ -394,7 +394,7 @@ class TestOrchestratorExecuteTurn:
         assert mock_store.sessions.append.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_memory_retrieval_context_is_injected_into_user_message(
+    async def test_memory_search_handler_is_exposed_to_agent_deps(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
@@ -436,11 +436,38 @@ class TestOrchestratorExecuteTurn:
 
         call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
         assert len(call_kwargs["messages"]) == 1
-        message_content = call_kwargs["messages"][0]["content"]
-        assert "[Relevant memory context]" in message_content
-        assert "- name: Egor" in message_content
-        assert "Do you know my name?" in message_content
+        assert call_kwargs["messages"][0]["content"] == "Do you know my name?"
+        deps = call_kwargs["deps"]
+        assert deps.memory_search_handler is not None
+        tool_result = deps.memory_search_handler("my name", 3, ["profile"])
+        assert tool_result["status"] == "ok"
+        assert tool_result["matches"]
+        assert tool_result["matches"][0]["body"] == "- name: Egor"
         retrieval_service.retrieve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_prompt_trace_is_persisted_when_enabled(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        cfg = _runtime_config()
+        cfg.model.prompt_trace_enabled = True
+        mock_pydantic_adapter.system_prompt = "System trace prompt"
+        orch = Orchestrator(
+            store=mock_store,
+            config=cfg,
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+        await orch.execute_turn(_minimal_event(text="trace me"))
+        initial_records = mock_store.sessions.append.call_args_list[0][0][0]
+        summaries = [r for r in initial_records if r.record_type == SessionRecordType.TURN_SUMMARY]
+        assert len(summaries) == 1
+        prompt_trace = summaries[0].payload["capability_audit"]["prompt_trace"]
+        assert prompt_trace["system_prompt"] == "System trace prompt"
+        assert prompt_trace["user_prompt"]["content"] == "trace me"
 
     @pytest.mark.asyncio
     async def test_persists_turn_artifacts(

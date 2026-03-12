@@ -6,10 +6,9 @@ Replaces manual provider tool protocol handling with Agent-managed tool loop.
 """
 
 import json
-from dataclasses import dataclass
 from typing import Any, cast
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -27,52 +26,34 @@ from assistant.extensions.first_party.memory import (
 from assistant.extensions.first_party.memory import (
     memory_propose_update as validate_memory_proposal,
 )
+from assistant.providers.pydantic_ai_tools import (
+    TurnDeps,
+    normalize_candidate_for_upsert,
+    register_agent_tools,
+)
+
+__all__ = [
+    "PydanticAITurnAdapter",
+    "TurnDeps",
+    "_new_messages_to_plans",
+    "_llm_messages_to_history",
+    "_normalize_candidate_for_upsert",
+]
 
 MEMORY_TOOL_NAME = "memory_propose_update"
-MAX_MEMORY_WRITES_PER_TURN = 3
-
-
-@dataclass
-class TurnDeps:
-    """Dependencies injected into agent tools for turn execution."""
-
-    writes_approved: list[None]  # mutable: append when we approve a write
-    seen_intent_ids: set[str]  # mutable: deduplicate intent_id per turn
+MEMORY_AGENT_SYSTEM_PROMPT = (
+    "You are a helpful assistant. "
+    "Use the memory_search tool when user/profile context is needed to answer correctly. "
+    "When the user asks to remember something, "
+    "use the memory_propose_update tool to propose the update. "
+    "Do not write memory directly; runtime applies policy and confirmation gates. "
+    "Do not claim memory is saved until the user confirms."
+)
 
 
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize loosely structured model candidate into memory schema-friendly payload."""
-    payload = dict(candidate or {})
-    body = payload.get("body_markdown")
-    if isinstance(body, str) and body.strip():
-        payload["body_markdown"] = body.strip()
-        return payload
-
-    reserved = {"tags", "entities", "priority", "confidence", "body_markdown"}
-    details: list[tuple[str, Any]] = []
-    for key, value in payload.items():
-        if key in reserved:
-            continue
-        if value in (None, "", [], {}):
-            continue
-        details.append((key, value))
-    if details:
-        payload["body_markdown"] = "\n".join(f"- {k}: {v}" for k, v in details)
-    else:
-        payload["body_markdown"] = "[missing details]"
-
-    tags = payload.get("tags")
-    if not isinstance(tags, list):
-        payload["tags"] = []
-    entities = payload.get("entities")
-    if not isinstance(entities, list):
-        payload["entities"] = []
-    name = payload.get("name")
-    if isinstance(name, str) and name.strip() and name not in payload["entities"]:
-        payload["entities"].append(name.strip())
-    if not payload["tags"]:
-        payload["tags"] = ["user_profile"]
-    return payload
+    """Backward-compatible wrapper for existing tests/importers."""
+    return normalize_candidate_for_upsert(candidate)
 
 
 def _create_memory_agent(model_id: str) -> Agent[TurnDeps, str]:
@@ -81,91 +62,10 @@ def _create_memory_agent(model_id: str) -> Agent[TurnDeps, str]:
     agent = Agent(
         model_id,
         deps_type=TurnDeps,
-        system_prompt=(
-            "You are a helpful assistant. When the user asks to remember something, "
-            "use the memory_propose_update tool to propose the update. "
-            "Do not write memory directly; runtime applies policy and confirmation gates. "
-            "Do not claim memory is saved until the user confirms."
-        ),
+        system_prompt=MEMORY_AGENT_SYSTEM_PROMPT,
         retries=0,
     )
-
-    @agent.tool
-    def memory_propose_update(
-        ctx: RunContext[TurnDeps],
-        intent_id: str,
-        action: str,
-        memory_type: str,
-        reason: str,
-        source: str,
-        requires_user_confirmation: bool,
-        memory_id: str | None = None,
-        candidate: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Propose a memory update. Runtime applies policy and confirmation gates."""
-        deps = ctx.deps
-        normalized_candidate = candidate or {}
-        if action == "upsert":
-            normalized_candidate = _normalize_candidate_for_upsert(candidate)
-        # Runtime policy controls confirmation; do not allow model bypass.
-        effective_requires_confirmation = True
-        proposal_dict = {
-            "intent_id": intent_id,
-            "action": action,
-            "memory_type": memory_type,
-            "memory_id": memory_id,
-            "candidate": normalized_candidate,
-            "reason": reason,
-            "source": source,
-            "requires_user_confirmation": effective_requires_confirmation,
-        }
-        try:
-            proposal = MemoryProposalToolCall(**proposal_dict)  # type: ignore[arg-type]
-        except Exception as exc:
-            return {
-                "status": "rejected_invalid",
-                "reason": str(exc),
-                "requires_user_confirmation": effective_requires_confirmation,
-            }
-
-        if proposal.intent_id in deps.seen_intent_ids:
-            return {
-                "status": "rejected_duplicate_intent",
-                "reason": "duplicate intent_id in turn payload",
-                "requires_user_confirmation": effective_requires_confirmation,
-            }
-        deps.seen_intent_ids.add(proposal.intent_id)
-
-        if effective_requires_confirmation:
-            return {
-                "status": "pending_confirmation",
-                "reason": "requires_user_confirmation=true",
-                "requires_user_confirmation": True,
-            }
-
-        if len(deps.writes_approved) >= MAX_MEMORY_WRITES_PER_TURN:
-            return {
-                "status": "rejected_write_limit",
-                "reason": f"exceeds max writes per turn ({MAX_MEMORY_WRITES_PER_TURN})",
-                "requires_user_confirmation": False,
-            }
-
-        try:
-            validate_memory_proposal(proposal.model_dump())
-        except Exception as exc:
-            return {
-                "status": "rejected_invalid",
-                "reason": str(exc),
-                "requires_user_confirmation": effective_requires_confirmation,
-            }
-
-        deps.writes_approved.append(None)
-        return {
-            "status": "approved_pending_apply",
-            "reason": "",
-            "requires_user_confirmation": False,
-        }
-
+    register_agent_tools(agent)
     return agent
 
 
@@ -247,7 +147,7 @@ def _build_effective_memory_args(tool_call_id: str, args: dict[str, Any]) -> dic
     effective_args["requires_user_confirmation"] = True
     if effective_args.get("action") == "upsert":
         candidate = effective_args.get("candidate")
-        effective_args["candidate"] = _normalize_candidate_for_upsert(
+        effective_args["candidate"] = normalize_candidate_for_upsert(
             candidate if isinstance(candidate, dict) else {}
         )
     return effective_args
@@ -310,6 +210,11 @@ class PydanticAITurnAdapter:
         self._model_id = model_id
         self._max_tokens = max_tokens
         self._agent = _create_memory_agent(model_id)
+
+    @property
+    def system_prompt(self) -> str:
+        """System prompt used for each turn."""
+        return MEMORY_AGENT_SYSTEM_PROMPT
 
     async def run_turn(
         self,

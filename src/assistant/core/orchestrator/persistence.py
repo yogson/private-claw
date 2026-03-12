@@ -32,6 +32,7 @@ async def persist_turn_initial(
     attachments: list[dict[str, Any]] | None = None,
     memory_plans: list[MemoryIntentPlan] | None = None,
     invalid_memory_intents: int = 0,
+    prompt_trace: dict[str, Any] | None = None,
 ) -> None:
     """Persist initial turn records and intent precheck audit records."""
     now = datetime.now(UTC)
@@ -70,10 +71,16 @@ async def persist_turn_initial(
         ),
     ]
     next_sequence = next_seq + 2
+    capability_audit: dict[str, Any] = {}
     if invalid_memory_intents > 0:
+        capability_audit["invalid_memory_intents"] = invalid_memory_intents
+    if prompt_trace is not None:
+        capability_audit["prompt_trace"] = prompt_trace
+
+    if capability_audit:
         summary_payload = TurnSummaryPayload(
-            summary_text="memory intent parsing diagnostics",
-            capability_audit={"invalid_memory_intents": invalid_memory_intents},
+            summary_text="turn diagnostics",
+            capability_audit=capability_audit,
         )
         records.append(
             SessionRecord(
