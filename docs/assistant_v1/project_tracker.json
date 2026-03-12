@@ -145,9 +145,9 @@
       "name": "Store Foundation and Runtime State Integrity",
       "description": "Establish durable persistence, idempotency, and lock-protected atomic state updates for runtime domains.",
       "priority": "CRITICAL",
-      "status": "in_progress",
+      "status": "completed",
       "started_date": "2026-03-11",
-      "completed_date": null,
+      "completed_date": "2026-03-12",
       "dependencies": [
         "phase_1"
       ],
@@ -400,8 +400,8 @@
       "name": "Filesystem Memory and Retrieval Quality",
       "description": "Deliver durable long-term memory with deterministic retrieval, deduplication, and index repair behavior.",
       "priority": "HIGH",
-      "status": "not_started",
-      "started_date": null,
+      "status": "in_progress",
+      "started_date": "2026-03-12",
       "completed_date": null,
       "dependencies": [
         "phase_1",
@@ -414,10 +414,19 @@
           "name": "Memory Schema and Directory Model [CMP_MEMORY_FILESYSTEM_STORE]",
           "description": "Implement markdown+frontmatter memory schemas and directory structure for core memory categories.",
           "scope_path": "src/assistant/memory/store/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-12",
+          "completed_date": "2026-03-12",
+          "notes": "MemoryFrontmatter/MemoryArtifact Pydantic schemas; MemoryPaths for data_root/memory/{category}/ and runtime/memory_indexes/; parse_memory_file/serialize_memory_artifact for markdown+YAML frontmatter. Path-safe memory_id validation. 10 unit tests.",
+          "files_delivered": [
+            "src/assistant/memory/__init__.py",
+            "src/assistant/memory/store/__init__.py",
+            "src/assistant/memory/store/models.py",
+            "src/assistant/memory/store/paths.py",
+            "src/assistant/memory/store/parser.py",
+            "tests/assistant/memory/__init__.py",
+            "tests/assistant/memory/test_memory_store.py"
+          ]
         },
         {
           "id": "4.2",
