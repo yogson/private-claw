@@ -44,6 +44,29 @@ def _build_orchestrator_handler(
     mapper = NormalizedEventMapper()
 
     async def _handler(event: NormalizedEvent) -> ChannelResponse | None:
+        if adapter.is_session_reset_request(event):
+            if not adapter.is_session_reset_available():
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Session reset is not available.",
+                )
+            cleared = await adapter.reset_session_context(event)
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text=(
+                    "Session context reset. Starting fresh."
+                    if cleared
+                    else "Session context is already empty."
+                ),
+            )
         if adapter.is_session_resume_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
             return await adapter.build_session_menu_response(

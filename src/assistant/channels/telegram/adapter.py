@@ -25,6 +25,7 @@ from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
+_RESET_COMMAND = "/reset"
 
 
 class TelegramAdapter:
@@ -51,6 +52,7 @@ class TelegramAdapter:
         session_store: SessionStoreInterface | None = None,
     ) -> None:
         self._config = config
+        self._session_store = session_store
         guard = AllowlistGuard(config.allowlist)
         audit_logger = ChannelAuditLogger()
         throttle_guard = ChannelThrottleGuard(max_per_window=config.throttle_max_per_minute)
@@ -152,6 +154,34 @@ class TelegramAdapter:
             )
             is not None
         )
+
+    def is_session_reset_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /reset command."""
+        raw = (event.text or "").strip()
+        if not raw:
+            return False
+        text = raw.split(maxsplit=1)[0].lower()
+        if not text.startswith(_RESET_COMMAND):
+            return False
+        return text == _RESET_COMMAND or text.startswith(f"{_RESET_COMMAND}@")
+
+    def is_session_reset_available(self) -> bool:
+        """Return True when session reset can be executed in this runtime."""
+        return self._session_store is not None
+
+    async def reset_session_context(self, event: NormalizedEvent) -> bool:
+        """Clear persisted context for the event's active session."""
+        if self._session_store is None:
+            return False
+        cleared = await self._session_store.clear_session(event.session_id)
+        logger.info(
+            "telegram.adapter.session_reset",
+            session_id=event.session_id,
+            chat_id=event.metadata.get("chat_id"),
+            trace_id=event.trace_id,
+            cleared=cleared,
+        )
+        return cleared
 
     async def build_session_menu_response(
         self, chat_id: int, session_id: str, trace_id: str

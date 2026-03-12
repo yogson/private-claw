@@ -64,6 +64,15 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Session listing is scoped to the requesting chat's sessions only; sessions from other chats are never returned.
 - Session selection must remain within the same allowlisted user/chat context; cross-user/session escalation is forbidden.
 
+### Session Reset Flow
+
+- v1 supports explicit session context reset via `/reset` (and `/reset@botname` in group contexts).
+- The command clears persisted conversation history for the currently active session context in the chat:
+  - default chat session (`tg:{chat_id}`), or
+  - currently activated resume-session override (if selected earlier).
+- After reset, subsequent turns in that session start as a fresh conversation (no prior replayed context).
+- The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
+
 ## Voice Handling Strategy
 
 - v1 uses a dedicated Telegram MTProto transcription worker (Pyrogram/Telethon user client) to access Telegram built-in voice transcription.

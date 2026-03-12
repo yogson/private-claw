@@ -176,6 +176,15 @@ class FilesystemSessionStore(SessionStoreInterface):
                 sessions.append(record.session_id)
         return sessions
 
+    async def clear_session(self, session_id: str) -> bool:
+        lock = self._get_lock(session_id)
+        async with lock:
+            path = self._session_path(session_id)
+            if not path.exists():
+                return False
+            path.unlink()
+            return True
+
     async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
         """
         Reconstruct model-facing history for the given session.

@@ -52,6 +52,7 @@ def _make_store(sessions: dict[str, list[SessionRecord]]) -> MagicMock:
     store = MagicMock()
     store.list_sessions = AsyncMock(return_value=list(sessions.keys()))
     store.read_session = AsyncMock(side_effect=lambda sid: sessions.get(sid, []))
+    store.clear_session = AsyncMock(return_value=True)
     return store
 
 
@@ -369,6 +370,26 @@ class TestAdapterSessionResume:
         event = _make_event(text="/sessions")
         assert adapter.is_session_resume_request(event) is True
 
+    def test_is_session_reset_available_true_with_store(self) -> None:
+        adapter, _ = self._make_adapter(with_store=True)
+        assert adapter.is_session_reset_available() is True
+
+    def test_is_session_reset_available_false_without_store(self) -> None:
+        adapter, _ = self._make_adapter(with_store=False)
+        assert adapter.is_session_reset_available() is False
+
+    @pytest.mark.parametrize("text", ["/reset", " /RESET ", "/reset@mybot"])
+    def test_is_session_reset_request_true(self, text: str) -> None:
+        adapter, _ = self._make_adapter()
+        event = _make_event(text=text)
+        assert adapter.is_session_reset_request(event) is True
+
+    @pytest.mark.parametrize("text", ["reset", "/resets", "/sessions", "hello", None, ""])
+    def test_is_session_reset_request_false(self, text: str | None) -> None:
+        adapter, _ = self._make_adapter()
+        event = _make_event(text=text)
+        assert adapter.is_session_reset_request(event) is False
+
     def test_is_session_resume_request_false_without_store(self) -> None:
         adapter, _ = self._make_adapter(with_store=False)
         event = _make_event(text="/sessions")
@@ -453,3 +474,12 @@ class TestAdapterSessionResume:
         svc = SessionResumeService(MagicMock(), _SECRET)
         assert svc.verify_callback(resp.actions[0].callback_data, _CHAT_ID) is not None
         assert svc.verify_callback(resp.actions[0].callback_data, 999999) is None
+
+    @pytest.mark.asyncio
+    async def test_reset_session_context_delegates_to_store(self) -> None:
+        adapter, store = self._make_adapter(with_store=True)
+        event = _make_event(text="/reset")
+        cleared = await adapter.reset_session_context(event)
+        assert cleared is True
+        assert store is not None
+        store.clear_session.assert_awaited_once_with(f"tg:{_CHAT_ID}")

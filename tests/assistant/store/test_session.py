@@ -112,6 +112,22 @@ async def test_list_sessions(session_store: FilesystemSessionStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_clear_session_removes_existing(session_store: FilesystemSessionStore) -> None:
+    await session_store.append([make_record("session-1")])
+    assert "session-1" in session_store._locks
+    assert await session_store.session_exists("session-1")
+    assert await session_store.clear_session("session-1") is True
+    assert "session-1" in session_store._locks
+    assert not await session_store.session_exists("session-1")
+    assert await session_store.read_session("session-1") == []
+
+
+@pytest.mark.asyncio
+async def test_clear_session_missing_returns_false(session_store: FilesystemSessionStore) -> None:
+    assert await session_store.clear_session("missing-session") is False
+
+
+@pytest.mark.asyncio
 async def test_append_duplicate_event_id_skipped(
     session_store: FilesystemSessionStore,
 ) -> None:

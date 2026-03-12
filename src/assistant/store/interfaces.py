@@ -153,6 +153,10 @@ class SessionStoreInterface(ABC):
         """List all session IDs."""
 
     @abstractmethod
+    async def clear_session(self, session_id: str) -> bool:
+        """Delete all persisted context for a session. Returns True when removed."""
+
+    @abstractmethod
     async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
         """
         Reconstruct model-facing history for context assembly.
