@@ -34,7 +34,6 @@ from assistant.store.models import (
 
 logger = structlog.get_logger(__name__)
 
-_DEFAULT_GREETING = "Hello! How can I help you today?"
 _REPLAY_BUDGET = 50
 _LOCK_KEY_PREFIX = "session:"
 _LOCK_OWNER_PREFIX = "orchestrator:"
@@ -119,21 +118,15 @@ class Orchestrator:
         try:
             records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
             messages = records_to_messages(records)
-
-            is_new_session = not await self._store.sessions.session_exists(session_id)
-            if is_new_session and not messages:
-                response_text = _DEFAULT_GREETING
-                logger.info("orchestrator.greeting", session_id=session_id)
-            else:
-                messages.append(user_message)
-                request = LLMRequest(
-                    messages=messages,
-                    trace_id=trace_id,
-                    model_id=self._config.model.default_model_id,
-                    max_tokens=self._config.model.max_tokens_default,
-                )
-                llm_response = await self._provider.complete(request)
-                response_text = llm_response.text
+            messages.append(user_message)
+            request = LLMRequest(
+                messages=messages,
+                trace_id=trace_id,
+                model_id=self._config.model.default_model_id,
+                max_tokens=self._config.model.max_tokens_default,
+            )
+            llm_response = await self._provider.complete(request)
+            response_text = llm_response.text
 
             await self._persist_turn(
                 session_id=session_id,

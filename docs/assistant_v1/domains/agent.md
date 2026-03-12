@@ -36,10 +36,11 @@ The v1 execution model is turn-based and in-process: handle exactly one inbound 
 7. Turn state is persisted atomically.
 8. Turn-execution context is finalized; runtime remains active and awaits the next inbound event.
 
-Greeting behavior for new sessions:
-- First session event triggers a greeting response.
-- Greeting turn is persisted as regular conversation history.
-- Turn-execution context finalizes after persistence.
+First-turn behavior for new sessions:
+- First inbound user event is handled via the normal execution route (direct model / capability / sub-agent selection).
+- The first user message is included in the LLM request context when the direct model path is selected.
+- No hardcoded greeting-only short-circuit is used for new sessions.
+- The resulting assistant response is persisted as regular conversation history, then the turn finalizes.
 
 ## Context Assembly and Routing Policy
 

@@ -5,26 +5,29 @@ Session resume flow for Telegram: listing recent resumable sessions and
 switching active session via signed inline keyboard callback selection.
 """
 
-import hashlib
-import hmac
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from pydantic import BaseModel
 
 from assistant.channels.telegram.models import ActionButton, ChannelResponse, MessageType
+from assistant.channels.telegram.session_resume_callbacks import (
+    CALLBACK_TTL_SECONDS,
+    sign_resume_callback,
+    verify_resume_callback,
+)
+from assistant.channels.telegram.session_resume_labels import (
+    extract_label as _extract_label,
+)
+from assistant.channels.telegram.session_resume_labels import (
+    extract_preview as _extract_preview,
+)
 from assistant.store.interfaces import SessionStoreInterface
-from assistant.store.models import SessionRecord, SessionRecordType
 
-_RESUME_CALLBACK_ACTION = "resume_session"
-_MAX_PREVIEW_LENGTH = 100
-_MAX_LABEL_LENGTH = 40
-_HMAC_SIG_LENGTH = 16
 _BUTTON_LABEL_MAX = 64
-# Callbacks older than this are rejected to prevent replay.
-_CALLBACK_TTL_SECONDS = 3600
 
 _SESSIONS_COMMAND = "/sessions"
+_CALLBACK_TTL_SECONDS = CALLBACK_TTL_SECONDS
 
 
 class SessionEntry(BaseModel):
@@ -131,15 +134,13 @@ class SessionResumeService:
         """
         Generate a chat-scoped, timestamped signed callback payload.
 
-        Format: ``resume_session:{chat_id}:{session_id}:{ts}:{sig}``
-        where ``sig = HMAC("{chat_id}:{session_id}:{ts}")``.
-        The timestamp enables TTL enforcement; the chat_id prevents cross-chat
-        replay even if a payload is intercepted.
+        Compact format: ``rs:{session_id}:{ts36}:{sig}``
+        where ``sig = HMAC("{chat_id}:{session_id}:{ts36}")``.
+        The payload intentionally omits chat_id to stay under Telegram's
+        callback_data size limit, while the signature still binds the payload
+        to the originating chat via the signed message.
         """
-        ts = int(datetime.now(UTC).timestamp())
-        msg = f"{chat_id}:{session_id}:{ts}"
-        sig = hmac.new(self._secret, msg.encode(), hashlib.sha256).hexdigest()[:_HMAC_SIG_LENGTH]
-        return f"{_RESUME_CALLBACK_ACTION}:{chat_id}:{session_id}:{ts}:{sig}"
+        return sign_resume_callback(session_id=session_id, chat_id=chat_id, secret=self._secret)
 
     def verify_callback(self, callback_data: str, expected_chat_id: int) -> str | None:
         """
@@ -147,51 +148,19 @@ class SessionResumeService:
 
         Rejects the payload when:
         - format is unrecognised or the action prefix is wrong,
-        - the embedded chat_id does not match ``expected_chat_id``,
         - the payload is older than ``_CALLBACK_TTL_SECONDS`` (replay protection),
-        - the HMAC signature does not match.
+        - chat binding fails for compact format:
+          ``sig = HMAC("{expected_chat_id}:{session_id}:{ts36}")``.
+        - the HMAC signature does not match for the parsed format.
 
         Parsing is right-anchored so that session_ids containing colons
         (e.g. ``tg:123456``) are handled correctly.
         """
-        # Strip sig (always last segment)
-        without_sig, _, sig = callback_data.rpartition(":")
-        if not without_sig or not sig:
-            return None
-        # Strip ts (now last segment)
-        without_ts, _, ts_str = without_sig.rpartition(":")
-        if not without_ts or not ts_str:
-            return None
-        # Parse "resume_session:{chat_id}:{session_id}" — session_id may contain colons
-        parts = without_ts.split(":", 2)
-        if len(parts) != 3 or parts[0] != _RESUME_CALLBACK_ACTION:
-            return None
-        _, chat_id_str, session_id = parts
-
-        # Chat binding check
-        try:
-            if int(chat_id_str) != expected_chat_id:
-                return None
-        except ValueError:
-            return None
-
-        # TTL / replay check
-        try:
-            ts = int(ts_str)
-        except ValueError:
-            return None
-        age = int(datetime.now(UTC).timestamp()) - ts
-        if age < 0 or age > _CALLBACK_TTL_SECONDS:
-            return None
-
-        # Signature check
-        msg = f"{chat_id_str}:{session_id}:{ts_str}"
-        expected = hmac.new(self._secret, msg.encode(), hashlib.sha256).hexdigest()[
-            :_HMAC_SIG_LENGTH
-        ]
-        if not hmac.compare_digest(sig, expected):
-            return None
-        return session_id
+        return verify_resume_callback(
+            callback_data=callback_data,
+            expected_chat_id=expected_chat_id,
+            secret=self._secret,
+        )
 
     @staticmethod
     def is_resume_request(text: str | None) -> bool:
@@ -215,29 +184,3 @@ class SessionResumeService:
             last_activity=last_activity,
             preview_snippet=preview,
         )
-
-
-def _extract_label(records: list[SessionRecord]) -> str:
-    for record in records:
-        if record.record_type == SessionRecordType.TURN_SUMMARY:
-            text = str(record.payload.get("summary_text", ""))
-            if text:
-                return text[:_MAX_LABEL_LENGTH]
-    for record in records:
-        if record.record_type == SessionRecordType.USER_MESSAGE:
-            content = str(record.payload.get("content", ""))
-            if content:
-                return content[:_MAX_LABEL_LENGTH]
-    return str(records[0].session_id)[:_MAX_LABEL_LENGTH]
-
-
-def _extract_preview(records: list[SessionRecord]) -> str:
-    for record in reversed(records):
-        if record.record_type in (
-            SessionRecordType.USER_MESSAGE,
-            SessionRecordType.ASSISTANT_MESSAGE,
-        ):
-            content = str(record.payload.get("content", ""))
-            if content:
-                return content[:_MAX_PREVIEW_LENGTH]
-    return ""

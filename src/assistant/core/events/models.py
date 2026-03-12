@@ -57,8 +57,10 @@ class CallbackQueryMeta(BaseModel):
     """
     Callback query metadata.
 
-    Session-resume callbacks carry action='resume_session' and
-    target_session_id in callback_data as a signed payload.
+    Session-resume callbacks use compact payload format
+    ``rs:{session_id}:{ts36}:{sig}`` in callback_data.
+    For compact payloads, chat binding is cryptographic via HMAC input,
+    not an explicit callback_data field.
     """
 
     callback_id: str

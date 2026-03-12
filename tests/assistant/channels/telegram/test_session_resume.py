@@ -84,9 +84,10 @@ def _make_event(text: str | None = None, callback_data: str | None = None) -> No
 def _forge_callback(session_id: str, chat_id: int, secret: str, ts_offset: int = 0) -> str:
     """Build a correctly-signed payload, optionally with a shifted timestamp."""
     ts = int(time.time()) + ts_offset
-    msg = f"{chat_id}:{session_id}:{ts}"
-    sig = _hmac_module.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()[:16]
-    return f"resume_session:{chat_id}:{session_id}:{ts}:{sig}"
+    ts36 = format(ts, "x")
+    msg = f"{chat_id}:{session_id}:{ts36}"
+    sig = _hmac_module.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()[:12]
+    return f"rs:{session_id}:{ts36}:{sig}"
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +109,7 @@ class TestSignAndVerify:
     def test_tampered_session_id_rejected(self) -> None:
         svc = SessionResumeService(MagicMock(), _SECRET)
         signed = svc.sign_callback(f"tg:{_CHAT_ID}", _CHAT_ID)
-        tampered = signed.replace(f":tg:{_CHAT_ID}:", ":tg:99999:")
+        tampered = f"{signed[:-1]}0" if signed[-1] != "0" else f"{signed[:-1]}1"
         assert svc.verify_callback(tampered, _CHAT_ID) is None
 
     def test_wrong_action_prefix_rejected(self) -> None:
@@ -137,6 +138,11 @@ class TestSignAndVerify:
         svc = SessionResumeService(MagicMock(), _SECRET)
         future = _forge_callback(f"tg:{_CHAT_ID}", _CHAT_ID, _SECRET, ts_offset=9999)
         assert svc.verify_callback(future, _CHAT_ID) is None
+
+    def test_legacy_payload_rejected(self) -> None:
+        svc = SessionResumeService(MagicMock(), _SECRET)
+        legacy = "resume_session:123456:tg:123456:1700000000:deadbeefdeadbeef"
+        assert svc.verify_callback(legacy, _CHAT_ID) is None
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +282,25 @@ class TestBuildSessionMenu:
         # Callback must be verifiable for the same chat_id
         verified = svc.verify_callback(resp.actions[0].callback_data, _CHAT_ID)
         assert verified == f"tg:{_CHAT_ID}"
+        assert len(resp.actions[0].callback_data.encode("utf-8")) <= 64
+
+    def test_long_session_id_keeps_callback_under_telegram_limit(self) -> None:
+        entries = [
+            SessionEntry(
+                session_id=f"tg:{_CHAT_ID}:3eeada40275f",
+                label="Long Session",
+                last_activity=_NOW,
+                preview_snippet="",
+            )
+        ]
+        svc = SessionResumeService(MagicMock(), _SECRET)
+        resp = svc.build_session_menu(entries, f"tg:{_CHAT_ID}", _CHAT_ID, "trace-x")
+        assert len(resp.actions) == 1
+        assert len(resp.actions[0].callback_data.encode("utf-8")) <= 64
+        assert (
+            svc.verify_callback(resp.actions[0].callback_data, _CHAT_ID)
+            == f"tg:{_CHAT_ID}:3eeada40275f"
+        )
 
     def test_callback_rejects_different_chat(self) -> None:
         """Buttons signed for chat A must not verify for chat B."""

@@ -288,7 +288,7 @@ class TestOrchestratorExecuteTurn:
         mock_provider.complete.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_new_session_returns_greeting(
+    async def test_new_session_calls_provider_with_first_user_message(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
@@ -302,8 +302,11 @@ class TestOrchestratorExecuteTurn:
         )
         event = _minimal_event()
         result = await orch.execute_turn(event)
-        assert result == "Hello! How can I help you today?"
-        mock_provider.complete.assert_not_called()
+        assert result == "Model response"
+        mock_provider.complete.assert_called_once()
+        call_args = mock_provider.complete.call_args[0][0]
+        assert len(call_args.messages) == 1
+        assert call_args.messages[0].content == "Hello"
         mock_store.sessions.append.assert_called_once()
 
     @pytest.mark.asyncio

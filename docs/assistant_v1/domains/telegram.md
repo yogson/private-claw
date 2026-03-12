@@ -57,10 +57,11 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
   - session label (generated title or fallback from first user message),
   - last activity timestamp,
   - short preview snippet (bounded length, sanitized).
-- Resume callback payload is signed with HMAC-SHA256 and includes:
-  - bound `chat_id` (prevents cross-chat use of another chat's callback),
-  - Unix timestamp (TTL enforcement rejects callbacks older than 1 hour),
-  - target `session_id`.
+- Resume callback payload format (current):
+  - `rs:{session_id}:{ts36}:{sig}`,
+  - `ts36` is a hex-encoded Unix timestamp used for TTL enforcement (1 hour),
+  - `sig` is HMAC-SHA256 over `"{chat_id}:{session_id}:{ts36}"` (truncated),
+  - `chat_id` is not embedded in payload fields; chat binding is cryptographic via signature input.
 - Session listing is scoped to the requesting chat's sessions only; sessions from other chats are never returned.
 - Session selection must remain within the same allowlisted user/chat context; cross-user/session escalation is forbidden.
 
