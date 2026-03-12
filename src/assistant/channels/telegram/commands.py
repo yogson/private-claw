@@ -4,52 +4,36 @@ Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 Telegram command catalog and parsing helpers.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 
 from aiogram.types import BotCommand
 
 
 class TelegramCommand(StrEnum):
-    """Supported Telegram slash commands handled by the runtime."""
+    """Supported Telegram slash commands and menu metadata."""
 
-    NEW = "/new"
-    RESET = "/reset"
-    SESSIONS = "/sessions"
+    NEW = "/new", "Start a fresh session for this chat."
+    RESET = "/reset", "Clear context for the active session."
+    SESSIONS = "/sessions", "List recent sessions and resume one."
 
+    def __new__(cls, value: str, description: str) -> "TelegramCommand":
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        obj.description = description
+        return obj
 
-@dataclass(frozen=True)
-class TelegramCommandSpec:
-    """Command metadata used for Telegram native commands menu registration."""
-
-    command: TelegramCommand
     description: str
-
-
-TELEGRAM_COMMAND_SPECS: tuple[TelegramCommandSpec, ...] = (
-    TelegramCommandSpec(
-        command=TelegramCommand.NEW,
-        description="Start a fresh session for this chat.",
-    ),
-    TelegramCommandSpec(
-        command=TelegramCommand.RESET,
-        description="Clear context for the active session.",
-    ),
-    TelegramCommandSpec(
-        command=TelegramCommand.SESSIONS,
-        description="List recent sessions and resume one.",
-    ),
-)
 
 
 def build_bot_commands() -> list[BotCommand]:
     """Build BotCommand entries for Telegram's native commands menu."""
     return [
         BotCommand(
-            command=spec.command.value.removeprefix("/"),
-            description=spec.description,
+            command=command.value.removeprefix("/"),
+            description=command.description,
         )
-        for spec in TELEGRAM_COMMAND_SPECS
+        for command in TelegramCommand
     ]
 
 
@@ -64,7 +48,7 @@ def extract_supported_command(text: str | None) -> TelegramCommand | None:
     token, _, _bot_suffix = first.partition("@")
     if not token:
         return None
-    try:
-        return TelegramCommand(token)
-    except ValueError:
+    candidate = TelegramCommand._value2member_map_.get(token)
+    if candidate is None:
         return None
+    return cast(TelegramCommand, candidate)
