@@ -44,6 +44,25 @@ def _build_orchestrator_handler(
     mapper = NormalizedEventMapper()
 
     async def _handler(event: NormalizedEvent) -> ChannelResponse | None:
+        if adapter.is_session_new_request(event):
+            session_id = adapter.start_new_session(event)
+            if session_id is None:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Could not start a new session for this chat.",
+                )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Started a new session. Continue your conversation.",
+            )
         if adapter.is_session_reset_request(event):
             if not adapter.is_session_reset_available():
                 return ChannelResponse(

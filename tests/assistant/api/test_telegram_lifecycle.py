@@ -120,6 +120,7 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_reset_available.return_value = True
     mock_adapter.is_session_resume_request.return_value = False
@@ -155,6 +156,7 @@ async def test_handler_handles_reset_without_orchestrator_call() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = True
     mock_adapter.reset_session_context = AsyncMock(return_value=True)
@@ -189,6 +191,7 @@ async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> 
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = False
     mock_adapter.reset_session_context = AsyncMock()
@@ -202,4 +205,72 @@ async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> 
     assert response is not None
     assert response.text == "Session reset is not available."
     mock_adapter.reset_session_context.assert_not_called()
+    mock_orchestrator.execute_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_handles_new_session_without_orchestrator_call() -> None:
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-new",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-new",
+        text="/new",
+        metadata={"chat_id": 123},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = True
+    mock_adapter.start_new_session.return_value = "tg:123:abcd1234ef56"
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock()
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    response = await handler(event)
+
+    assert response is not None
+    assert response.session_id == "tg:123:abcd1234ef56"
+    assert response.text == "Started a new session. Continue your conversation."
+    mock_adapter.start_new_session.assert_called_once_with(event)
+    mock_orchestrator.execute_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_handles_new_session_failure_without_orchestrator_call() -> None:
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-new-fail",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-new-fail",
+        text="/new",
+        metadata={"chat_id": 123},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = True
+    mock_adapter.start_new_session.return_value = None
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock()
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    response = await handler(event)
+
+    assert response is not None
+    assert response.session_id == "tg:123"
+    assert response.text == "Could not start a new session for this chat."
+    mock_adapter.start_new_session.assert_called_once_with(event)
     mock_orchestrator.execute_turn.assert_not_called()

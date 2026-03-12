@@ -348,7 +348,7 @@
           "scope_path": "src/assistant/channels/telegram/",
           "status": "implemented",
           "completed_date": "2026-03-11",
-          "notes": "Implemented SessionResumeService with HMAC-signed callbacks, session listing/metadata extraction, and TelegramAdapter session-context overrides. Added `/reset` command path to clear persisted context for the active chat session. 39 focused unit tests added.",
+          "notes": "Implemented SessionResumeService with HMAC-signed callbacks, session listing/metadata extraction, and TelegramAdapter session-context overrides. Added `/reset` command path to clear persisted context for the active chat session. Added `/new` command path to create and activate a fresh chat-scoped session context. 39 focused unit tests added.",
           "files_delivered": [
             "src/assistant/channels/telegram/session_resume.py",
             "src/assistant/channels/telegram/adapter.py",

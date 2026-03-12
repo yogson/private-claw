@@ -73,6 +73,13 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - After reset, subsequent turns in that session start as a fresh conversation (no prior replayed context).
 - The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
 
+### New Session Flow
+
+- v1 supports explicit new-session creation via `/new` (and `/new@botname` in group contexts).
+- The command creates a fresh chat-scoped session ID (`tg:{chat_id}:{suffix}`) and switches active chat context to it immediately.
+- The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
+- Subsequent user turns in the same chat are routed to the newly activated session until another session switch command/callback is applied.
+
 ## Voice Handling Strategy
 
 - v1 uses a dedicated Telegram MTProto transcription worker (Pyrogram/Telethon user client) to access Telegram built-in voice transcription.

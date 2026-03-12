@@ -374,6 +374,18 @@ class TestAdapterSessionResume:
         adapter, _ = self._make_adapter(with_store=True)
         assert adapter.is_session_reset_available() is True
 
+    @pytest.mark.parametrize("text", ["/new", " /NEW ", "/new@mybot"])
+    def test_is_session_new_request_true(self, text: str) -> None:
+        adapter, _ = self._make_adapter()
+        event = _make_event(text=text)
+        assert adapter.is_session_new_request(event) is True
+
+    @pytest.mark.parametrize("text", ["new", "/news", "/reset", "/sessions", "hello", None, ""])
+    def test_is_session_new_request_false(self, text: str | None) -> None:
+        adapter, _ = self._make_adapter()
+        event = _make_event(text=text)
+        assert adapter.is_session_new_request(event) is False
+
     def test_is_session_reset_available_false_without_store(self) -> None:
         adapter, _ = self._make_adapter(with_store=False)
         assert adapter.is_session_reset_available() is False
@@ -483,3 +495,23 @@ class TestAdapterSessionResume:
         assert cleared is True
         assert store is not None
         store.clear_session.assert_awaited_once_with(f"tg:{_CHAT_ID}")
+
+    def test_start_new_session_activates_override(self) -> None:
+        adapter, _ = self._make_adapter(with_store=True)
+        event = _make_event(text="/new")
+        session_id = adapter.start_new_session(event)
+        assert session_id is not None
+        assert session_id.startswith(f"tg:{_CHAT_ID}:")
+        assert adapter.get_active_session(_CHAT_ID) == session_id
+
+    def test_start_new_session_missing_chat_returns_none(self) -> None:
+        adapter, _ = self._make_adapter(with_store=True)
+        event = _make_event(text="/new")
+        event = event.model_copy(update={"metadata": {}})
+        assert adapter.start_new_session(event) is None
+
+    def test_start_new_session_non_numeric_chat_returns_none(self) -> None:
+        adapter, _ = self._make_adapter(with_store=True)
+        event = _make_event(text="/new")
+        event = event.model_copy(update={"metadata": {"chat_id": "not-a-number"}})
+        assert adapter.start_new_session(event) is None

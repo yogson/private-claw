@@ -26,6 +26,7 @@ from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
 _RESET_COMMAND = "/reset"
+_NEW_COMMAND = "/new"
 
 
 class TelegramAdapter:
@@ -164,6 +165,34 @@ class TelegramAdapter:
         if not text.startswith(_RESET_COMMAND):
             return False
         return text == _RESET_COMMAND or text.startswith(f"{_RESET_COMMAND}@")
+
+    def is_session_new_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /new command."""
+        raw = (event.text or "").strip()
+        if not raw:
+            return False
+        text = raw.split(maxsplit=1)[0].lower()
+        if not text.startswith(_NEW_COMMAND):
+            return False
+        return text == _NEW_COMMAND or text.startswith(f"{_NEW_COMMAND}@")
+
+    def start_new_session(self, event: NormalizedEvent) -> str | None:
+        """Create and activate a new session id for the event chat context."""
+        try:
+            chat_id = int(event.metadata.get("chat_id", 0))
+        except (TypeError, ValueError):
+            return None
+        if chat_id <= 0:
+            return None
+        session_id = f"tg:{chat_id}:{uuid.uuid4().hex[:12]}"
+        self._active_sessions[chat_id] = session_id
+        logger.info(
+            "telegram.adapter.session_new.activated",
+            chat_id=chat_id,
+            session_id=session_id,
+            trace_id=event.trace_id,
+        )
+        return session_id
 
     def is_session_reset_available(self) -> bool:
         """Return True when session reset can be executed in this runtime."""
