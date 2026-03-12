@@ -6,6 +6,7 @@ Deterministic retrieval and index pipeline for memory artifacts.
 
 from assistant.memory.retrieval.indexer import MemoryIndexer
 from assistant.memory.retrieval.models import (
+    RecoveryDiagnostics,
     RetrievalAudit,
     RetrievalQuery,
     RetrievalResult,
@@ -14,6 +15,7 @@ from assistant.memory.retrieval.service import RetrievalService
 
 __all__ = [
     "MemoryIndexer",
+    "RecoveryDiagnostics",
     "RetrievalAudit",
     "RetrievalQuery",
     "RetrievalResult",

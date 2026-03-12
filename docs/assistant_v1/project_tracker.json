@@ -7,7 +7,7 @@
     "estimated_completion": null,
     "actual_completion": null,
     "total_phases": 6,
-    "completed_phases": 3
+    "completed_phases": 4
   },
   "status_values": [
     "not_started",
@@ -400,9 +400,9 @@
       "name": "Filesystem Memory and Retrieval Quality",
       "description": "Deliver durable long-term memory with deterministic retrieval, deduplication, and index repair behavior.",
       "priority": "HIGH",
-      "status": "in_progress",
+      "status": "completed",
       "started_date": "2026-03-12",
-      "completed_date": null,
+      "completed_date": "2026-03-12",
       "dependencies": [
         "phase_1",
         "phase_2",
@@ -469,10 +469,21 @@
           "name": "Index Rebuild/Repair and Degraded Fallback [CMP_MEMORY_FILESYSTEM_STORE]",
           "description": "Implement index rebuild and repair path with degraded-mode fallback retrieval and diagnostics.",
           "scope_path": "src/assistant/memory/maintenance/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-12",
+          "completed_date": "2026-03-12",
+          "notes": "IndexMaintenanceService: check_integrity (manifest/version/parse), rebuild, repair, run_consistency_scan. Index version manifest written on build. RetrievalService uses maintenance for ensure_indexes and degraded-fallback recovery; recovery_diagnostics (RecoveryDiagnostics) in RetrievalAudit. Maintenance lives in retrieval.maintenance with memory.maintenance re-export.",
+          "files_delivered": [
+            "src/assistant/memory/store/paths.py",
+            "src/assistant/memory/retrieval/indexer.py",
+            "src/assistant/memory/retrieval/models.py",
+            "src/assistant/memory/retrieval/service.py",
+            "src/assistant/memory/retrieval/maintenance/__init__.py",
+            "src/assistant/memory/retrieval/maintenance/models.py",
+            "src/assistant/memory/retrieval/maintenance/service.py",
+            "src/assistant/memory/maintenance/__init__.py",
+            "tests/assistant/memory/test_maintenance.py"
+          ]
         }
       ],
       "deliverables": [

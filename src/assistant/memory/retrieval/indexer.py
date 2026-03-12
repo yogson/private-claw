@@ -70,13 +70,18 @@ class MemoryIndexer:
         self._paths = paths
 
     def build(self) -> None:
-        """Scan memory files and write index JSON files."""
+        """Scan memory files and write index JSON files and version manifest."""
         artifacts = scan_artifacts(self._paths)
         indexes = _build_indexes(artifacts)
         self._paths.indexes_dir.mkdir(parents=True, exist_ok=True)
         for name, data in indexes.items():
             path = self._paths.index_path(name)
             path.write_text(json.dumps(data, indent=0), encoding="utf-8")
+        manifest_path = self._paths.index_path(MemoryPaths.INDEX_MANIFEST)
+        manifest_path.write_text(
+            json.dumps({"version": MemoryPaths.INDEX_VERSION}, indent=0),
+            encoding="utf-8",
+        )
 
     def load_index(self, name: str) -> Any:
         """Load a single index by name. Returns empty structure if missing."""

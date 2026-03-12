@@ -4,11 +4,14 @@ Component ID: CMP_MEMORY_FILESYSTEM_STORE
 Deterministic retrieval pipeline with category caps and bounded context assembly.
 """
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from assistant.memory.retrieval.indexer import MemoryIndexer, scan_artifacts
+from assistant.memory.retrieval.maintenance.service import IndexMaintenanceService
 from assistant.memory.retrieval.models import (
+    RecoveryDiagnostics,
     RetrievalAudit,
     RetrievalQuery,
     RetrievalResult,
@@ -89,6 +92,7 @@ class RetrievalService:
     def __init__(self, data_root: Path | str) -> None:
         self._paths = MemoryPaths(Path(data_root))
         self._indexer = MemoryIndexer(self._paths)
+        self._maintenance = IndexMaintenanceService(self._paths)
 
     def retrieve(self, query: RetrievalQuery) -> RetrievalResult:
         """Retrieve relevant memory artifacts with category caps and bounded context."""
@@ -96,16 +100,49 @@ class RetrievalService:
         candidates = _gather_candidates(indexes, query)
 
         if not candidates and not self._indexer.indexes_exist():
-            self._indexer.build()
+            with suppress(OSError):
+                self._maintenance.rebuild()
             indexes = self._indexer.load_all_indexes()
             candidates = _gather_candidates(indexes, query)
 
         used_degraded_fallback = False
+        recovery_diagnostics: RecoveryDiagnostics | None = None
         if not candidates:
+            integrity = self._maintenance.check_integrity()
             scanned = scan_artifacts(self._paths)
             candidates = {a.frontmatter.memory_id for a in scanned}
             if scanned:
                 used_degraded_fallback = True
+                if not integrity.is_healthy:
+                    try:
+                        diag = self._maintenance.rebuild()
+                        recovery_diagnostics = RecoveryDiagnostics(
+                            status=diag.recovery_status,
+                            affected_indexes=diag.affected_indexes,
+                            issues=[integrity.reason or "unknown"],
+                        )
+                    except OSError as e:
+                        recovery_diagnostics = RecoveryDiagnostics(
+                            status="failure",
+                            affected_indexes=[],
+                            issues=[f"rebuild_failed: {e!s}"],
+                        )
+                else:
+                    report = self._maintenance.run_consistency_scan()
+                    if not report.is_consistent:
+                        try:
+                            diag = self._maintenance.repair()
+                            recovery_diagnostics = RecoveryDiagnostics(
+                                status=diag.recovery_status,
+                                affected_indexes=diag.affected_indexes,
+                                issues=diag.consistency_issues,
+                            )
+                        except OSError as e:
+                            recovery_diagnostics = RecoveryDiagnostics(
+                                status="failure",
+                                affected_indexes=[],
+                                issues=[f"repair_failed: {e!s}"],
+                            )
                 recency_ts = [
                     (
                         a.frontmatter.last_used_at or a.frontmatter.updated_at,
@@ -168,10 +205,16 @@ class RetrievalService:
             scores_by_id={sa.artifact.frontmatter.memory_id: sa.score for sa in capped},
             retrieval_mode=mode,
             candidate_count=len(candidates),
+            recovery_diagnostics=recovery_diagnostics,
         )
         return RetrievalResult(scored_artifacts=capped, audit=audit)
 
     def ensure_indexes(self) -> None:
-        """Build indexes if missing. Call on startup for integrity check."""
-        if not self._indexer.indexes_exist():
-            self._indexer.build()
+        """Build indexes if missing or degraded. Call on startup for integrity check."""
+        with suppress(OSError):
+            integrity = self._maintenance.check_integrity()
+            if not integrity.is_healthy:
+                self._maintenance.rebuild()
+                return
+            if not self._indexer.indexes_exist():
+                self._maintenance.rebuild()

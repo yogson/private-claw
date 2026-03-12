@@ -41,6 +41,8 @@ class MemoryPaths:
     INDEX_BY_ENTITY = "index_by_entity.json"
     INDEX_BY_PROJECT = "index_by_project.json"
     INDEX_BY_RECENCY = "index_by_recency.json"
+    INDEX_MANIFEST = "index_version.json"
+    INDEX_VERSION = 1
 
     def __init__(self, data_root: Path) -> None:
         self._data_root = Path(data_root)

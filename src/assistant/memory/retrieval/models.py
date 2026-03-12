@@ -40,6 +40,18 @@ class ScoredArtifact(BaseModel):
     score: float = Field(..., ge=0, description="Combined retrieval score")
 
 
+class RecoveryDiagnostics(BaseModel):
+    """Structured recovery info when degraded-fallback path is used."""
+
+    status: str = Field(..., description="full_rebuild, repair, failure, no_action")
+    affected_indexes: list[str] = Field(
+        default_factory=list, description="Index files touched or attempted"
+    )
+    issues: list[str] = Field(
+        default_factory=list, description="Integrity/consistency issues or failure reason"
+    )
+
+
 class RetrievalAudit(BaseModel):
     """Audit data for retrieval (selected IDs, scores, mode)."""
 
@@ -49,6 +61,10 @@ class RetrievalAudit(BaseModel):
         default="deterministic", description="deterministic or deterministic_plus_bm25"
     )
     candidate_count: int = 0
+    recovery_diagnostics: RecoveryDiagnostics | None = Field(
+        default=None,
+        description="When degraded_fallback: structured recovery status and affected indexes",
+    )
 
 
 class RetrievalResult(BaseModel):
