@@ -42,7 +42,7 @@ Each memory artifact should expose metadata fields used by indexes:
 
 1. Parse user turn for intent hints, entities, and topical tags.
 2. Generate candidates from deterministic indexes (type/tag/entity/project).
-3. Score candidates using transparent weighted scoring.
+3. Score candidates using transparent weighted scoring (metadata) plus optional BM25 body relevance (industry-standard Okapi BM25 via `rank_bm25`).
 4. Select top-K per category and build compact context block.
 5. Optionally run small-model rerank/compression for ambiguous or oversized candidate sets.
 6. Inject selected context into prompt and record retrieval audit.

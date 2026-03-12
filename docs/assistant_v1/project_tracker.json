@@ -433,10 +433,19 @@
           "name": "Deterministic Retrieval and Index Pipeline [CMP_MEMORY_FILESYSTEM_STORE]",
           "description": "Implement deterministic non-vector retrieval/index pipeline with category caps and bounded context assembly.",
           "scope_path": "src/assistant/memory/retrieval/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-12",
+          "completed_date": "2026-03-12",
+          "notes": "MemoryIndexer builds JSON indexes (type/tag/entity/project/recency). RetrievalService: candidate generation from indexes, transparent weighted metadata scoring, optional BM25 body relevance (rank_bm25). Category caps, bounded context assembly, retrieval audit. 6 focused unit tests.",
+          "files_delivered": [
+            "src/assistant/memory/retrieval/__init__.py",
+            "src/assistant/memory/retrieval/models.py",
+            "src/assistant/memory/retrieval/indexer.py",
+            "src/assistant/memory/retrieval/scoring.py",
+            "src/assistant/memory/retrieval/service.py",
+            "tests/assistant/memory/test_retrieval.py",
+            "pyproject.toml"
+          ]
         },
         {
           "id": "4.3",

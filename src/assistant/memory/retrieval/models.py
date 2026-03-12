@@ -1,0 +1,58 @@
+"""
+Component ID: CMP_MEMORY_FILESYSTEM_STORE
+
+Retrieval query and result models for INT_ORCH_CONTEXT_BUILD.
+"""
+
+from pydantic import BaseModel, Field
+
+from assistant.memory.store.models import MemoryArtifact, MemoryType
+
+
+class RetrievalQuery(BaseModel):
+    """Query for memory retrieval (INT_ORCH_CONTEXT_BUILD input)."""
+
+    intent_entities: list[str] = Field(default_factory=list, description="Entities from user turn")
+    intent_tags: list[str] = Field(default_factory=list, description="Topical tags from user turn")
+    intent_types: list[MemoryType] = Field(
+        default_factory=list, description="Memory types to consider"
+    )
+    user_query_text: str | None = Field(
+        default=None, description="Optional user message for BM25 body relevance"
+    )
+    category_caps: dict[MemoryType, int] = Field(
+        default_factory=lambda: {
+            MemoryType.PROFILE: 2,
+            MemoryType.PREFERENCES: 3,
+            MemoryType.PROJECTS: 4,
+            MemoryType.TASKS: 4,
+            MemoryType.FACTS: 3,
+            MemoryType.SUMMARIES: 1,
+        },
+        description="Max artifacts per category",
+    )
+
+
+class ScoredArtifact(BaseModel):
+    """Memory artifact with retrieval score."""
+
+    artifact: MemoryArtifact
+    score: float = Field(..., ge=0, description="Combined retrieval score")
+
+
+class RetrievalAudit(BaseModel):
+    """Audit data for retrieval (selected IDs, scores, mode)."""
+
+    selected_ids: list[str] = Field(default_factory=list)
+    scores_by_id: dict[str, float] = Field(default_factory=dict)
+    retrieval_mode: str = Field(
+        default="deterministic", description="deterministic or deterministic_plus_bm25"
+    )
+    candidate_count: int = 0
+
+
+class RetrievalResult(BaseModel):
+    """Result of memory retrieval (INT_ORCH_CONTEXT_BUILD output)."""
+
+    scored_artifacts: list[ScoredArtifact] = Field(default_factory=list)
+    audit: RetrievalAudit = Field(default_factory=RetrievalAudit)
