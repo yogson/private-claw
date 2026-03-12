@@ -22,6 +22,7 @@ _MAX_RETRY_ATTEMPTS = 3
 _RETRY_BASE_DELAY_SECONDS = 1.0
 _RETRY_BACKOFF_FACTOR = 2.0
 _CALLBACK_ACK_TEXT: Final[str] = "Received."
+_TELEGRAM_MAX_MESSAGE_LENGTH: Final[int] = 4096
 
 
 class TelegramSendError(Exception):
@@ -65,6 +66,12 @@ class TelegramEgress:
         last_error = ""
         attempts_made = 0
 
+        text_chunks = (
+            [response.text]
+            if response.message_type == MessageType.INTERACTIVE
+            else self._split_text(response.text)
+        )
+        sent_chunks = 0
         for attempt in range(1, self._max_attempts + 1):
             attempts_made = attempt
             if self._audit_logger is not None:
@@ -75,12 +82,14 @@ class TelegramEgress:
                     trace_id=response.trace_id,
                 )
             try:
-                await self._bot.send_message(
-                    chat_id=chat_id,
-                    text=response.text,
-                    parse_mode=response.parse_mode,
-                    reply_markup=self._build_inline_keyboard(response),
-                )
+                for chunk in text_chunks[sent_chunks:]:
+                    await self._bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        parse_mode=response.parse_mode,
+                        reply_markup=self._build_inline_keyboard(response),
+                    )
+                    sent_chunks += 1
                 if self._audit_logger is not None:
                     self._audit_logger.log_egress_success(
                         chat_id=chat_id,
@@ -190,6 +199,23 @@ class TelegramEgress:
             for action in response.actions
         ]
         return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    @staticmethod
+    def _split_text(text: str) -> list[str]:
+        if len(text) <= _TELEGRAM_MAX_MESSAGE_LENGTH:
+            return [text]
+        chunks: list[str] = []
+        start = 0
+        while start < len(text):
+            end = min(start + _TELEGRAM_MAX_MESSAGE_LENGTH, len(text))
+            if end < len(text):
+                split_at = text.rfind("\n", start, end)
+                if split_at > start:
+                    end = split_at + 1
+            chunk = text[start:end]
+            chunks.append(chunk)
+            start = end
+        return chunks
 
     @property
     def _backoff_factor(self) -> float:

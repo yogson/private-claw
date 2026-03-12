@@ -396,6 +396,7 @@ class TestOrchestratorExecuteTurn:
                 "file_id": "photo-123",
                 "mime_type": "image/jpeg",
                 "file_size_bytes": 45000,
+                "file_name": None,
                 "caption": None,
             }
         ]
@@ -492,3 +493,103 @@ class TestOrchestratorExecuteTurn:
         assert len(msg.content_blocks) == 1
         assert msg.content_blocks[0]["type"] == "image"
         assert "[Empty or unsupported input]" not in str(msg.content_blocks)
+
+    @pytest.mark.asyncio
+    async def test_text_attachment_with_downloader_adds_text_block(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_provider: MagicMock,
+    ) -> None:
+        mock_store.sessions.session_exists = AsyncMock(return_value=True)
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+
+        async def mock_download(
+            file_id: str, mime_type: str, file_size_bytes: int, trace_id: str
+        ) -> bytes | None:
+            return b"# Architecture improvements\n\n- Add retries\n- Add metrics\n"
+
+        mock_downloader = MagicMock()
+        mock_downloader.download = AsyncMock(side_effect=mock_download)
+
+        orch = Orchestrator(
+            store=mock_store,
+            provider=mock_provider,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            attachment_downloader=mock_downloader,
+        )
+        event = _minimal_event(text="Check this out!")
+        event = event.model_copy(
+            update={
+                "event_type": EventType.USER_ATTACHMENT_MESSAGE,
+                "attachment": AttachmentMeta(
+                    file_id="doc-321",
+                    mime_type="text/markdown",
+                    file_size_bytes=7_600,
+                    caption=None,
+                ),
+            }
+        )
+        await orch.execute_turn(event)
+
+        call_args = mock_provider.complete.call_args[0][0]
+        msg = call_args.messages[0]
+        assert msg.content_blocks is not None
+        assert len(msg.content_blocks) == 2
+        assert msg.content_blocks[0] == {"type": "text", "text": "Check this out!"}
+        assert msg.content_blocks[1]["type"] == "text"
+        assert "Attachment content: text/markdown" in msg.content_blocks[1]["text"]
+        assert "Architecture improvements" in msg.content_blocks[1]["text"]
+        assert "[Empty or unsupported input]" not in str(msg.content_blocks)
+
+    @pytest.mark.asyncio
+    async def test_octet_stream_markdown_filename_is_treated_as_text_attachment(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_provider: MagicMock,
+    ) -> None:
+        mock_store.sessions.session_exists = AsyncMock(return_value=True)
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+
+        async def mock_download(
+            file_id: str, mime_type: str, file_size_bytes: int, trace_id: str
+        ) -> bytes | None:
+            return b"# Design notes\n\nThe attachment was decoded."
+
+        mock_downloader = MagicMock()
+        mock_downloader.download = AsyncMock(side_effect=mock_download)
+
+        orch = Orchestrator(
+            store=mock_store,
+            provider=mock_provider,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            attachment_downloader=mock_downloader,
+        )
+        event = _minimal_event(text="Please review this")
+        event = event.model_copy(
+            update={
+                "event_type": EventType.USER_ATTACHMENT_MESSAGE,
+                "attachment": AttachmentMeta(
+                    file_id="doc-999",
+                    mime_type="application/octet-stream",
+                    file_size_bytes=7_600,
+                    file_name="architecture_improvements_exercise.md",
+                    caption=None,
+                ),
+            }
+        )
+        await orch.execute_turn(event)
+
+        call_args = mock_provider.complete.call_args[0][0]
+        msg = call_args.messages[0]
+        assert msg.content_blocks is not None
+        assert len(msg.content_blocks) == 2
+        assert msg.content_blocks[1]["type"] == "text"
+        assert (
+            "application/octet-stream (architecture_improvements_exercise.md)"
+            in (msg.content_blocks[1]["text"])
+        )
+        assert "Design notes" in msg.content_blocks[1]["text"]

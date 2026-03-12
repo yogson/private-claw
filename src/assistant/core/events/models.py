@@ -49,6 +49,7 @@ class AttachmentMeta(BaseModel):
     file_id: str
     mime_type: str
     file_size_bytes: int
+    file_name: str | None = None
     caption: str | None = None
 
 

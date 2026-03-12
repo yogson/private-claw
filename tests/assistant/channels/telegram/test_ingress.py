@@ -192,3 +192,27 @@ class TestAttachmentMessage:
         assert event is not None
         assert event.attachment is not None
         assert event.attachment.file_id == "large"
+
+    def test_document_infers_mime_from_filename_when_octet_stream(self) -> None:
+        ingress = _make_ingress()
+        update = {
+            "message": {
+                "message_id": 9,
+                "from": {"id": 123456},
+                "chat": {"id": 123456},
+                "date": 1700000000,
+                "document": {
+                    "file_id": "doc_md_1",
+                    "mime_type": "application/octet-stream",
+                    "file_size": 7777,
+                    "file_name": "architecture_improvements_exercise.md",
+                },
+                "caption": "Check this out!",
+            }
+        }
+        event = ingress.normalize(update)
+        assert event is not None
+        assert event.attachment is not None
+        assert event.attachment.file_id == "doc_md_1"
+        assert event.attachment.file_name == "architecture_improvements_exercise.md"
+        assert event.attachment.mime_type == "text/markdown"

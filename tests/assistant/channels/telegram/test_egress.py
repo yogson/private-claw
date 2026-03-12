@@ -62,6 +62,41 @@ class TestTelegramEgresSend:
         assert kwargs["reply_markup"] is not None
 
     @pytest.mark.asyncio
+    async def test_long_text_send_is_split_into_multiple_messages(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        response = _make_text_response().model_copy(update={"text": "A" * 9000})
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            result = await egress.send(response, chat_id=123)
+        assert result is True
+        assert mock_send.call_count == 3
+        for call in mock_send.call_args_list:
+            assert len(call.kwargs["text"]) <= 4096
+            assert call.kwargs["reply_markup"] is None
+
+    @pytest.mark.asyncio
+    async def test_long_text_retry_resumes_from_failed_chunk(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=2, base_delay=0.0)
+        response = _make_text_response().model_copy(update={"text": "A" * 5000})
+        with (
+            patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_send.side_effect = [
+                None,
+                TelegramNetworkError(_send_method(), "connection refused"),
+                None,
+            ]
+            result = await egress.send(response, chat_id=123)
+
+        assert result is True
+        assert mock_send.call_count == 3
+        first_chunk = mock_send.call_args_list[0].kwargs["text"]
+        second_chunk = mock_send.call_args_list[1].kwargs["text"]
+        retried_chunk = mock_send.call_args_list[2].kwargs["text"]
+        assert first_chunk != second_chunk
+        assert second_chunk == retried_chunk
+
+    @pytest.mark.asyncio
     async def test_retryable_network_error_exhausts_attempts(self) -> None:
         egress = TelegramEgress(bot_token="12345:test-token", max_attempts=2, base_delay=0.0)
         with (
@@ -114,3 +149,10 @@ class TestTelegramEgresSend:
         egress = TelegramEgress(bot_token="12345:tok")
         markup = egress._build_inline_keyboard(_make_text_response())
         assert markup is None
+
+    def test_split_text_prefers_newline_boundary(self) -> None:
+        egress = TelegramEgress(bot_token="12345:tok")
+        text = ("A" * 4090) + "\n" + ("B" * 100)
+        chunks = egress._split_text(text)
+        assert len(chunks) == 2
+        assert chunks[0].endswith("\n")
