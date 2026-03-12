@@ -123,7 +123,7 @@ Corruption recovery policy:
 
 ### Memory Update Intent Intake Contract
 
-Memory domain accepts orchestrator-normalized intents (not raw model text). The primary source is the `memory_propose_update` tool-call envelope captured by orchestrator.
+Memory domain accepts orchestrator-normalized intents (not raw model text). The primary source is the provider-native `memory_propose_update` tool-call envelope captured by orchestrator.
 
 ```json
 {
@@ -151,6 +151,10 @@ Required intake behavior:
 - Emit per-intent audit result with final status and affected `memory_id`.
 - Reject duplicate terminal `intent_id` as idempotent no-op.
 - Assume orchestrator already enforced confirmation/policy; Memory domain remains write-application focused.
+- Confirmation lifecycle semantics:
+  - pending intents are represented as `pending_confirmation` in orchestrator/session audit records,
+  - Memory domain applies writes only after explicit approve action,
+  - rejected user decisions are recorded as `rejected_by_user` without invoking MemoryWriteService.
 
 ## Outputs
 

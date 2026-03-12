@@ -60,7 +60,7 @@ class MemoryUpdateIntent(BaseModel):
 
 
 class WriteStatus(StrEnum):
-    """Result status for a write intent."""
+    """Result status for write intent."""
 
     WRITTEN = "written"
     UPDATED = "updated"

@@ -83,22 +83,20 @@ Notes:
 - `requires_user_confirmation` is policy-controlled at orchestrator runtime and may be overridden to `true`.
 - `memory_propose_update` accepts proposals only; it does not perform direct memory writes.
 
-### Compatibility Path (Optional)
+### Strict Tool-Call Path
 
-When tool calling is unavailable for a route, the orchestrator may accept the same schema from:
+Memory proposals are accepted only through native tool calling.
 
-- direct-model structured response field `memory_update_intents`,
-- capability/sub-agent normalized result field `memory_update_intents`.
-
-This compatibility path should remain secondary to tool-call proposals.
+- The orchestrator must expose `memory_propose_update` as a model-visible tool descriptor.
+- Memory intents encoded in plain assistant text (including JSON-like blobs) must not trigger writes.
+- If model output is malformed for a tool route, the turn remains side-effect free and must emit diagnostics.
 
 ### How Intent Is Caught
 
 The orchestrator captures intents in this order:
 
-1. `assistant_tool_call` for `memory_propose_update`,
-2. optional structured field compatibility path (`memory_update_intents`),
-3. deterministic fallback parser for explicit user commands only (for example "remember this", "forget X"), producing the same schema.
+1. provider-native `tool_call` for `memory_propose_update`,
+2. deterministic fallback parser for explicit user commands only (for example "remember this", "forget X"), producing the same schema.
 
 The system should avoid free-form natural language scraping of assistant prose for writes.
 
@@ -108,10 +106,10 @@ After route execution and before turn finalization:
 
 1. Validate each intent schema and deduplicate by `intent_id`.
 2. Enforce policy gates (allow/deny, confirmation requirement, max writes per turn).
-3. If confirmation is required and missing, persist `pending_confirmation` intent state and ask user.
-4. Persist turn transcript + intent audit metadata atomically.
+3. Persist turn transcript + precheck intent audit metadata atomically.
+4. If confirmation is required, persist `pending_confirmation` and emit a confirmation UI prompt.
 5. Submit approved intents to Memory domain for application.
-6. Record per-intent outcome: `applied`, `rejected`, `pending_confirmation`, or `failed`.
+6. Record per-intent outcome: `applied`, `rejected_by_user`, `pending_confirmation`, or `failed`.
 
 Idempotency rule:
 - Replayed/duplicate turns must not re-apply the same intent if `intent_id` already has terminal status.

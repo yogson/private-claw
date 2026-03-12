@@ -262,6 +262,7 @@ Global invariants:
 - All external side effects generate audit events.
 - Model-visible tool definitions are injected dynamically per turn from a ranked capability shortlist; full catalog is not injected by default.
 - External MCP tool invocations must be mapped to capability IDs and pass the same policy/confirmation gates as first-party capabilities.
+- Capability side effects must be triggered only by provider-native tool calls; model text/JSON output must not be interpreted as executable tool intent.
 
 Detailed manifest schemas, dependency rules, and runtime policy handling are owned by:
 - `docs/assistant_v1/domains/capabilities.md`

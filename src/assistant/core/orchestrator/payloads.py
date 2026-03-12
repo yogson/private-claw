@@ -5,12 +5,14 @@ Payload helpers for user input extraction and multimodal attachment packaging.
 """
 
 import base64
+import json
 from typing import Any
 
 import structlog
 
-from assistant.core.attachments import AttachmentDownloaderInterface
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
+from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
+from assistant.memory.retrieval.models import RetrievalResult
 from assistant.providers.interfaces import LLMMessage, MessageRole
 from assistant.store.models import SessionRecord, SessionRecordType
 
@@ -106,6 +108,27 @@ def format_attachment_context(attachments: list[AttachmentMeta]) -> str:
         name_part = f", name={att.file_name}" if att.file_name else ""
         parts.append(f"{media_type} ({att.mime_type}, {size_str}{name_part})")
     return "\n\n[User attached: " + "; ".join(parts) + "]"
+
+
+def format_retrieved_memory_context(result: RetrievalResult, max_chars: int = 4000) -> str:
+    """Render compact retrieved memory context for prompt injection."""
+    if not result.scored_artifacts:
+        return ""
+    lines = ["[Relevant memory context] Use only if useful for this reply."]
+    for scored in result.scored_artifacts:
+        artifact = scored.artifact
+        fm = artifact.frontmatter
+        body = (artifact.body or "").strip() or "[empty]"
+        entities = ", ".join(fm.entities) if fm.entities else "-"
+        tags = ", ".join(fm.tags) if fm.tags else "-"
+        lines.append(
+            f"- type={fm.type.value}; id={fm.memory_id}; score={scored.score:.3f}; "
+            f"entities={entities}; tags={tags}; body={body}"
+        )
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        return text[: max_chars - 24] + "\n[Memory context truncated]"
+    return text
 
 
 def _is_multimodal_supported(mime_type: str) -> bool:
@@ -209,14 +232,112 @@ async def build_user_content_blocks(
 
 
 def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
+    """Convert session records to LLM messages including tool-use and tool-result blocks."""
     messages: list[LLMMessage] = []
-    for record in records:
+    i = 0
+    while i < len(records):
+        record = records[i]
         if record.record_type == SessionRecordType.USER_MESSAGE:
             content = record.payload.get("content", "")
             if content:
                 messages.append(LLMMessage(role=MessageRole.USER, content=content))
+            i += 1
         elif record.record_type == SessionRecordType.ASSISTANT_MESSAGE:
             content = record.payload.get("content", "")
+            blocks: list[dict[str, Any]] = []
             if content:
-                messages.append(LLMMessage(role=MessageRole.ASSISTANT, content=content))
+                blocks.append({"type": "text", "text": content})
+            j = i + 1
+            while (
+                j < len(records) and records[j].record_type == SessionRecordType.ASSISTANT_TOOL_CALL
+            ):
+                tc = records[j]
+                args_json = tc.payload.get("arguments_json", "{}")
+                try:
+                    args = json.loads(args_json)
+                except json.JSONDecodeError:
+                    args = {}
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.payload.get("tool_call_id", ""),
+                        "name": tc.payload.get("tool_name", ""),
+                        "input": args,
+                    }
+                )
+                j += 1
+            if blocks:
+                if len(blocks) == 1 and blocks[0].get("type") == "text":
+                    messages.append(
+                        LLMMessage(role=MessageRole.ASSISTANT, content=blocks[0].get("text", ""))
+                    )
+                else:
+                    messages.append(
+                        LLMMessage(
+                            role=MessageRole.ASSISTANT,
+                            content="",
+                            content_blocks=blocks,
+                        )
+                    )
+            i = j
+        elif record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
+            blocks = []
+            j = i
+            while (
+                j < len(records) and records[j].record_type == SessionRecordType.ASSISTANT_TOOL_CALL
+            ):
+                tc = records[j]
+                args_json = tc.payload.get("arguments_json", "{}")
+                try:
+                    args = json.loads(args_json)
+                except json.JSONDecodeError:
+                    args = {}
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.payload.get("tool_call_id", ""),
+                        "name": tc.payload.get("tool_name", ""),
+                        "input": args,
+                    }
+                )
+                j += 1
+            if blocks:
+                messages.append(
+                    LLMMessage(
+                        role=MessageRole.ASSISTANT,
+                        content="",
+                        content_blocks=blocks,
+                    )
+                )
+            i = j
+        elif record.record_type == SessionRecordType.TOOL_RESULT:
+            blocks = []
+            j = i
+            while j < len(records) and records[j].record_type == SessionRecordType.TOOL_RESULT:
+                tr = records[j]
+                result = tr.payload.get("result")
+                error = tr.payload.get("error")
+                content_str = (
+                    json.dumps(result, separators=(",", ":")) if result is not None else ""
+                )
+                blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tr.payload.get("tool_call_id", ""),
+                        "content": content_str,
+                        "is_error": error is not None,
+                    }
+                )
+                j += 1
+            if blocks:
+                messages.append(
+                    LLMMessage(
+                        role=MessageRole.USER,
+                        content="",
+                        content_blocks=blocks,
+                    )
+                )
+            i = j
+        else:
+            i += 1
     return messages

@@ -65,6 +65,21 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Session listing is scoped to the requesting chat's sessions only; sessions from other chats are never returned.
 - Session selection must remain within the same allowlisted user/chat context; cross-user/session escalation is forbidden.
 
+### Memory Confirmation Flow
+
+- When orchestrator persists `pending_confirmation` memory intent outcomes, Telegram adapter must emit an interactive confirmation message with approve/reject actions.
+- Callback payload format for memory confirmation:
+  - `mc:{token}:{ts36}:{sig}`,
+  - token is short-lived in-memory mapping to `(session_id, tool_call_id, action)`,
+  - `sig` is HMAC-bound to `{chat_id}:{token}:{ts36}` with replay TTL checks.
+- On approve callback:
+  - API handler resolves pending intent by `tool_call_id`,
+  - applies memory write through orchestrator confirmation service,
+  - persists terminal tool result record.
+- On reject callback:
+  - API handler persists `rejected_by_user` terminal tool result record.
+- Invalid/expired callback tokens must fail closed with a user-safe message.
+
 ### Session Reset Flow
 
 - v1 supports explicit session context reset via `/reset` (and `/reset@botname` in group contexts).

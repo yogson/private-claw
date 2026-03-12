@@ -1,14 +1,11 @@
 """
 Component ID: CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER
 
-LLM provider interface contract and shared request/response models.
-
-All provider adapters must implement LLMProviderInterface so the orchestrator
-can swap providers without changing call sites.
+Shared provider message/response models.
 """
 
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -31,16 +28,6 @@ class LLMMessage(BaseModel):
     content_blocks: list[dict[str, Any]] | None = None
 
 
-class LLMRequest(BaseModel):
-    """Request contract for a single LLM completion call."""
-
-    messages: list[LLMMessage]
-    trace_id: str
-    model_id: str | None = None
-    system: str | None = None
-    max_tokens: int | None = Field(default=None, ge=1)
-
-
 class LLMUsage(BaseModel):
     """Token usage reported by the LLM provider."""
 
@@ -55,11 +42,13 @@ class LLMResponse(BaseModel):
     model_id: str
     trace_id: str
     usage: LLMUsage | None = None
+    tool_calls: list["LLMToolCall"] = Field(default_factory=list)
+    assistant_content_blocks: list[dict[str, Any]] | None = None
 
 
-class LLMProviderInterface(Protocol):
-    """Protocol that all LLM provider adapters must satisfy."""
+class LLMToolCall(BaseModel):
+    """Tool call emitted by provider."""
 
-    async def complete(self, request: LLMRequest) -> LLMResponse:
-        """Execute a completion request and return the response."""
-        ...
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, Any]

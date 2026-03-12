@@ -2,10 +2,12 @@
 Tests for CMP_CORE_AGENT_ORCHESTRATOR orchestrator module.
 """
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
 from assistant.core.config.schemas import (
     AppConfig,
@@ -33,7 +35,10 @@ from assistant.core.orchestrator import (
     _gather_attachments,
     _records_to_messages,
 )
-from assistant.providers.interfaces import LLMResponse, MessageRole
+from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
+from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
+from assistant.providers.interfaces import MessageRole
+from assistant.providers.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.store.models import SessionRecord, SessionRecordType
 
 
@@ -46,7 +51,7 @@ def _runtime_config() -> RuntimeConfig:
             model_allowlist=["claude-3-5-sonnet-20241022"],
             max_tokens_default=1024,
         ),
-        capabilities=CapabilitiesConfig(allowed_capabilities=[]),
+        capabilities=CapabilitiesConfig(allowed_capabilities=["cap.memory.update"]),
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(lock_ttl_seconds=30, idempotency_retention_seconds=86400),
@@ -232,6 +237,67 @@ class TestRecordsToMessages:
         ]
         assert _records_to_messages(records) == []
 
+    def test_tool_call_and_result_included(self) -> None:
+        """Replay mapping includes assistant tool-use and user tool-result blocks."""
+        records = [
+            SessionRecord(
+                session_id="s1",
+                sequence=0,
+                event_id="e1",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": "m1", "content": "Remember X"},
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=1,
+                event_id="e2",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.ASSISTANT_MESSAGE,
+                payload={"message_id": "m2", "content": "I'll remember that."},
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=2,
+                event_id="e3",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+                payload={
+                    "message_id": "m3",
+                    "tool_call_id": "call-1",
+                    "tool_name": "memory_propose_update",
+                    "arguments_json": '{"intent_id":"i1","action":"upsert"}',
+                },
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=3,
+                event_id="e4",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.TOOL_RESULT,
+                payload={
+                    "message_id": "m4",
+                    "tool_call_id": "call-1",
+                    "tool_name": "memory_propose_update",
+                    "result": {"status": "applied", "memory_id": "mem-1"},
+                    "error": None,
+                },
+            ),
+        ]
+        msgs = _records_to_messages(records)
+        assert len(msgs) == 3
+        assert msgs[0].role == MessageRole.USER and msgs[0].content == "Remember X"
+        assert msgs[1].role == MessageRole.ASSISTANT
+        assert msgs[1].content_blocks is not None
+        assert any(b.get("type") == "tool_use" for b in msgs[1].content_blocks)
+        assert msgs[2].role == MessageRole.USER
+        assert msgs[2].content_blocks is not None
+        assert any(b.get("type") == "tool_result" for b in msgs[2].content_blocks)
+
 
 @pytest.fixture
 def mock_store() -> MagicMock:
@@ -255,16 +321,10 @@ def mock_idempotency() -> MagicMock:
 
 
 @pytest.fixture
-def mock_provider() -> MagicMock:
-    prov = MagicMock()
-    prov.complete = AsyncMock(
-        return_value=LLMResponse(
-            text="Model response",
-            model_id="claude-3-5-sonnet-20241022",
-            trace_id="trace-1",
-        )
-    )
-    return prov
+def mock_pydantic_adapter() -> MagicMock:
+    adapter = MagicMock(spec=PydanticAITurnAdapter)
+    adapter.run_turn = AsyncMock(return_value=("Model response", [], None))
+    return adapter
 
 
 class TestOrchestratorExecuteTurn:
@@ -273,105 +333,156 @@ class TestOrchestratorExecuteTurn:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_idempotency.check_and_register = AsyncMock(return_value=(True, MagicMock()))
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event()
         result = await orch.execute_turn(event)
         assert result is None
-        mock_provider.complete.assert_not_called()
+        mock_pydantic_adapter.run_turn.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_new_session_calls_provider_with_first_user_message(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event()
         result = await orch.execute_turn(event)
         assert result == "Model response"
-        mock_provider.complete.assert_called_once()
-        call_args = mock_provider.complete.call_args[0][0]
-        assert len(call_args.messages) == 1
-        assert call_args.messages[0].content == "Hello"
-        mock_store.sessions.append.assert_called_once()
+        mock_pydantic_adapter.run_turn.assert_called_once()
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        assert len(call_kwargs["messages"]) == 1
+        assert call_kwargs["messages"][0]["content"] == "Hello"
+        assert mock_store.sessions.append.call_count == 2
 
     @pytest.mark.asyncio
     async def test_existing_session_calls_provider(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(text="What is 2+2?")
         result = await orch.execute_turn(event)
         assert result == "Model response"
-        mock_provider.complete.assert_called_once()
-        call_args = mock_provider.complete.call_args[0][0]
-        assert len(call_args.messages) == 1
-        assert call_args.messages[0].content == "What is 2+2?"
-        mock_store.sessions.append.assert_called_once()
+        mock_pydantic_adapter.run_turn.assert_called_once()
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        assert len(call_kwargs["messages"]) == 1
+        assert call_kwargs["messages"][0]["content"] == "What is 2+2?"
+        assert mock_store.sessions.append.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_memory_retrieval_context_is_injected_into_user_message(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+        retrieval_service = MagicMock()
+        retrieval_service.retrieve.return_value = RetrievalResult(
+            scored_artifacts=[
+                ScoredArtifact(
+                    artifact=MemoryArtifact(
+                        frontmatter=MemoryFrontmatter(
+                            memory_id="profile-1",
+                            type=MemoryType.PROFILE,
+                            tags=["user_profile"],
+                            entities=["Egor"],
+                            priority=5,
+                            confidence=1.0,
+                            updated_at=datetime.now(UTC),
+                            last_used_at=None,
+                            created_at=datetime.now(UTC),
+                        ),
+                        body="- name: Egor",
+                    ),
+                    score=0.95,
+                )
+            ],
+            audit=RetrievalAudit(),
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            memory_retrieval=retrieval_service,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+        event = _minimal_event(text="Do you know my name?")
+        await orch.execute_turn(event)
+
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        assert len(call_kwargs["messages"]) == 1
+        message_content = call_kwargs["messages"][0]["content"]
+        assert "[Relevant memory context]" in message_content
+        assert "- name: Egor" in message_content
+        assert "Do you know my name?" in message_content
+        retrieval_service.retrieve.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_persists_turn_artifacts(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(event_id="ev-99", text="Hi")
         await orch.execute_turn(event)
-        append_call = mock_store.sessions.append.call_args[0][0]
-        assert len(append_call) == 3
-        assert append_call[0].record_type == SessionRecordType.USER_MESSAGE
-        assert append_call[0].payload["content"] == "Hi"
-        assert append_call[0].payload["attachments"] == []
-        assert append_call[1].record_type == SessionRecordType.ASSISTANT_MESSAGE
-        assert append_call[1].payload["content"] == "Model response"
-        assert append_call[2].record_type == SessionRecordType.TURN_TERMINAL
+        initial_records = mock_store.sessions.append.call_args_list[0][0][0]
+        final_records = mock_store.sessions.append.call_args_list[1][0][0]
+        assert len(initial_records) == 2
+        assert initial_records[0].record_type == SessionRecordType.USER_MESSAGE
+        assert initial_records[0].payload["content"] == "Hi"
+        assert initial_records[0].payload["attachments"] == []
+        assert initial_records[1].record_type == SessionRecordType.ASSISTANT_MESSAGE
+        assert initial_records[1].payload["content"] == "Model response"
+        assert len(final_records) == 1
+        assert final_records[0].record_type == SessionRecordType.TURN_TERMINAL
 
     @pytest.mark.asyncio
     async def test_attachment_reaches_llm(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(text="check this!")
         event = event.model_copy(
@@ -386,15 +497,15 @@ class TestOrchestratorExecuteTurn:
             }
         )
         await orch.execute_turn(event)
-        call_args = mock_provider.complete.call_args[0][0]
-        assert len(call_args.messages) == 1
-        content = call_args.messages[0].content
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        assert len(call_kwargs["messages"]) == 1
+        content = call_kwargs["messages"][0]["content"]
         assert "check this!" in content
         assert "[User attached:" in content
         assert "image" in content
         assert "image/jpeg" in content
-        append_call = mock_store.sessions.append.call_args[0][0]
-        assert append_call[0].payload["attachments"] == [
+        initial_records = mock_store.sessions.append.call_args_list[0][0][0]
+        assert initial_records[0].payload["attachments"] == [
             {
                 "file_id": "photo-123",
                 "mime_type": "image/jpeg",
@@ -409,7 +520,7 @@ class TestOrchestratorExecuteTurn:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -424,10 +535,10 @@ class TestOrchestratorExecuteTurn:
 
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(text="check this!")
         event = event.model_copy(
@@ -442,22 +553,22 @@ class TestOrchestratorExecuteTurn:
             }
         )
         await orch.execute_turn(event)
-        call_args = mock_provider.complete.call_args[0][0]
-        assert len(call_args.messages) == 1
-        msg = call_args.messages[0]
-        assert msg.content_blocks is not None
-        assert len(msg.content_blocks) == 2
-        assert msg.content_blocks[0] == {"type": "text", "text": "check this!"}
-        assert msg.content_blocks[1]["type"] == "image"
-        assert msg.content_blocks[1]["source"]["type"] == "base64"
-        assert msg.content_blocks[1]["source"]["media_type"] == "image/jpeg"
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        assert len(call_kwargs["messages"]) == 1
+        msg = call_kwargs["messages"][0]
+        assert msg["content_blocks"] is not None
+        assert len(msg["content_blocks"]) == 2
+        assert msg["content_blocks"][0] == {"type": "text", "text": "check this!"}
+        assert msg["content_blocks"][1]["type"] == "image"
+        assert msg["content_blocks"][1]["source"]["type"] == "base64"
+        assert msg["content_blocks"][1]["source"]["media_type"] == "image/jpeg"
 
     @pytest.mark.asyncio
     async def test_attachment_only_no_placeholder_in_content_blocks(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -472,10 +583,10 @@ class TestOrchestratorExecuteTurn:
 
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(text=None)
         event = event.model_copy(
@@ -490,19 +601,19 @@ class TestOrchestratorExecuteTurn:
             }
         )
         await orch.execute_turn(event)
-        call_args = mock_provider.complete.call_args[0][0]
-        msg = call_args.messages[0]
-        assert msg.content_blocks is not None
-        assert len(msg.content_blocks) == 1
-        assert msg.content_blocks[0]["type"] == "image"
-        assert "[Empty or unsupported input]" not in str(msg.content_blocks)
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        msg = call_kwargs["messages"][0]
+        assert msg["content_blocks"] is not None
+        assert len(msg["content_blocks"]) == 1
+        assert msg["content_blocks"][0]["type"] == "image"
+        assert "[Empty or unsupported input]" not in str(msg["content_blocks"])
 
     @pytest.mark.asyncio
     async def test_text_attachment_with_downloader_adds_text_block(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -517,10 +628,10 @@ class TestOrchestratorExecuteTurn:
 
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(text="Check this out!")
         event = event.model_copy(
@@ -536,22 +647,22 @@ class TestOrchestratorExecuteTurn:
         )
         await orch.execute_turn(event)
 
-        call_args = mock_provider.complete.call_args[0][0]
-        msg = call_args.messages[0]
-        assert msg.content_blocks is not None
-        assert len(msg.content_blocks) == 2
-        assert msg.content_blocks[0] == {"type": "text", "text": "Check this out!"}
-        assert msg.content_blocks[1]["type"] == "text"
-        assert "Attachment content: text/markdown" in msg.content_blocks[1]["text"]
-        assert "Architecture improvements" in msg.content_blocks[1]["text"]
-        assert "[Empty or unsupported input]" not in str(msg.content_blocks)
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        msg = call_kwargs["messages"][0]
+        assert msg["content_blocks"] is not None
+        assert len(msg["content_blocks"]) == 2
+        assert msg["content_blocks"][0] == {"type": "text", "text": "Check this out!"}
+        assert msg["content_blocks"][1]["type"] == "text"
+        assert "Attachment content: text/markdown" in msg["content_blocks"][1]["text"]
+        assert "Architecture improvements" in msg["content_blocks"][1]["text"]
+        assert "[Empty or unsupported input]" not in str(msg["content_blocks"])
 
     @pytest.mark.asyncio
     async def test_octet_stream_markdown_filename_is_treated_as_text_attachment(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
-        mock_provider: MagicMock,
+        mock_pydantic_adapter: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -566,10 +677,10 @@ class TestOrchestratorExecuteTurn:
 
         orch = Orchestrator(
             store=mock_store,
-            provider=mock_provider,
             config=_runtime_config(),
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
+            pydantic_ai_adapter=mock_pydantic_adapter,
         )
         event = _minimal_event(text="Please review this")
         event = event.model_copy(
@@ -586,13 +697,253 @@ class TestOrchestratorExecuteTurn:
         )
         await orch.execute_turn(event)
 
-        call_args = mock_provider.complete.call_args[0][0]
-        msg = call_args.messages[0]
-        assert msg.content_blocks is not None
-        assert len(msg.content_blocks) == 2
-        assert msg.content_blocks[1]["type"] == "text"
+        call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
+        msg = call_kwargs["messages"][0]
+        assert msg["content_blocks"] is not None
+        assert len(msg["content_blocks"]) == 2
+        assert msg["content_blocks"][1]["type"] == "text"
         assert (
             "application/octet-stream (architecture_improvements_exercise.md)"
-            in (msg.content_blocks[1]["text"])
+            in (msg["content_blocks"][1]["text"])
         )
-        assert "Design notes" in msg.content_blocks[1]["text"]
+        assert "Design notes" in msg["content_blocks"][1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_structured_memory_intents_are_applied_and_persisted(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+        mock_pydantic_adapter.run_turn = AsyncMock(
+            return_value=(
+                "Noted your preference.",
+                [
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="memory_propose_update",
+                                args={
+                                    "intent_id": "intent-pref-1",
+                                    "action": "upsert",
+                                    "memory_type": "preferences",
+                                    "candidate": {
+                                        "tags": ["style"],
+                                        "entities": [],
+                                        "priority": 6,
+                                        "confidence": 0.9,
+                                        "body_markdown": "User prefers concise responses.",
+                                    },
+                                    "reason": "explicit ask",
+                                    "source": "explicit_user_request",
+                                    "requires_user_confirmation": False,
+                                },
+                                tool_call_id="tool-1",
+                            )
+                        ]
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="memory_propose_update",
+                                tool_call_id="tool-1",
+                                content='{"status":"approved_pending_apply","reason":"","requires_user_confirmation":false}',
+                            )
+                        ]
+                    ),
+                ],
+                None,
+            )
+        )
+        memory_writer = MagicMock()
+        memory_writer.apply_intent.return_value.model_dump_json.return_value = json.dumps(
+            {
+                "intent_id": "intent-pref-1",
+                "status": "written",
+                "memory_id": "preferences-abc",
+                "reason": "",
+            }
+        )
+
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            memory_writer=memory_writer,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+
+        event = _minimal_event(text="Please remember I prefer concise replies.")
+        result = await orch.execute_turn(event)
+
+        assert result == "Noted your preference."
+        mock_pydantic_adapter.run_turn.assert_called_once()
+        memory_writer.apply_intent.assert_called_once()
+        appended_records = [
+            rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]
+        ]
+        record_types = [r.record_type for r in appended_records]
+        assert SessionRecordType.ASSISTANT_TOOL_CALL in record_types
+        assert SessionRecordType.TOOL_RESULT in record_types
+        written = [
+            rec
+            for rec in appended_records
+            if rec.record_type == SessionRecordType.TOOL_RESULT
+            and rec.payload.get("result", {}).get("status") == "written"
+        ]
+        assert written
+
+    @pytest.mark.asyncio
+    async def test_confirmation_required_intent_is_not_applied(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        mock_pydantic_adapter.run_turn = AsyncMock(
+            return_value=(
+                "Please confirm this memory update.",
+                [
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="memory_propose_update",
+                                args={
+                                    "intent_id": "intent-pref-2",
+                                    "action": "upsert",
+                                    "memory_type": "preferences",
+                                    "candidate": {
+                                        "tags": ["style"],
+                                        "entities": [],
+                                        "priority": 6,
+                                        "confidence": 0.9,
+                                        "body_markdown": "Keep responses concise.",
+                                    },
+                                    "reason": "explicit ask",
+                                    "source": "explicit_user_request",
+                                    "requires_user_confirmation": True,
+                                },
+                                tool_call_id="tool-2",
+                            )
+                        ]
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="memory_propose_update",
+                                tool_call_id="tool-2",
+                                content='{"status":"pending_confirmation","reason":"requires_user_confirmation=true","requires_user_confirmation":true}',
+                            )
+                        ]
+                    ),
+                ],
+                None,
+            )
+        )
+        memory_writer = MagicMock()
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            memory_writer=memory_writer,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+
+        result = await orch.execute_turn(_minimal_event(text="remember this"))
+        assert result == "Please confirm this memory update."
+        memory_writer.apply_intent.assert_not_called()
+        all_records = [
+            rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]
+        ]
+        pending = [
+            rec
+            for rec in all_records
+            if rec.record_type == SessionRecordType.TOOL_RESULT
+            and rec.payload.get("result", {}).get("status") == "pending_confirmation"
+        ]
+        assert pending
+
+    @pytest.mark.asyncio
+    async def test_plain_json_text_does_not_trigger_memory_write(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        mock_pydantic_adapter.run_turn = AsyncMock(
+            return_value=('{"memory_update_intents":[{"intent_id":"x"}]}', [], None)
+        )
+        memory_writer = MagicMock()
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            memory_writer=memory_writer,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+        result = await orch.execute_turn(_minimal_event(text="remember this"))
+        assert result == '{"memory_update_intents":[{"intent_id":"x"}]}'
+        memory_writer.apply_intent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_memory_write_when_initial_persist_fails(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+        mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("persist failed"))
+        mock_pydantic_adapter.run_turn = AsyncMock(
+            return_value=(
+                "Will remember this.",
+                [
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="memory_propose_update",
+                                args={
+                                    "intent_id": "intent-pref-3",
+                                    "action": "upsert",
+                                    "memory_type": "preferences",
+                                    "candidate": {
+                                        "tags": ["style"],
+                                        "entities": [],
+                                        "priority": 5,
+                                        "confidence": 0.9,
+                                        "body_markdown": "Use concise answers.",
+                                    },
+                                    "reason": "explicit ask",
+                                    "source": "explicit_user_request",
+                                    "requires_user_confirmation": False,
+                                },
+                                tool_call_id="tool-3",
+                            )
+                        ]
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="memory_propose_update",
+                                tool_call_id="tool-3",
+                                content='{"status":"approved_pending_apply","reason":"","requires_user_confirmation":false}',
+                            )
+                        ]
+                    ),
+                ],
+                None,
+            )
+        )
+        memory_writer = MagicMock()
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            memory_writer=memory_writer,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+
+        with pytest.raises(RuntimeError, match="persist failed"):
+            await orch.execute_turn(_minimal_event(text="remember this"))
+        memory_writer.apply_intent.assert_not_called()

@@ -8,6 +8,8 @@ SessionResumeService for the session-resume selection flow.
 """
 
 import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -18,7 +20,16 @@ from assistant.channels.telegram.commands import TelegramCommand, extract_suppor
 from assistant.channels.telegram.egress import TelegramEgress
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.ingress import TelegramIngress
-from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
+from assistant.channels.telegram.memory_confirmation_callbacks import (
+    sign_memory_confirmation_callback,
+    verify_memory_confirmation_callback,
+)
+from assistant.channels.telegram.models import (
+    ActionButton,
+    ChannelResponse,
+    MessageType,
+    NormalizedEvent,
+)
 from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard
 from assistant.channels.telegram.session_resume import SessionResumeService
@@ -26,6 +37,15 @@ from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
+_MEMORY_CONFIRMATION_TTL_SECONDS = 3600
+
+
+@dataclass(slots=True)
+class _MemoryConfirmationToken:
+    session_id: str
+    tool_call_id: str
+    approve: bool
+    expires_at: datetime
 
 
 class TelegramAdapter:
@@ -76,6 +96,7 @@ class TelegramAdapter:
             )
         # chat_id -> active session_id override (in-memory, resets on restart)
         self._active_sessions: dict[int, str] = {}
+        self._memory_confirmation_tokens: dict[str, _MemoryConfirmationToken] = {}
 
     def process_update(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
         """
@@ -153,6 +174,71 @@ class TelegramAdapter:
                 event.callback_query.callback_data, expected_chat_id=chat_id
             )
             is not None
+        )
+
+    def is_memory_confirmation_callback(self, event: NormalizedEvent) -> bool:
+        """Return True if callback_data is a valid signed memory confirmation token."""
+        if event.callback_query is None:
+            return False
+        token = self._verify_memory_confirmation_callback_token(event)
+        if token is None:
+            return False
+        self._cleanup_expired_memory_confirmation_tokens()
+        return token in self._memory_confirmation_tokens
+
+    def consume_memory_confirmation_callback(
+        self, event: NormalizedEvent
+    ) -> tuple[str, str, bool] | None:
+        """Consume a signed memory confirmation callback token and return resolution tuple."""
+        if event.callback_query is None:
+            return None
+        token = self._verify_memory_confirmation_callback_token(event)
+        if token is None:
+            return None
+        self._cleanup_expired_memory_confirmation_tokens()
+        item = self._memory_confirmation_tokens.pop(token, None)
+        if item is None:
+            return None
+        return item.session_id, item.tool_call_id, item.approve
+
+    def build_memory_confirmation_response(
+        self,
+        *,
+        chat_id: int,
+        session_id: str,
+        trace_id: str,
+        tool_call_id: str,
+        prompt_text: str,
+    ) -> ChannelResponse:
+        """Build interactive confirmation message for pending memory update intent."""
+        confirm_token = self._register_memory_confirmation_token(
+            session_id=session_id, tool_call_id=tool_call_id, approve=True
+        )
+        reject_token = self._register_memory_confirmation_token(
+            session_id=session_id, tool_call_id=tool_call_id, approve=False
+        )
+        confirm_cb = self._sign_memory_confirmation_callback_token(confirm_token, chat_id)
+        reject_cb = self._sign_memory_confirmation_callback_token(reject_token, chat_id)
+        return ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id=session_id,
+            trace_id=trace_id,
+            message_type=MessageType.INTERACTIVE,
+            text=prompt_text,
+            ui_kind="inline_keyboard",
+            actions=[
+                ActionButton(
+                    label="Confirm memory update",
+                    callback_id=f"confirm-{tool_call_id}",
+                    callback_data=confirm_cb,
+                ),
+                ActionButton(
+                    label="Reject",
+                    callback_id=f"reject-{tool_call_id}",
+                    callback_data=reject_cb,
+                ),
+            ],
         )
 
     def is_session_reset_request(self, event: NormalizedEvent) -> bool:
@@ -268,3 +354,41 @@ class TelegramAdapter:
     async def close(self) -> None:
         """Closes underlying network resources."""
         await self._egress.close()
+
+    def _register_memory_confirmation_token(
+        self, *, session_id: str, tool_call_id: str, approve: bool
+    ) -> str:
+        self._cleanup_expired_memory_confirmation_tokens()
+        token = uuid.uuid4().hex[:10]
+        self._memory_confirmation_tokens[token] = _MemoryConfirmationToken(
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            approve=approve,
+            expires_at=datetime.now(UTC) + timedelta(seconds=_MEMORY_CONFIRMATION_TTL_SECONDS),
+        )
+        return token
+
+    def _sign_memory_confirmation_callback_token(self, token: str, chat_id: int) -> str:
+        secret = (self._config.session_resume_hmac_secret or "").encode()
+        if not secret:
+            secret = self._config.bot_token.encode()
+        return sign_memory_confirmation_callback(token=token, chat_id=chat_id, secret=secret)
+
+    def _verify_memory_confirmation_callback_token(self, event: NormalizedEvent) -> str | None:
+        if event.callback_query is None:
+            return None
+        secret = (self._config.session_resume_hmac_secret or "").encode()
+        if not secret:
+            secret = self._config.bot_token.encode()
+        chat_id = int(event.metadata.get("chat_id", 0))
+        return verify_memory_confirmation_callback(
+            callback_data=event.callback_query.callback_data,
+            expected_chat_id=chat_id,
+            secret=secret,
+        )
+
+    def _cleanup_expired_memory_confirmation_tokens(self) -> None:
+        now = datetime.now(UTC)
+        expired = [k for k, v in self._memory_confirmation_tokens.items() if v.expires_at <= now]
+        for key in expired:
+            self._memory_confirmation_tokens.pop(key, None)

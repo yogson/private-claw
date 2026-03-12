@@ -15,6 +15,7 @@ Define the manifest-driven capability and skill ecosystem for v1, including disc
 - Validate manifest schema and dependency constraints.
 - Register and route runtime invocations.
 - Enforce capability permissions and command allowlists.
+- Expose model-visible tool descriptors and execute provider-native tool calls.
 - Support first-party capabilities in v1:
   - macOS personal integration (Notes, Reminders, Calendar),
   - GitHub CLI (`gh`) integration,
@@ -94,6 +95,7 @@ The system must separate **runtime registry availability** from **model-visible 
 - Runtime registry may discover and validate all manifests at startup.
 - The model must not receive all tool definitions by default.
 - Per turn, only shortlisted capability descriptors are injected into model context.
+- Capability execution must originate from provider-native tool calls; plain text payloads must not be treated as tool execution requests.
 
 This is the required activation flow:
 

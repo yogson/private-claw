@@ -125,11 +125,12 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     mock_adapter.is_session_reset_available.return_value = True
     mock_adapter.is_session_resume_request.return_value = False
     mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock(return_value="model reply")
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
     response = await handler(event)
 
     assert response is not None
@@ -159,12 +160,13 @@ async def test_handler_handles_reset_without_orchestrator_call() -> None:
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = True
+    mock_adapter.is_memory_confirmation_callback.return_value = False
     mock_adapter.reset_session_context = AsyncMock(return_value=True)
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
     response = await handler(event)
 
     assert response is not None
@@ -194,12 +196,13 @@ async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> 
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
     mock_adapter.reset_session_context = AsyncMock()
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
     response = await handler(event)
 
     assert response is not None
@@ -227,12 +230,13 @@ async def test_handler_handles_new_session_without_orchestrator_call() -> None:
 
     mock_adapter = MagicMock()
     mock_adapter.is_session_new_request.return_value = True
+    mock_adapter.is_memory_confirmation_callback.return_value = False
     mock_adapter.start_new_session.return_value = "tg:123:abcd1234ef56"
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
     response = await handler(event)
 
     assert response is not None
@@ -261,12 +265,13 @@ async def test_handler_handles_new_session_failure_without_orchestrator_call() -
 
     mock_adapter = MagicMock()
     mock_adapter.is_session_new_request.return_value = True
+    mock_adapter.is_memory_confirmation_callback.return_value = False
     mock_adapter.start_new_session.return_value = None
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
     response = await handler(event)
 
     assert response is not None

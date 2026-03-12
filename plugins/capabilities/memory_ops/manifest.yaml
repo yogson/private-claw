@@ -1,0 +1,13 @@
+capability_id: cap.memory.update
+version: 1.0.0
+entrypoint: assistant.extensions.first_party.memory.capability:memory_propose_update
+capabilities:
+  - cap.memory.read
+  - cap.memory.write
+  - cap.memory.update
+permissions:
+  read_only: true
+  side_effecting: false
+  requires_confirmation: true
+  timeout_seconds: 10
+
