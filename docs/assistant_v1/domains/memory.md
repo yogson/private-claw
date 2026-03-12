@@ -121,6 +121,37 @@ Corruption recovery policy:
 - Memory update intents from orchestrator and scheduler jobs.
 - Existing memory files from the configured data root.
 
+### Memory Update Intent Intake Contract
+
+Memory domain accepts orchestrator-normalized intents (not raw model text). The primary source is the `memory_propose_update` tool-call envelope captured by orchestrator.
+
+```json
+{
+  "intent_id": "unique-intent-id",
+  "action": "upsert|delete|touch",
+  "memory_type": "profile|preferences|projects|tasks|facts|summaries",
+  "memory_id": "optional-existing-id",
+  "candidate": {
+    "tags": ["optional", "tags"],
+    "entities": ["optional", "entities"],
+    "priority": 5,
+    "confidence": 0.9,
+    "body_markdown": "content"
+  },
+  "reason": "capture rationale",
+  "source": "explicit_user_request|agent_inferred|capability_output|scheduler"
+}
+```
+
+Required intake behavior:
+- Validate schema and category enum before any file mutation.
+- Resolve `upsert` deterministically (existing `memory_id` or generated path-safe ID).
+- Apply deduplication/consolidation policy prior to write commit.
+- Treat `touch` as metadata-only update (for example `last_used_at`).
+- Emit per-intent audit result with final status and affected `memory_id`.
+- Reject duplicate terminal `intent_id` as idempotent no-op.
+- Assume orchestrator already enforced confirmation/policy; Memory domain remains write-application focused.
+
 ## Outputs
 
 - Context bundles for response generation.

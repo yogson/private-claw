@@ -20,7 +20,7 @@ Define the manifest-driven capability and skill ecosystem for v1, including disc
   - GitHub CLI (`gh`) integration,
   - web search and content fetch,
   - Telegram voice transcript extraction capability from channel metadata,
-  - memory management operations.
+  - memory management operations (including `memory_propose_update` proposal tool).
 
 ## Canonical Models
 

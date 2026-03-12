@@ -46,6 +46,76 @@ First-turn behavior for new sessions:
 
 The orchestrator must treat memory retrieval and capability loading as gated steps, not default "load everything" behavior.
 
+## Memory Update Intent Capture (Normative)
+
+Memory writes are orchestrator-owned side effects. The model may propose updates, but it must not write memory directly.
+
+### Proposal Tool Contract (Primary Path)
+
+Memory update proposals should be emitted through a dedicated capability/tool call:
+
+- `memory_propose_update`
+
+The tool call arguments should follow:
+
+```json
+{
+  "intent_id": "uuid-or-deterministic-hash",
+  "action": "upsert|delete|touch",
+  "memory_type": "profile|preferences|projects|tasks|facts|summaries",
+  "memory_id": "optional-existing-id",
+  "candidate": {
+    "tags": ["optional", "tags"],
+    "entities": ["optional", "entities"],
+    "priority": 5,
+    "confidence": 0.9,
+    "body_markdown": "normalized markdown content"
+  },
+  "reason": "why this memory update is proposed",
+  "source": "explicit_user_request|agent_inferred|capability_output|scheduler",
+  "requires_user_confirmation": true
+}
+```
+
+Notes:
+- `action=upsert` allows create-or-update behavior in Memory domain.
+- `action=touch` updates usage metadata only (for example `last_used_at`).
+- `requires_user_confirmation` is policy-controlled at orchestrator runtime and may be overridden to `true`.
+- `memory_propose_update` accepts proposals only; it does not perform direct memory writes.
+
+### Compatibility Path (Optional)
+
+When tool calling is unavailable for a route, the orchestrator may accept the same schema from:
+
+- direct-model structured response field `memory_update_intents`,
+- capability/sub-agent normalized result field `memory_update_intents`.
+
+This compatibility path should remain secondary to tool-call proposals.
+
+### How Intent Is Caught
+
+The orchestrator captures intents in this order:
+
+1. `assistant_tool_call` for `memory_propose_update`,
+2. optional structured field compatibility path (`memory_update_intents`),
+3. deterministic fallback parser for explicit user commands only (for example "remember this", "forget X"), producing the same schema.
+
+The system should avoid free-form natural language scraping of assistant prose for writes.
+
+### Apply Pipeline
+
+After route execution and before turn finalization:
+
+1. Validate each intent schema and deduplicate by `intent_id`.
+2. Enforce policy gates (allow/deny, confirmation requirement, max writes per turn).
+3. If confirmation is required and missing, persist `pending_confirmation` intent state and ask user.
+4. Persist turn transcript + intent audit metadata atomically.
+5. Submit approved intents to Memory domain for application.
+6. Record per-intent outcome: `applied`, `rejected`, `pending_confirmation`, or `failed`.
+
+Idempotency rule:
+- Replayed/duplicate turns must not re-apply the same intent if `intent_id` already has terminal status.
+
 ### 1) Turn Classification (before retrieval)
 
 Classify each inbound turn into one of:
