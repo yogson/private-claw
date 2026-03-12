@@ -111,6 +111,108 @@ class MemoryIndexer:
                 return False
         return True
 
+    def add_artifact(self, artifact: MemoryArtifact) -> None:
+        """Incrementally add one artifact to indexes."""
+        self._paths.indexes_dir.mkdir(parents=True, exist_ok=True)
+        indexes = self.load_all_indexes()
+        mid = artifact.frontmatter.memory_id
+        t = artifact.frontmatter.type.value
+        ts = artifact.frontmatter.updated_at.isoformat() if artifact.frontmatter.updated_at else ""
+        last_used = (
+            artifact.frontmatter.last_used_at.isoformat()
+            if artifact.frontmatter.last_used_at
+            else ts
+        )
+        recency_ts = last_used or ts
+
+        by_type = indexes.get(MemoryPaths.INDEX_BY_TYPE, {}) or {}
+        by_type.setdefault(t, []).append(mid)
+        indexes[MemoryPaths.INDEX_BY_TYPE] = by_type
+
+        by_tag = indexes.get(MemoryPaths.INDEX_BY_TAG, {}) or {}
+        for tag in artifact.frontmatter.tags:
+            by_tag.setdefault(tag.lower(), []).append(mid)
+        indexes[MemoryPaths.INDEX_BY_TAG] = by_tag
+
+        by_entity = indexes.get(MemoryPaths.INDEX_BY_ENTITY, {}) or {}
+        for entity in artifact.frontmatter.entities:
+            by_entity.setdefault(entity.lower(), []).append(mid)
+        indexes[MemoryPaths.INDEX_BY_ENTITY] = by_entity
+
+        by_project = indexes.get(MemoryPaths.INDEX_BY_PROJECT, {}) or {}
+        if t == MemoryType.PROJECTS.value:
+            by_project.setdefault(mid, []).append(mid)
+        for entity in artifact.frontmatter.entities:
+            by_project.setdefault(entity.lower(), []).append(mid)
+        indexes[MemoryPaths.INDEX_BY_PROJECT] = by_project
+
+        by_recency = indexes.get(MemoryPaths.INDEX_BY_RECENCY, []) or []
+        by_recency.append({"memory_id": mid, "updated_at": recency_ts})
+        by_recency.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        indexes[MemoryPaths.INDEX_BY_RECENCY] = by_recency
+
+        self._write_indexes(indexes)
+
+    def remove_artifact(
+        self,
+        memory_type: MemoryType,
+        memory_id: str,
+        tags: list[str],
+        entities: list[str],
+    ) -> None:
+        """Incrementally remove one artifact from indexes."""
+        if not self.indexes_exist():
+            return
+        indexes = self.load_all_indexes()
+        t = memory_type.value
+
+        by_type = indexes.get(MemoryPaths.INDEX_BY_TYPE, {}) or {}
+        if t in by_type:
+            by_type[t] = [x for x in by_type[t] if x != memory_id]
+            if not by_type[t]:
+                del by_type[t]
+        indexes[MemoryPaths.INDEX_BY_TYPE] = by_type
+
+        by_tag = indexes.get(MemoryPaths.INDEX_BY_TAG, {}) or {}
+        for tag in tags:
+            tl = tag.lower()
+            if tl in by_tag:
+                by_tag[tl] = [x for x in by_tag[tl] if x != memory_id]
+                if not by_tag[tl]:
+                    del by_tag[tl]
+        indexes[MemoryPaths.INDEX_BY_TAG] = by_tag
+
+        by_entity = indexes.get(MemoryPaths.INDEX_BY_ENTITY, {}) or {}
+        for entity in entities:
+            el = entity.lower()
+            if el in by_entity:
+                by_entity[el] = [x for x in by_entity[el] if x != memory_id]
+                if not by_entity[el]:
+                    del by_entity[el]
+        indexes[MemoryPaths.INDEX_BY_ENTITY] = by_entity
+
+        by_project = indexes.get(MemoryPaths.INDEX_BY_PROJECT, {}) or {}
+        if memory_id in by_project:
+            del by_project[memory_id]
+        for entity in entities:
+            el = entity.lower()
+            if el in by_project:
+                by_project[el] = [x for x in by_project[el] if x != memory_id]
+                if not by_project[el]:
+                    del by_project[el]
+        indexes[MemoryPaths.INDEX_BY_PROJECT] = by_project
+
+        by_recency = indexes.get(MemoryPaths.INDEX_BY_RECENCY, []) or []
+        by_recency = [x for x in by_recency if x.get("memory_id") != memory_id]
+        indexes[MemoryPaths.INDEX_BY_RECENCY] = by_recency
+
+        self._write_indexes(indexes)
+
+    def _write_indexes(self, indexes: dict[str, object]) -> None:
+        for name, data in indexes.items():
+            path = self._paths.index_path(name)
+            path.write_text(json.dumps(data, indent=0), encoding="utf-8")
+
 
 def _empty_index(name: str) -> Any:
     if "recency" in name:

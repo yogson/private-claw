@@ -452,10 +452,17 @@
           "name": "Memory Write, Confidence, and Dedup Policies [CMP_MEMORY_FILESYSTEM_STORE]",
           "description": "Implement controlled memory write/update policy, confidence thresholds, and deduplication behavior.",
           "scope_path": "src/assistant/memory/write/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-12",
+          "completed_date": "2026-03-12",
+          "notes": "MemoryUpdateIntent/WriteAudit models; MemoryWriteService with upsert/delete/touch, min_confidence threshold (default 0.5), tag/entity dedup merge, intent_id idempotency. Incremental index add/remove in MemoryIndexer. Atomic file writes. 10 unit tests.",
+          "files_delivered": [
+            "src/assistant/memory/write/__init__.py",
+            "src/assistant/memory/write/models.py",
+            "src/assistant/memory/write/service.py",
+            "src/assistant/memory/retrieval/indexer.py",
+            "tests/assistant/memory/test_write.py"
+          ]
         },
         {
           "id": "4.4",
