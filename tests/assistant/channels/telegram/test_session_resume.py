@@ -146,29 +146,6 @@ class TestSignAndVerify:
 
 
 # ---------------------------------------------------------------------------
-# is_resume_request
-# ---------------------------------------------------------------------------
-
-
-class TestIsResumeRequest:
-    @pytest.mark.parametrize(
-        "text",
-        ["/sessions", " /sessions ", "/sessions@mybot", "/SESSIONS"],
-    )
-    def test_recognized_command(self, text: str) -> None:
-        svc = SessionResumeService(MagicMock(), _SECRET)
-        assert svc.is_resume_request(text) is True
-
-    @pytest.mark.parametrize(
-        "text",
-        ["resume", "sessions", "show sessions", "/resume", "hello", None, ""],
-    )
-    def test_not_resume_requests(self, text: str | None) -> None:
-        svc = SessionResumeService(MagicMock(), _SECRET)
-        assert svc.is_resume_request(text) is False
-
-
-# ---------------------------------------------------------------------------
 # list_recent_sessions
 # ---------------------------------------------------------------------------
 

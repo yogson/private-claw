@@ -14,6 +14,7 @@ import structlog
 from aiogram.types import Update
 
 from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
+from assistant.channels.telegram.commands import TelegramCommand, extract_supported_command
 from assistant.channels.telegram.egress import TelegramEgress
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.ingress import TelegramIngress
@@ -25,8 +26,6 @@ from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
-_RESET_COMMAND = "/reset"
-_NEW_COMMAND = "/new"
 
 
 class TelegramAdapter:
@@ -142,7 +141,7 @@ class TelegramAdapter:
         """Return True if the event is a session-resume listing request."""
         if self._session_resume is None:
             return False
-        return self._session_resume.is_resume_request(event.text)
+        return extract_supported_command(event.text) == TelegramCommand.SESSIONS
 
     def is_session_resume_callback(self, event: NormalizedEvent) -> bool:
         """Return True if the event is a valid, chat-scoped signed session-resume callback."""
@@ -158,23 +157,11 @@ class TelegramAdapter:
 
     def is_session_reset_request(self, event: NormalizedEvent) -> bool:
         """Return True when the event text is the /reset command."""
-        raw = (event.text or "").strip()
-        if not raw:
-            return False
-        text = raw.split(maxsplit=1)[0].lower()
-        if not text.startswith(_RESET_COMMAND):
-            return False
-        return text == _RESET_COMMAND or text.startswith(f"{_RESET_COMMAND}@")
+        return extract_supported_command(event.text) == TelegramCommand.RESET
 
     def is_session_new_request(self, event: NormalizedEvent) -> bool:
         """Return True when the event text is the /new command."""
-        raw = (event.text or "").strip()
-        if not raw:
-            return False
-        text = raw.split(maxsplit=1)[0].lower()
-        if not text.startswith(_NEW_COMMAND):
-            return False
-        return text == _NEW_COMMAND or text.startswith(f"{_NEW_COMMAND}@")
+        return extract_supported_command(event.text) == TelegramCommand.NEW
 
     def start_new_session(self, event: NormalizedEvent) -> str | None:
         """Create and activate a new session id for the event chat context."""

@@ -6,11 +6,17 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+from aiogram.methods import SendMessage
 from aiogram.types import Update
 
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.models import ChannelResponse, MessageType
-from assistant.channels.telegram.polling import _process_update, run_polling
+from assistant.channels.telegram.polling import (
+    _configure_bot_commands_menu,
+    _process_update,
+    run_polling,
+)
 from assistant.core.config.schemas import TelegramChannelConfig
 
 
@@ -37,6 +43,10 @@ def _make_text_update(update_id: int = 1, user_id: int = 123456, text: str = "hi
             },
         }
     )
+
+
+def _send_method() -> SendMessage:
+    return SendMessage(chat_id=123, text="x")
 
 
 @pytest.mark.asyncio
@@ -118,6 +128,8 @@ async def test_run_polling_stops_on_stop_event() -> None:
         mock_bot = MagicMock()
         mock_bot.get_updates = AsyncMock(return_value=[])
         mock_bot.delete_webhook = AsyncMock()
+        mock_bot.set_my_commands = AsyncMock()
+        mock_bot.set_chat_menu_button = AsyncMock()
         mock_bot.session.close = AsyncMock()
         mock_bot_cls.return_value = mock_bot
 
@@ -129,3 +141,46 @@ async def test_run_polling_stops_on_stop_event() -> None:
         )
 
     mock_bot.delete_webhook.assert_called_once()
+    mock_bot.set_my_commands.assert_called_once()
+    mock_bot.set_chat_menu_button.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_configure_bot_commands_menu_registers_expected_commands() -> None:
+    """Verifies native Telegram commands menu is configured on startup."""
+    bot = MagicMock()
+    bot.set_my_commands = AsyncMock()
+    bot.set_chat_menu_button = AsyncMock()
+
+    await _configure_bot_commands_menu(bot)
+
+    bot.set_my_commands.assert_called_once()
+    commands = bot.set_my_commands.call_args.kwargs["commands"]
+    assert [f"/{item.command}" for item in commands] == ["/new", "/reset", "/sessions"]
+    bot.set_chat_menu_button.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_configure_bot_commands_menu_tolerates_set_my_commands_api_error() -> None:
+    bot = MagicMock()
+    bot.set_my_commands = AsyncMock(side_effect=TelegramAPIError(_send_method(), "Forbidden"))
+    bot.set_chat_menu_button = AsyncMock()
+
+    await _configure_bot_commands_menu(bot)
+
+    bot.set_my_commands.assert_called_once()
+    bot.set_chat_menu_button.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_configure_bot_commands_menu_tolerates_set_chat_menu_button_network_error() -> None:
+    bot = MagicMock()
+    bot.set_my_commands = AsyncMock(return_value=True)
+    bot.set_chat_menu_button = AsyncMock(
+        side_effect=TelegramNetworkError(_send_method(), "connection refused")
+    )
+
+    await _configure_bot_commands_menu(bot)
+
+    bot.set_my_commands.assert_called_once()
+    bot.set_chat_menu_button.assert_called_once()

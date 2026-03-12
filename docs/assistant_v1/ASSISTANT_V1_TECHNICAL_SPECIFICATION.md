@@ -142,6 +142,11 @@ Validation and safety:
 - `callback_data` must be signed or otherwise tamper-evident.
 - Callback handlers must validate `ui_version` to avoid stale action execution.
 
+Telegram command menu requirements:
+- Runtime bootstrap must register Telegram command metadata for `/new`, `/reset`, `/sessions`.
+- Runtime bootstrap should set Telegram chat menu button to `MenuButtonCommands` for consistent command discovery UX.
+- Command-menu bootstrap failures should be non-fatal and logged; update polling must continue.
+
 ## Data Structures
 
 ### Canonical Model Families

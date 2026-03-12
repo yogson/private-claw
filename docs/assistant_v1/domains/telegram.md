@@ -81,6 +81,19 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
 - Subsequent user turns in the same chat are routed to the newly activated session until another session switch command/callback is applied.
 
+### Commands Menu Flow
+
+- v1 configures Telegram native bot commands during polling startup using Bot API command metadata:
+  - `/new` - start a fresh session for the current chat,
+  - `/reset` - clear context for the currently active session,
+  - `/sessions` - list recent sessions and resume one via inline callbacks.
+- v1 explicitly configures Telegram `MenuButtonCommands` so the client menu opens the registered command list.
+- Command matching in runtime is centralized in a shared command parser that supports Telegram command forms:
+  - `/command`,
+  - `/command@botname` (group contexts),
+  - case-insensitive token parsing.
+- Command registration failures must not block polling startup; they are logged and polling continues.
+
 ## Voice Handling Strategy
 
 - v1 uses a dedicated Telegram MTProto transcription worker (Pyrogram/Telethon user client) to access Telegram built-in voice transcription.
@@ -97,6 +110,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - Multimodal handling must degrade gracefully if processing fails.
 - Telegram transcription worker requires user-client credentials (`api_id`, `api_hash`) and operational access to chats where voice messages are transcribed.
 - Callback payloads must be validated and protected against replay/tampering.
+- Native command menu bootstrap must be idempotent across restarts.
 
 ## Risks
 

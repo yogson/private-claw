@@ -12,10 +12,11 @@ from contextlib import suppress
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
-from aiogram.types import Update
+from aiogram.types import MenuButtonCommands, Update
 
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.allowlist import UnauthorizedUserError
+from assistant.channels.telegram.commands import build_bot_commands
 from assistant.channels.telegram.models import ChannelResponse, NormalizedEvent
 from assistant.core.config.schemas import TelegramChannelConfig
 
@@ -51,6 +52,7 @@ async def run_polling(
     except (TelegramAPIError, TelegramNetworkError) as exc:
         logger.warning("telegram.polling.delete_webhook_failed", error=str(exc))
         # Continue anyway; polling may still work if no webhook was set
+    await _configure_bot_commands_menu(bot)
 
     offset: int | None = None
     backoff = _BACKOFF_MIN_SECONDS
@@ -96,6 +98,21 @@ async def run_polling(
 
     await bot.session.close()
     logger.info("telegram.polling.stopped")
+
+
+async def _configure_bot_commands_menu(bot: Bot) -> None:
+    # Register Telegram native commands and force Commands menu button on startup
+    # to keep command discovery deterministic across runtime restarts.
+    commands = build_bot_commands()
+    try:
+        await bot.set_my_commands(commands=commands)
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        logger.info(
+            "telegram.polling.commands_menu_configured",
+            commands=[f"/{item.command}" for item in commands],
+        )
+    except (TelegramAPIError, TelegramNetworkError) as exc:
+        logger.warning("telegram.polling.commands_menu_config_failed", error=str(exc))
 
 
 async def _process_update(

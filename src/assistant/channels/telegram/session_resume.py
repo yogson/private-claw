@@ -26,7 +26,6 @@ from assistant.store.interfaces import SessionStoreInterface
 
 _BUTTON_LABEL_MAX = 64
 
-_SESSIONS_COMMAND = "/sessions"
 _CALLBACK_TTL_SECONDS = CALLBACK_TTL_SECONDS
 
 
@@ -161,15 +160,6 @@ class SessionResumeService:
             expected_chat_id=expected_chat_id,
             secret=self._secret,
         )
-
-    @staticmethod
-    def is_resume_request(text: str | None) -> bool:
-        """Return True if the message text is the /sessions bot command."""
-        if not text:
-            return False
-        # Match /sessions or /sessions@botname (Telegram appends bot username in groups)
-        normalized = text.strip().lower()
-        return normalized == _SESSIONS_COMMAND or normalized.startswith(_SESSIONS_COMMAND + "@")
 
     async def _build_session_entry(self, session_id: str) -> SessionEntry | None:
         records = await self._store.read_session(session_id)
