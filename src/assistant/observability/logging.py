@@ -59,33 +59,63 @@ def configure_logging(app_config: AppConfig) -> Path:
         with suppress(Exception):
             h.close()
 
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setLevel(level)
-    file_handler.setFormatter(logging.Formatter("%(message)s"))
-    root.addHandler(file_handler)
+    # Processors for structlog-originated logs (logger is always set)
+    structlog_processors = [
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        _inject_trace_context,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+    ]
+    # Foreign pre-chain: same but WITHOUT filter_by_level. Third-party loggers
+    # (anthropic, httpx, etc.) can pass None as logger, causing AttributeError.
+    foreign_pre_chain = [
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        _inject_trace_context,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+    ]
 
-    console = logging.StreamHandler()
-    console.setLevel(level)
-    console.setFormatter(logging.Formatter("%(message)s"))
-    root.addHandler(console)
-
-    # structlog: render within structlog, pass final string to stdlib
+    # structlog: build event dict, pass to ProcessorFormatter (no final renderer)
     structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            _inject_trace_context,  # type: ignore[list-item]
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
-        ],
+        processors=structlog_processors + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],  # type: ignore[arg-type]
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+    # File: JSON for machine parsing
+    file_formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=foreign_pre_chain,  # type: ignore[arg-type]
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
+    )
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(file_formatter)
+    root.addHandler(file_handler)
+
+    # Console: human-readable
+    console_formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=foreign_pre_chain,  # type: ignore[arg-type]
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(),
+        ],
+    )
+    console = logging.StreamHandler()
+    console.setLevel(level)
+    console.setFormatter(console_formatter)
+    root.addHandler(console)
 
     return log_path

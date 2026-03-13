@@ -21,6 +21,7 @@ from pydantic_ai.messages import (
 )
 
 from assistant.core.orchestrator.memory import MemoryIntentPlan
+from assistant.core.prompts import load_prompt
 from assistant.extensions.first_party.memory import (
     MemoryProposalToolCall,
     normalize_candidate_for_upsert,
@@ -49,14 +50,7 @@ __all__ = [
 ]
 
 MEMORY_TOOL_NAME = "memory_propose_update"
-MEMORY_AGENT_SYSTEM_PROMPT = (
-    "You are a helpful assistant. "
-    "Use the memory_search tool when user/profile context is needed to answer correctly. "
-    "When the user asks to remember something, "
-    "use the memory_propose_update tool to propose the update. "
-    "Do not write memory directly; runtime applies policy and confirmation gates. "
-    "Do not claim memory is saved until the user confirms."
-)
+MEMORY_AGENT_PROMPT_NAME = "memory_agent_system"
 
 
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
@@ -64,13 +58,12 @@ def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[st
     return normalize_candidate_for_upsert(candidate)
 
 
-def _create_memory_agent(model_id: str) -> Agent[TurnDeps, str]:
+def _create_memory_agent(model_id: str, system_prompt: str) -> Agent[TurnDeps, str]:
     """Create Agent with memory_propose_update tool. Output type is str (final assistant text)."""
-
     agent = Agent(
         model_id,
         deps_type=TurnDeps,
-        system_prompt=MEMORY_AGENT_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         retries=0,
     )
     register_agent_tools(agent)
@@ -360,12 +353,13 @@ class PydanticAITurnAdapter:
     ) -> None:
         self._model_id = model_id
         self._max_tokens = max_tokens
-        self._agent = _create_memory_agent(model_id)
+        self._system_prompt = load_prompt(MEMORY_AGENT_PROMPT_NAME)
+        self._agent = _create_memory_agent(model_id, self._system_prompt)
 
     @property
     def system_prompt(self) -> str:
         """System prompt used for each turn."""
-        return MEMORY_AGENT_SYSTEM_PROMPT
+        return self._system_prompt
 
     async def run_turn(
         self,
