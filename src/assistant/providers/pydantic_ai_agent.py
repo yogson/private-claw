@@ -23,13 +23,13 @@ from pydantic_ai.messages import (
 from assistant.core.orchestrator.memory import MemoryIntentPlan
 from assistant.extensions.first_party.memory import (
     MemoryProposalToolCall,
+    normalize_candidate_for_upsert,
 )
 from assistant.extensions.first_party.memory import (
     memory_propose_update as validate_memory_proposal,
 )
 from assistant.providers.pydantic_ai_tools import (
     TurnDeps,
-    normalize_candidate_for_upsert,
     register_agent_tools,
 )
 from assistant.store.models import (

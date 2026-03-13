@@ -157,18 +157,37 @@ def _build_orchestrator_handler(
         response_text = await orchestrator.execute_turn(orch_event)
         if response_text is None:
             return None
+        session_id = orch_event.session_id
         if memory_confirmations is not None:
-            pending = await memory_confirmations.list_pending(event.session_id)
+            pending = await memory_confirmations.list_pending(session_id)
+            if not pending:
+                logger.debug(
+                    "memory.confirmation.no_pending",
+                    session_id=session_id,
+                    trace_id=event.trace_id,
+                )
             if pending:
                 chat_id = int(event.metadata.get("chat_id", 0))
+                if not chat_id:
+                    logger.warning(
+                        "memory.confirmation.skipped_no_chat_id",
+                        session_id=session_id,
+                        trace_id=event.trace_id,
+                    )
                 if chat_id:
+                    logger.info(
+                        "memory.confirmation.showing_ui",
+                        session_id=session_id,
+                        tool_call_id=pending[0].tool_call_id,
+                        trace_id=event.trace_id,
+                    )
                     prompt_text = response_text
                     proposal_reason = pending[0].proposal.reason.strip()
                     if proposal_reason:
                         prompt_text = f"{response_text}\n\nPending memory update: {proposal_reason}"
                     return adapter.build_memory_confirmation_response(
                         chat_id=chat_id,
-                        session_id=event.session_id,
+                        session_id=session_id,
                         trace_id=event.trace_id,
                         tool_call_id=pending[0].tool_call_id,
                         prompt_text=prompt_text,

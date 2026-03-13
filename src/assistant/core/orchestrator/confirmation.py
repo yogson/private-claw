@@ -11,7 +11,11 @@ from datetime import UTC, datetime
 
 import structlog
 
-from assistant.extensions.first_party.memory import MemoryProposalToolCall, memory_propose_update
+from assistant.extensions.first_party.memory import (
+    MemoryProposalToolCall,
+    canonicalize_memory_args,
+    memory_propose_update,
+)
 from assistant.memory.write.service import MemoryWriteService
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import SessionRecord, SessionRecordType, ToolResultPayload
@@ -27,6 +31,7 @@ class PendingMemoryConfirmation:
     turn_id: str
     tool_call_id: str
     proposal: MemoryProposalToolCall
+    raw_arguments_json: str
 
 
 class MemoryConfirmationService:
@@ -40,13 +45,17 @@ class MemoryConfirmationService:
         records = await self._sessions.read_session(session_id)
         call_records: dict[str, SessionRecord] = {}
         status_by_call: dict[str, str] = {}
+        memory_calls = 0
+        memory_results = 0
         for record in records:
             if record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
                 if record.payload.get("tool_name") == "memory_propose_update":
+                    memory_calls += 1
                     call_records[record.payload.get("tool_call_id", "")] = record
             elif record.record_type == SessionRecordType.TOOL_RESULT:
                 if record.payload.get("tool_name") != "memory_propose_update":
                     continue
+                memory_results += 1
                 result = record.payload.get("result")
                 if isinstance(result, dict):
                     status = result.get("status")
@@ -57,10 +66,11 @@ class MemoryConfirmationService:
         for tool_call_id, record in call_records.items():
             if status_by_call.get(tool_call_id) != _PENDING_STATUS:
                 continue
+            raw_json = record.payload.get("arguments_json", "{}")
             try:
-                proposal = MemoryProposalToolCall.model_validate_json(
-                    record.payload.get("arguments_json", "{}")
-                )
+                raw_args = json.loads(raw_json)
+                canonicalize_memory_args(raw_args)
+                proposal = MemoryProposalToolCall.model_validate(raw_args)
             except Exception:
                 continue
             pending.append(
@@ -69,7 +79,18 @@ class MemoryConfirmationService:
                     turn_id=record.turn_id,
                     tool_call_id=tool_call_id,
                     proposal=proposal,
+                    raw_arguments_json=raw_json,
                 )
+            )
+        if memory_calls > 0 or memory_results > 0:
+            logger.info(
+                "memory.confirmation.list_pending",
+                session_id=session_id,
+                record_count=len(records),
+                memory_calls=memory_calls,
+                memory_results=memory_results,
+                status_by_call=status_by_call,
+                pending_count=len(pending),
             )
         return pending
 
@@ -95,7 +116,9 @@ class MemoryConfirmationService:
             return True, "Memory update rejected."
 
         try:
-            intent = memory_propose_update(target.proposal.model_dump())
+            raw_args = json.loads(target.raw_arguments_json)
+            raw_args["intent_id"] = tool_call_id
+            intent = memory_propose_update(raw_args)
             audit = self._memory_writer.apply_intent(intent)
             await self._append_result(
                 session_id=session_id,

@@ -11,7 +11,11 @@ from typing import Any
 import structlog
 from pydantic_ai import Agent, RunContext
 
-from assistant.extensions.first_party.memory import MemoryProposalToolCall
+from assistant.extensions.first_party.memory import (
+    MemoryProposalToolCall,
+    canonicalize_memory_args,
+    normalize_candidate_for_upsert,
+)
 from assistant.extensions.first_party.memory import (
     memory_propose_update as validate_memory_proposal,
 )
@@ -28,41 +32,6 @@ class TurnDeps:
     writes_approved: list[None]  # mutable: append when we approve a write
     seen_intent_ids: set[str]  # mutable: deduplicate intent_id per turn
     memory_search_handler: Callable[[str, int, list[str] | None], dict[str, Any]] | None = None
-
-
-def normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize loosely structured model candidate into memory schema-friendly payload."""
-    payload = dict(candidate or {})
-    body = payload.get("body_markdown")
-    if isinstance(body, str) and body.strip():
-        payload["body_markdown"] = body.strip()
-        return payload
-
-    reserved = {"tags", "entities", "priority", "confidence", "body_markdown"}
-    details: list[tuple[str, Any]] = []
-    for key, value in payload.items():
-        if key in reserved:
-            continue
-        if value in (None, "", [], {}):
-            continue
-        details.append((key, value))
-    if details:
-        payload["body_markdown"] = "\n".join(f"- {k}: {v}" for k, v in details)
-    else:
-        payload["body_markdown"] = "[missing details]"
-
-    tags = payload.get("tags")
-    if not isinstance(tags, list):
-        payload["tags"] = []
-    entities = payload.get("entities")
-    if not isinstance(entities, list):
-        payload["entities"] = []
-    name = payload.get("name")
-    if isinstance(name, str) and name.strip() and name not in payload["entities"]:
-        payload["entities"].append(name.strip())
-    if not payload["tags"]:
-        payload["tags"] = ["user_profile"]
-    return payload
 
 
 def register_agent_tools(agent: Agent[TurnDeps, str]) -> None:
@@ -127,21 +96,22 @@ def register_agent_tools(agent: Agent[TurnDeps, str]) -> None:
     ) -> dict[str, Any]:
         """Propose a memory update. Runtime applies policy and confirmation gates."""
         deps = ctx.deps
-        normalized_candidate = candidate or {}
-        if action == "upsert":
-            normalized_candidate = normalize_candidate_for_upsert(candidate)
-        # Runtime policy controls confirmation; do not allow model bypass.
-        effective_requires_confirmation = True
         proposal_dict = {
             "intent_id": intent_id,
             "action": action,
             "memory_type": memory_type,
             "memory_id": memory_id,
-            "candidate": normalized_candidate,
+            "candidate": candidate,
             "reason": reason,
             "source": source,
-            "requires_user_confirmation": effective_requires_confirmation,
+            "requires_user_confirmation": True,
         }
+        canonicalize_memory_args(proposal_dict)
+        effective_requires_confirmation = True
+        if proposal_dict["action"] == "upsert":
+            raw_cand = proposal_dict.get("candidate")
+            cand = raw_cand if isinstance(raw_cand, dict) else {}
+            proposal_dict["candidate"] = normalize_candidate_for_upsert(cand)
         try:
             proposal = MemoryProposalToolCall(**proposal_dict)  # type: ignore[arg-type]
         except Exception as exc:

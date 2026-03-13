@@ -127,3 +127,67 @@ async def test_apply_failure_persists_result_and_returns_user_safe_message(tmp_p
     assert len(tool_results) >= 2
     last_result = tool_results[-1]
     assert last_result.payload.get("result", {}).get("status") == "failed"
+
+
+@pytest.mark.asyncio
+async def test_apply_with_model_format_candidate_writes_body_content(tmp_path: Path) -> None:
+    """fact/type in candidate gets normalized to body_markdown on confirmation apply."""
+    session_store = FilesystemSessionStore(tmp_path / "sessions")
+    writer = MemoryWriteService(tmp_path)
+    service = MemoryConfirmationService(session_store, writer)
+    session_id = "tg:789"
+    turn_id = "turn-3"
+    tool_call_id = "call-abc"
+    now = datetime.now(UTC)
+
+    call_payload = AssistantToolCallPayload(
+        message_id="msg-1",
+        tool_call_id=tool_call_id,
+        tool_name="memory_propose_update",
+        arguments_json=(
+            '{"intent_id":"store_cat","action":"upsert","memory_type":"facts",'
+            '"reason":"User shared cat name","source":"explicit_user_request",'
+            '"requires_user_confirmation":true,"candidate":{"fact":"User has a cat named Kis",'
+            '"type":"pet_info"}}'
+        ),
+    )
+    pending_payload = ToolResultPayload(
+        message_id="msg-2",
+        tool_call_id=tool_call_id,
+        tool_name="memory_propose_update",
+        result={"status": "pending_confirmation", "reason": "", "requires_user_confirmation": True},
+        error=None,
+    )
+    await session_store.append(
+        [
+            SessionRecord(
+                session_id=session_id,
+                sequence=0,
+                event_id="call-3",
+                turn_id=turn_id,
+                timestamp=now,
+                record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+                payload=call_payload.model_dump(),
+            ),
+            SessionRecord(
+                session_id=session_id,
+                sequence=1,
+                event_id="result-3",
+                turn_id=turn_id,
+                timestamp=now,
+                record_type=SessionRecordType.TOOL_RESULT,
+                payload=pending_payload.model_dump(),
+            ),
+        ]
+    )
+
+    ok, msg = await service.resolve_pending(session_id, tool_call_id, approve=True)
+    assert ok is True
+    assert "confirmed" in msg.lower()
+    facts_dir = tmp_path / "memory" / "facts"
+    assert facts_dir.exists()
+    files = list(facts_dir.glob("*.md"))
+    assert len(files) == 1
+    content = files[0].read_text()
+    assert "Kis" in content
+    assert "pet_info" in content
