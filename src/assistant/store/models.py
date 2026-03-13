@@ -31,6 +31,9 @@ class TurnTerminalStatus(StrEnum):
     CANCELLED = "cancelled"
     TIMED_OUT = "timed_out"
     INTERRUPTED = "interrupted"
+    # Reserved for future use (e.g. turn suspended awaiting user input such as ask_question).
+    # Not used in v1; turns with pending_ask are persisted as COMPLETED.
+    SUSPENDED = "suspended"
 
 
 class SystemMessageScope(StrEnum):

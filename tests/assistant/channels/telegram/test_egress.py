@@ -138,8 +138,9 @@ class TestTelegramEgresSend:
     def test_inline_keyboard_payload_structure(self) -> None:
         egress = TelegramEgress(bot_token="12345:tok")
         response = _make_interactive_response()
-        markup = egress._build_inline_keyboard(response)
+        markup = egress._build_reply_markup(response)
         assert markup is not None
+        assert hasattr(markup, "inline_keyboard")
         keyboard = markup.inline_keyboard
         assert len(keyboard) == 2
         assert keyboard[0][0].text == "Option A"
@@ -147,8 +148,30 @@ class TestTelegramEgresSend:
 
     def test_text_payload_no_reply_markup(self) -> None:
         egress = TelegramEgress(bot_token="12345:tok")
-        markup = egress._build_inline_keyboard(_make_text_response())
+        markup = egress._build_reply_markup(_make_text_response())
         assert markup is None
+
+    def test_reply_keyboard_sends_button_text_as_message(self) -> None:
+        egress = TelegramEgress(bot_token="12345:tok")
+        response = ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id="tg:123",
+            trace_id="trace-3",
+            message_type=MessageType.INTERACTIVE,
+            text="Choose:",
+            ui_kind="reply_keyboard",
+            actions=[
+                ActionButton(label="A", callback_id="", callback_data=""),
+                ActionButton(label="B", callback_id="", callback_data=""),
+            ],
+        )
+        markup = egress._build_reply_markup(response)
+        assert markup is not None
+        assert hasattr(markup, "keyboard")
+        assert len(markup.keyboard) == 2
+        assert markup.keyboard[0][0].text == "A"
+        assert markup.keyboard[1][0].text == "B"
 
     def test_split_text_prefers_newline_boundary(self) -> None:
         egress = TelegramEgress(bot_token="12345:tok")

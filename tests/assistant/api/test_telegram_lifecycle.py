@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from assistant.channels.telegram.models import NormalizedEvent
+from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesConfig,
@@ -128,7 +128,9 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     mock_adapter.is_memory_confirmation_callback.return_value = False
 
     mock_orchestrator = MagicMock()
-    mock_orchestrator.execute_turn = AsyncMock(return_value="model reply")
+    from assistant.core.orchestrator.models import OrchestratorResult
+
+    mock_orchestrator.execute_turn = AsyncMock(return_value=OrchestratorResult(text="model reply"))
 
     handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
     response = await handler(event)
@@ -244,6 +246,76 @@ async def test_handler_handles_new_session_without_orchestrator_call() -> None:
     assert response.text == "Started a new session. Continue your conversation."
     mock_adapter.start_new_session.assert_called_once_with(event)
     mock_orchestrator.execute_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_returns_interactive_reply_keyboard_when_pending_ask() -> None:
+    """
+    Acceptance: when orchestrator returns pending_ask, handler returns
+    interactive response with ui_kind=reply_keyboard and combines
+    response_text with question.
+    """
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+    from assistant.core.orchestrator.models import OrchestratorResult, PendingAskData
+
+    event = NormalizedEvent(
+        event_id="ev-ask",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-ask",
+        text="Which one?",
+        metadata={"chat_id": 123},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
+
+    pending_ask = PendingAskData(
+        question_id="tc-1",
+        question="Which option do you prefer?",
+        options=[{"id": "0", "label": "A"}, {"id": "1", "label": "B"}],
+        session_id="tg:123",
+        turn_id="turn-1",
+        tool_call_id="tc-1",
+    )
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock(
+        return_value=OrchestratorResult(
+            text="Sure!",
+            pending_ask=pending_ask,
+        )
+    )
+
+    mock_response = ChannelResponse(
+        response_id="resp-1",
+        channel="telegram",
+        session_id="tg:123",
+        trace_id="trace-ask",
+        message_type=MessageType.INTERACTIVE,
+        text="Sure!\n\nWhich option do you prefer?",
+        ui_kind="reply_keyboard",
+        actions=[],
+    )
+    mock_adapter.build_ask_question_response = MagicMock(return_value=mock_response)
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
+    response = await handler(event)
+
+    assert response is not None
+    assert response.message_type == MessageType.INTERACTIVE
+    assert response.ui_kind == "reply_keyboard"
+    mock_adapter.build_ask_question_response.assert_called_once()
+    call_kwargs = mock_adapter.build_ask_question_response.call_args[1]
+    assert call_kwargs["question"] == "Sure!\n\nWhich option do you prefer?"
+    assert call_kwargs["options"] == [{"id": "0", "label": "A"}, {"id": "1", "label": "B"}]
 
 
 @pytest.mark.asyncio

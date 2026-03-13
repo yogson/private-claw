@@ -13,6 +13,7 @@ from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.agent.pydantic_ai_agent import (
     PydanticAITurnAdapter,
     TurnDeps,
+    _extract_pending_ask_question,
     _new_messages_to_plans,
     _new_messages_to_session_records,
 )
@@ -20,6 +21,7 @@ from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.core.orchestrator.memory import apply_approved_memory_intents
+from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.payloads import (
     _PLACEHOLDER_EMPTY,
     build_user_content_blocks,
@@ -81,11 +83,11 @@ class Orchestrator:
         self._memory_retrieval = memory_retrieval
         self._pydantic_ai_adapter = pydantic_ai_adapter
 
-    async def execute_turn(self, event: OrchestratorEvent) -> str | None:
+    async def execute_turn(self, event: OrchestratorEvent) -> OrchestratorResult | None:
         """
         Execute one turn for the given event.
 
-        Returns assistant response text on success, None if duplicate (caller
+        Returns OrchestratorResult on success, None if duplicate (caller
         should not send a response). Raises on lock timeout or provider failure.
         """
         source = event.source.value
@@ -123,7 +125,7 @@ class Orchestrator:
         session_id: str,
         turn_id: str,
         trace_id: str,
-    ) -> str:
+    ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
         adapter = self._pydantic_ai_adapter
         if adapter is None:
@@ -180,6 +182,9 @@ class Orchestrator:
                     ).model_dump(),
                 )
             ]
+        pending_ask = _extract_pending_ask_question(
+            new_msgs, session_id=session_id, turn_id=turn_id
+        )
         initial_persisted = False
         try:
             await persist_turn_initial(
@@ -201,7 +206,7 @@ class Orchestrator:
                 turn_id=turn_id,
                 outcomes=outcomes,
             )
-            return response_text
+            return OrchestratorResult(text=response_text, pending_ask=pending_ask)
         except Exception:
             if initial_persisted:
                 await persist_turn_terminal_failed(
@@ -219,7 +224,7 @@ class Orchestrator:
                 )
             raise
 
-    async def _run_turn(self, event: OrchestratorEvent) -> str:
+    async def _run_turn(self, event: OrchestratorEvent) -> OrchestratorResult:
         user_text = extract_user_text(event)
         attachments = gather_attachments(event)
         attachment_context = format_attachment_context(attachments)

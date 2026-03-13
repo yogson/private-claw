@@ -11,7 +11,12 @@ from typing import Final
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 from assistant.channels.telegram.models import ChannelResponse, MessageType
 from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
@@ -83,11 +88,12 @@ class TelegramEgress:
                 )
             try:
                 for chunk in text_chunks[sent_chunks:]:
+                    reply_markup = self._build_reply_markup(response)
                     await self._bot.send_message(
                         chat_id=chat_id,
                         text=chunk,
                         parse_mode=response.parse_mode,
-                        reply_markup=self._build_inline_keyboard(response),
+                        reply_markup=reply_markup,
                     )
                     sent_chunks += 1
                 if self._audit_logger is not None:
@@ -186,10 +192,21 @@ class TelegramEgress:
         await self._bot.session.close()
 
     @staticmethod
-    def _build_inline_keyboard(response: ChannelResponse) -> InlineKeyboardMarkup | None:
+    def _build_reply_markup(
+        response: ChannelResponse,
+    ) -> InlineKeyboardMarkup | ReplyKeyboardMarkup | None:
         if response.message_type != MessageType.INTERACTIVE or not response.actions:
             return None
-        buttons = [
+        if response.ui_kind == "reply_keyboard":
+            keyboard: list[list[KeyboardButton]] = [
+                [KeyboardButton(text=action.label)] for action in response.actions
+            ]
+            return ReplyKeyboardMarkup(
+                keyboard=keyboard,
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+        inline_buttons: list[list[InlineKeyboardButton]] = [
             [
                 InlineKeyboardButton(
                     text=action.label,
@@ -198,7 +215,7 @@ class TelegramEgress:
             ]
             for action in response.actions
         ]
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
+        return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
     @staticmethod
     def _split_text(text: str) -> list[str]:

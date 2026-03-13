@@ -362,7 +362,7 @@ class TestOrchestratorExecuteTurn:
         )
         event = _minimal_event()
         result = await orch.execute_turn(event)
-        assert result == "Model response"
+        assert result is not None and result.text == "Model response"
         mock_pydantic_adapter.run_turn.assert_called_once()
         call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
         assert len(call_kwargs["messages"]) == 1
@@ -386,7 +386,7 @@ class TestOrchestratorExecuteTurn:
         )
         event = _minimal_event(text="What is 2+2?")
         result = await orch.execute_turn(event)
-        assert result == "Model response"
+        assert result is not None and result.text == "Model response"
         mock_pydantic_adapter.run_turn.assert_called_once()
         call_kwargs = mock_pydantic_adapter.run_turn.call_args.kwargs
         assert len(call_kwargs["messages"]) == 1
@@ -804,7 +804,7 @@ class TestOrchestratorExecuteTurn:
         event = _minimal_event(text="Please remember I prefer concise replies.")
         result = await orch.execute_turn(event)
 
-        assert result == "Noted your preference."
+        assert result is not None and result.text == "Noted your preference."
         mock_pydantic_adapter.run_turn.assert_called_once()
         memory_writer.apply_intent.assert_called_once()
         appended_records = [
@@ -878,7 +878,7 @@ class TestOrchestratorExecuteTurn:
         )
 
         result = await orch.execute_turn(_minimal_event(text="remember this"))
-        assert result == "Please confirm this memory update."
+        assert result is not None and result.text == "Please confirm this memory update."
         memory_writer.apply_intent.assert_not_called()
         all_records = [
             rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]
@@ -910,7 +910,7 @@ class TestOrchestratorExecuteTurn:
             pydantic_ai_adapter=mock_pydantic_adapter,
         )
         result = await orch.execute_turn(_minimal_event(text="remember this"))
-        assert result == '{"memory_update_intents":[{"intent_id":"x"}]}'
+        assert result is not None and result.text == '{"memory_update_intents":[{"intent_id":"x"}]}'
         memory_writer.apply_intent.assert_not_called()
 
     @pytest.mark.asyncio

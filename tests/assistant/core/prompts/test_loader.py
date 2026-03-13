@@ -30,7 +30,7 @@ def test_resolve_prompts_dir_explicit_arg() -> None:
 def test_load_prompt_memory_agent_system() -> None:
     """Load memory_agent_system prompt from prompts store."""
     content = load_prompt("memory_agent_system")
-    assert "helpful assistant" in content
+    assert "helpful personal assistant" in content
     assert "memory_search" in content
     assert "memory_propose_update" in content
     assert "Do not write memory directly" in content

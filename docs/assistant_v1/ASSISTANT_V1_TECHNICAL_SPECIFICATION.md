@@ -129,13 +129,22 @@ Text response payload:
 
 Interactive response payload:
 - `text`
-- `ui_kind` (`inline_keyboard`)
+- `ui_kind` (`inline_keyboard` | `reply_keyboard`)
 - `actions`: array of button definitions
   - `label`
-  - `callback_id`
-  - `callback_data`
+  - `callback_id` (required for `inline_keyboard`; optional for `reply_keyboard`)
+  - `callback_data` (required for `inline_keyboard`; optional for `reply_keyboard`)
   - `style?`
-- `ui_version`
+- `ui_version` (for `inline_keyboard`)
+
+For `ui_kind: "reply_keyboard"`:
+- Button label is sent as user text when tapped; no callback.
+- `callback_id` and `callback_data` may be empty.
+- `ui_version` is not required.
+
+For `ui_kind: "inline_keyboard"`:
+- Callbacks are used; `callback_id` and `callback_data` must be set.
+- `callback_data` must be signed or otherwise tamper-evident.
 
 Validation and safety:
 - Interactive responses must include deterministic `callback_id` values.

@@ -201,6 +201,37 @@ class TelegramAdapter:
             return None
         return item.session_id, item.tool_call_id, item.approve
 
+    def build_ask_question_response(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+        question: str,
+        options: list[dict[str, str]],
+    ) -> ChannelResponse:
+        """Build message with reply keyboard; button text is sent as user message when tapped."""
+        actions: list[ActionButton] = []
+        for i, opt in enumerate(options):
+            raw = (opt.get("label", "") or "").strip()
+            label = raw if raw else f"Option {i}"
+            actions.append(
+                ActionButton(
+                    label=label,
+                    callback_id="",
+                    callback_data="",
+                )
+            )
+        return ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id=session_id,
+            trace_id=trace_id,
+            message_type=MessageType.INTERACTIVE,
+            text=question,
+            ui_kind="reply_keyboard",
+            actions=actions,
+        )
+
     def build_memory_confirmation_response(
         self,
         *,

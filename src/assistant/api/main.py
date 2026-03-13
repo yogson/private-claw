@@ -128,8 +128,8 @@ def _build_orchestrator_handler(
                     message_type=MessageType.TEXT,
                     text="Memory confirmation is not available.",
                 )
-            resolution = adapter.consume_memory_confirmation_callback(event)
-            if resolution is None:
+            mem_resolution = adapter.consume_memory_confirmation_callback(event)
+            if mem_resolution is None:
                 return ChannelResponse(
                     response_id=str(uuid.uuid4()),
                     channel="telegram",
@@ -138,26 +138,37 @@ def _build_orchestrator_handler(
                     message_type=MessageType.TEXT,
                     text="Invalid or expired confirmation action.",
                 )
-            session_id, tool_call_id, approve = resolution
+            mem_session_id, mem_tool_call_id, approve = mem_resolution
             ok, message = await memory_confirmations.resolve_pending(
-                session_id=session_id,
-                tool_call_id=tool_call_id,
+                session_id=mem_session_id,
+                tool_call_id=mem_tool_call_id,
                 approve=approve,
             )
             return ChannelResponse(
                 response_id=str(uuid.uuid4()),
                 channel="telegram",
-                session_id=session_id if ok else event.session_id,
+                session_id=mem_session_id if ok else event.session_id,
                 trace_id=event.trace_id,
                 message_type=MessageType.TEXT,
                 text=message,
             )
 
         orch_event = mapper.map(event)
-        response_text = await orchestrator.execute_turn(orch_event)
-        if response_text is None:
+        orch_result = await orchestrator.execute_turn(orch_event)
+        if orch_result is None:
             return None
         session_id = orch_event.session_id
+        response_text = orch_result.text
+        if orch_result.pending_ask is not None:
+            prompt_text = orch_result.pending_ask.question
+            if response_text.strip():
+                prompt_text = f"{response_text}\n\n{prompt_text}"
+            return adapter.build_ask_question_response(
+                session_id=session_id,
+                trace_id=event.trace_id,
+                question=prompt_text,
+                options=orch_result.pending_ask.options,
+            )
         if memory_confirmations is not None:
             pending = await memory_confirmations.list_pending(session_id)
             if not pending:

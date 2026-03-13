@@ -90,8 +90,16 @@ async def persist_turn_outcomes(
     session_id: str,
     turn_id: str,
     outcomes: list[MemoryOutcome],
+    terminal_status: TurnTerminalStatus = TurnTerminalStatus.COMPLETED,
+    terminal_payload: dict[str, Any] | None = None,
 ) -> None:
-    """Persist final memory outcome records and terminal turn record."""
+    """Persist final memory outcome records and terminal turn record.
+
+    terminal_status and terminal_payload are used for memory-outcome turns.
+    TurnTerminalStatus.SUSPENDED is reserved for future use (e.g. pending user
+    input); v1 turns with pending_ask are persisted as COMPLETED via
+    persist_turn_initial.
+    """
     now = datetime.now(UTC)
     next_sequence = await sessions.get_next_sequence(session_id)
     records: list[SessionRecord] = []
@@ -115,6 +123,9 @@ async def persist_turn_outcomes(
             )
         )
         next_sequence += 1
+    payload = terminal_payload or {"status": terminal_status.value}
+    if "status" not in payload:
+        payload["status"] = terminal_status.value
     records.append(
         SessionRecord(
             session_id=session_id,
@@ -123,7 +134,7 @@ async def persist_turn_outcomes(
             turn_id=turn_id,
             timestamp=now,
             record_type=SessionRecordType.TURN_TERMINAL,
-            payload={"status": TurnTerminalStatus.COMPLETED.value},
+            payload=payload,
         )
     )
     await sessions.append(records)
