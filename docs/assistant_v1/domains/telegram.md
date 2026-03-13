@@ -101,7 +101,18 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - v1 configures Telegram native bot commands during polling startup using Bot API command metadata:
   - `/new` - start a fresh session for the current chat,
   - `/reset` - clear context for the currently active session,
-  - `/sessions` - list recent sessions and resume one via inline callbacks.
+  - `/sessions` - list recent sessions and resume one via inline callbacks,
+  - `/usage` - show token and cost usage statistics for current session, today (UTC), and this month (UTC).
+- `/usage` is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
+- Usage aggregation is user-scoped: only usage attributed to the requesting user (via `user_id` on assistant records or turn-level correlation) is counted; shared-session usage from other participants is excluded.
+
+### Usage Stats Flow
+
+- v1 supports usage statistics via `/usage` (and `/usage@botname` in group contexts).
+- The command returns three sections: current session, today (UTC), and this month (UTC).
+- Token counts and estimated costs are derived from persisted assistant message records with usage payloads.
+- Cost calculation uses static local [genai-prices](https://github.com/pydantic/genai-prices) data (provider: anthropic).
+- User attribution is enforced at turn level: assistant records carry `user_id`; records without it are correlated via the turn's user_message. Only usage attributed to the requesting user is included.
 - v1 explicitly configures Telegram `MenuButtonCommands` so the client menu opens the registered command list.
 - Command matching in runtime is centralized in a shared command parser that supports Telegram command forms:
   - `/command`,

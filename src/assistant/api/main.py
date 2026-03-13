@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import Any, cast
 
 import structlog
 from dotenv import load_dotenv
@@ -25,6 +26,7 @@ from assistant.channels.telegram.ingestion.factory import build_transcription_se
 from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDownloader
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.channels.telegram.polling import run_polling
+from assistant.channels.telegram.usage import UsageStatsService
 from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
@@ -48,6 +50,7 @@ def _build_orchestrator_handler(
     adapter: TelegramAdapter,
     orchestrator: Orchestrator,
     memory_confirmations: MemoryConfirmationService | None,
+    usage_service: Any = None,
 ) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
     mapper = NormalizedEventMapper()
 
@@ -81,6 +84,8 @@ def _build_orchestrator_handler(
                     message_type=MessageType.TEXT,
                     text="Session reset is not available.",
                 )
+            if usage_service is not None:
+                await usage_service.archive_session_usage(event.session_id, event.user_id)
             cleared = await adapter.reset_session_context(event)
             return ChannelResponse(
                 response_id=str(uuid.uuid4()),
@@ -151,6 +156,20 @@ def _build_orchestrator_handler(
                 trace_id=event.trace_id,
                 message_type=MessageType.TEXT,
                 text=message,
+            )
+        if adapter.is_usage_request(event):
+            if usage_service is not None:
+                return cast(
+                    ChannelResponse,
+                    await usage_service.build_usage_response(event),
+                )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Usage stats not available.",
             )
 
         orch_event = mapper.map(event)
@@ -287,7 +306,14 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
-        handler = _build_orchestrator_handler(adapter, orchestrator, memory_confirmations)
+        usage_service = UsageStatsService(
+            session_store=store.sessions,
+            archive_dir=data_root / "runtime" / "usage_archive",
+            default_model_id=runtime_config.model.default_model_id,
+        )
+        handler = _build_orchestrator_handler(
+            adapter, orchestrator, memory_confirmations, usage_service=usage_service
+        )
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
             return await handler(event)

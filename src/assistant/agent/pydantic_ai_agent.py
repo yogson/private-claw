@@ -5,18 +5,22 @@ Pydantic AI Agent runtime for turn execution with typed memory_propose_update to
 Replaces manual provider tool protocol handling with Agent-managed tool loop.
 """
 
+import base64
+import binascii
 import json
 from datetime import datetime
 from typing import Any, cast
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelMessage,
     ModelRequest,
     ModelResponse,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserContent,
     UserPromptPart,
 )
 
@@ -71,9 +75,59 @@ def _create_memory_agent(model_id: str, system_prompt: str) -> Agent[TurnDeps, s
 
 
 def _message_to_prompt_content(msg: dict[str, Any]) -> str | list[dict[str, Any]]:
-    """Extract prompt content from a message dict."""
+    """Extract raw prompt content from a message dict for history conversion."""
     if msg.get("content_blocks"):
         return cast(list[dict[str, Any]], msg["content_blocks"])
+    return str(msg.get("content", "") or "")
+
+
+def _map_block_to_user_content(block: dict[str, Any]) -> UserContent | None:
+    """Convert Anthropic-style block dict to pydantic_ai UserContent."""
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text", "")
+        if isinstance(text, str) and text.strip():
+            return text
+        return None
+
+    if block_type not in {"image", "document"}:
+        return None
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    if source.get("type") != "base64":
+        return None
+    media_type = source.get("media_type")
+    data_b64 = source.get("data")
+    if not isinstance(media_type, str) or not media_type:
+        return None
+    if not isinstance(data_b64, str) or not data_b64:
+        return None
+    try:
+        data = base64.b64decode(data_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not data:
+        return None
+    return BinaryContent(data=data, media_type=media_type)
+
+
+def _message_to_user_prompt_content(msg: dict[str, Any]) -> str | list[UserContent]:
+    """Extract current turn prompt content with typed multimodal items."""
+    blocks = msg.get("content_blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return str(msg.get("content", "") or "")
+
+    converted: list[UserContent] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        item = _map_block_to_user_content(block)
+        if item is not None:
+            converted.append(item)
+
+    if converted:
+        return converted
     return str(msg.get("content", "") or "")
 
 
@@ -290,6 +344,8 @@ def _new_messages_to_session_records(
     timestamp: datetime,
     assistant_msg_id: str,
     model_id: str | None = None,
+    usage: dict[str, int] | None = None,
+    user_id: str | None = None,
     skip_memory_tool_results: bool = True,
 ) -> list[SessionRecord]:
     """Convert pydantic_ai new_messages to session records for full replay/restore.
@@ -319,6 +375,10 @@ def _new_messages_to_session_records(
                 }
                 if model_id:
                     payload["model_id"] = model_id
+                if usage is not None and assistant_idx == 0:
+                    payload["usage"] = usage
+                    if user_id is not None:
+                        payload["user_id"] = user_id
                 records.append(
                     SessionRecord(
                         session_id=session_id,
@@ -413,7 +473,7 @@ class PydanticAITurnAdapter:
         """
         if not messages:
             return "", [], None
-        user_prompt = _message_to_prompt_content(messages[-1])
+        user_prompt = _message_to_user_prompt_content(messages[-1])
         history_msgs = messages[:-1] if len(messages) > 1 else []
         history = _llm_messages_to_history(history_msgs)
         model_settings = {"max_tokens": self._max_tokens}
@@ -427,9 +487,14 @@ class PydanticAITurnAdapter:
         response_text = result.output if isinstance(result.output, str) else str(result.output)
         new_msgs = result.new_messages()
         usage = None
-        if result.usage:
+        usage_obj = result.usage() if callable(result.usage) else result.usage
+        if usage_obj is not None:
             usage = {
-                "input_tokens": getattr(result.usage, "request_tokens", 0) or 0,
-                "output_tokens": getattr(result.usage, "response_tokens", 0) or 0,
+                "input_tokens": getattr(usage_obj, "input_tokens", 0)
+                or getattr(usage_obj, "request_tokens", 0)
+                or 0,
+                "output_tokens": getattr(usage_obj, "output_tokens", 0)
+                or getattr(usage_obj, "response_tokens", 0)
+                or 0,
             }
         return response_text, list(new_msgs), usage

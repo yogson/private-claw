@@ -45,7 +45,6 @@ from assistant.observability.correlation import reset_trace_id, set_trace_id
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterface
 from assistant.store.models import (
-    AssistantMessagePayload,
     SessionRecord,
     SessionRecordType,
 )
@@ -125,6 +124,7 @@ class Orchestrator:
         session_id: str,
         turn_id: str,
         trace_id: str,
+        user_id: str | None = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
         adapter = self._pydantic_ai_adapter
@@ -140,7 +140,7 @@ class Orchestrator:
             seen_intent_ids=set(),
             memory_search_handler=self._memory_search if self._memory_retrieval else None,
         )
-        response_text, new_msgs, _usage = await adapter.run_turn(
+        response_text, new_msgs, usage = await adapter.run_turn(
             messages=msg_dicts,
             deps=deps,
             trace_id=trace_id,
@@ -164,9 +164,20 @@ class Orchestrator:
             timestamp=now,
             assistant_msg_id=assistant_msg_id,
             model_id=self._config.model.default_model_id,
+            usage=usage,
+            user_id=user_id,
             skip_memory_tool_results=True,
         )
         if not assistant_records:
+            fallback_payload: dict[str, Any] = {
+                "message_id": assistant_msg_id,
+                "content": response_text,
+                "model_id": self._config.model.default_model_id,
+            }
+            if usage is not None:
+                fallback_payload["usage"] = usage
+            if user_id is not None:
+                fallback_payload["user_id"] = user_id
             assistant_records = [
                 SessionRecord(
                     session_id=session_id,
@@ -175,11 +186,7 @@ class Orchestrator:
                     turn_id=turn_id,
                     timestamp=now,
                     record_type=SessionRecordType.ASSISTANT_MESSAGE,
-                    payload=AssistantMessagePayload(
-                        message_id=assistant_msg_id,
-                        content=response_text,
-                        model_id=self._config.model.default_model_id,
-                    ).model_dump(),
+                    payload=fallback_payload,
                 )
             ]
         pending_ask = _extract_pending_ask_question(
@@ -197,6 +204,7 @@ class Orchestrator:
                 attachments=[a.model_dump() for a in attachments],
                 invalid_memory_intents=0,
                 prompt_trace=prompt_trace,
+                user_id=user_id,
             )
             initial_persisted = True
             outcomes = apply_approved_memory_intents(memory_plans, self._memory_writer)
@@ -221,6 +229,7 @@ class Orchestrator:
                     session_id=session_id,
                     turn_id=turn_id,
                     user_text=user_content,
+                    user_id=user_id,
                 )
             raise
 
@@ -259,6 +268,7 @@ class Orchestrator:
                 session_id=session_id,
                 turn_id=turn_id,
                 trace_id=trace_id,
+                user_id=event.user_id,
             )
         finally:
             reset_trace_id(token)

@@ -280,6 +280,10 @@ class TelegramAdapter:
         """Return True when the event text is the /new command."""
         return extract_supported_command(event.text) == TelegramCommand.NEW
 
+    def is_usage_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /usage command."""
+        return extract_supported_command(event.text) == TelegramCommand.USAGE
+
     def start_new_session(self, event: NormalizedEvent) -> str | None:
         """Create and activate a new session id for the event chat context."""
         try:

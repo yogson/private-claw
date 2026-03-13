@@ -156,7 +156,12 @@ async def test_configure_bot_commands_menu_registers_expected_commands() -> None
 
     bot.set_my_commands.assert_called_once()
     commands = bot.set_my_commands.call_args.kwargs["commands"]
-    assert [f"/{item.command}" for item in commands] == ["/new", "/reset", "/sessions"]
+    assert [f"/{item.command}" for item in commands] == [
+        "/new",
+        "/reset",
+        "/sessions",
+        "/usage",
+    ]
     bot.set_chat_menu_button.assert_called_once()
 
 

@@ -31,6 +31,7 @@ async def persist_turn_initial(
     attachments: list[dict[str, Any]] | None = None,
     invalid_memory_intents: int = 0,
     prompt_trace: dict[str, Any] | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Persist initial turn records including full conversation context for replay/restore.
 
@@ -45,6 +46,7 @@ async def persist_turn_initial(
         content=user_text,
         attachments=attachments or [],
         source_event_id=turn_id,
+        user_id=user_id,
     )
     records: list[SessionRecord] = [
         SessionRecord(
@@ -147,6 +149,7 @@ async def persist_turn_failed(
     session_id: str,
     turn_id: str,
     user_text: str,
+    user_id: str | None = None,
     status: TurnTerminalStatus = TurnTerminalStatus.FAILED,
 ) -> None:
     """Persist minimal turn records when execution fails before normal completion.
@@ -163,6 +166,7 @@ async def persist_turn_failed(
         content=user_text,
         attachments=[],
         source_event_id=turn_id,
+        user_id=user_id,
     )
     records: list[SessionRecord] = [
         SessionRecord(

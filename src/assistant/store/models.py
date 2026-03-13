@@ -50,6 +50,7 @@ class UserMessagePayload(BaseModel):
     content: str
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     source_event_id: str | None = None
+    user_id: str | None = None
 
 
 class AssistantMessagePayload(BaseModel):
@@ -60,6 +61,7 @@ class AssistantMessagePayload(BaseModel):
     model_id: str | None = None
     usage: dict[str, int] | None = None
     finish_reason: str | None = None
+    user_id: str | None = None
 
 
 class AssistantToolCallPayload(BaseModel):

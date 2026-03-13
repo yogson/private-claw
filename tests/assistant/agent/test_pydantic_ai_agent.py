@@ -1,11 +1,13 @@
 """Tests for Pydantic AI turn adapter helpers."""
 
+import base64
 import json
 import subprocess
 import sys
 from datetime import UTC, datetime
 
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -16,6 +18,7 @@ from pydantic_ai.messages import (
 
 from assistant.agent.pydantic_ai_agent import (
     _llm_messages_to_history,
+    _message_to_user_prompt_content,
     _new_messages_to_plans,
     _new_messages_to_session_records,
     _normalize_candidate_for_upsert,
@@ -88,6 +91,53 @@ def test_llm_messages_to_history_wraps_user_parts_in_model_request() -> None:
     assert isinstance(history[2], ModelRequest)
     assert isinstance(history[0].parts[0], UserPromptPart)
     assert history[0].parts[0].content == "remember this"
+
+
+def test_message_to_user_prompt_content_maps_multimodal_blocks() -> None:
+    pdf_b64 = base64.b64encode(b"%PDF-1.7 mock bytes").decode("utf-8")
+    prompt = _message_to_user_prompt_content(
+        {
+            "role": "user",
+            "content_blocks": [
+                {"type": "text", "text": "Summarize this file"},
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_b64,
+                    },
+                },
+            ],
+        }
+    )
+
+    assert isinstance(prompt, list)
+    assert prompt[0] == "Summarize this file"
+    assert isinstance(prompt[1], BinaryContent)
+    assert prompt[1].media_type == "application/pdf"
+    assert prompt[1].data.startswith(b"%PDF")
+
+
+def test_message_to_user_prompt_content_falls_back_to_text_on_invalid_blocks() -> None:
+    prompt = _message_to_user_prompt_content(
+        {
+            "role": "user",
+            "content": "fallback text",
+            "content_blocks": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": "not-base64",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert prompt == "fallback text"
 
 
 def test_provider_module_imports_without_orchestrator_cycle() -> None:

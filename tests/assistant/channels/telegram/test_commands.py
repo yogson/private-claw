@@ -13,7 +13,12 @@ from assistant.channels.telegram.commands import (
 
 def test_build_bot_commands_contains_supported_command_set() -> None:
     commands = build_bot_commands()
-    assert [f"/{item.command}" for item in commands] == ["/new", "/reset", "/sessions"]
+    assert [f"/{item.command}" for item in commands] == [
+        "/new",
+        "/reset",
+        "/sessions",
+        "/usage",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -25,6 +30,8 @@ def test_build_bot_commands_contains_supported_command_set() -> None:
         ("/reset", TelegramCommand.RESET),
         ("/sessions", TelegramCommand.SESSIONS),
         ("/sessions@my_bot", TelegramCommand.SESSIONS),
+        ("/usage", TelegramCommand.USAGE),
+        ("/usage@my_bot", TelegramCommand.USAGE),
     ],
 )
 def test_extract_supported_command_matches_known_commands(
@@ -43,6 +50,7 @@ def test_extract_supported_command_matches_known_commands(
         "/unknown",
         "/sessions-extra",
         "/sessions_extra",
+        "/usage-extra",
     ],
 )
 def test_extract_supported_command_ignores_unknown_inputs(text: str | None) -> None:

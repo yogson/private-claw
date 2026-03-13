@@ -3,6 +3,7 @@ Unit tests for TelegramAdapter.
 """
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,8 +13,14 @@ from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.allowlist import UnauthorizedUserError
 from assistant.channels.telegram.ingestion.interfaces import TranscriptionWorkerInterface
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
-from assistant.channels.telegram.models import ChannelResponse, EventType, MessageType
+from assistant.channels.telegram.models import (
+    ChannelResponse,
+    EventType,
+    MessageType,
+    NormalizedEvent,
+)
 from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.events.models import EventSource
 
 
 def _make_config(allowlist: list[int] | None = None) -> TelegramChannelConfig:
@@ -140,6 +147,40 @@ class TestTranscriptionInjection:
         ):
             result = await adapter.process_update_async(_text_update())
         assert result is None
+
+
+def test_is_usage_request_returns_true_for_usage_command() -> None:
+    """Verifies is_usage_request returns True when event text is /usage."""
+    adapter = TelegramAdapter(_make_config())
+    event = NormalizedEvent(
+        event_id="ev-usage",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-usage",
+        text="/usage",
+        metadata={"chat_id": 123},
+    )
+    assert adapter.is_usage_request(event) is True
+
+
+def test_is_usage_request_returns_false_for_other_commands() -> None:
+    """Verifies is_usage_request returns False for non-usage commands."""
+    adapter = TelegramAdapter(_make_config())
+    event = NormalizedEvent(
+        event_id="ev-new",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-new",
+        text="/new",
+        metadata={"chat_id": 123},
+    )
+    assert adapter.is_usage_request(event) is False
 
 
 class TestTelegramAdapterEgress:
