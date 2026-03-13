@@ -24,7 +24,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from assistant.agent.tools import TurnDeps, register_agent_tools
+from assistant.agent.tools import TurnDeps, get_agent_tools
 from assistant.core.orchestrator.memory import MemoryIntentPlan
 from assistant.core.orchestrator.models import PendingAskData
 from assistant.core.prompts import load_prompt
@@ -64,14 +64,13 @@ def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[st
 
 def _create_memory_agent(model_id: str, system_prompt: str) -> Agent[TurnDeps, str]:
     """Create Agent with memory_propose_update tool. Output type is str (final assistant text)."""
-    agent = Agent(
+    return Agent(
         model_id,
         deps_type=TurnDeps,
         system_prompt=system_prompt,
         retries=0,
+        tools=get_agent_tools(),
     )
-    register_agent_tools(agent)
-    return agent
 
 
 def _message_to_prompt_content(msg: dict[str, Any]) -> str | list[dict[str, Any]]:

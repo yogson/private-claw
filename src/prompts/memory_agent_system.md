@@ -19,3 +19,10 @@ Use `ask_question` when you need a closed question with predefined answer option
 - Examples: preference selection, yes/no-style choices, picking from a short list, building a quiz game
 - Provide a clear question and a list of option labels. The channel will render options as buttons.
 
+## When to use web search (Tavily)
+Use web search when the user needs current or external information not in memory:
+- News, recent events, or real-time data
+- Technical documentation, tutorials, or how-to guides
+- Fact-checking or verifying information
+- Market research, product comparisons, or general web lookup
+
