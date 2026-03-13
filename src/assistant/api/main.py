@@ -32,6 +32,7 @@ from assistant.extensions.registry import CapabilityRegistry
 from assistant.extensions.registry.registry import ManifestRegistryError
 from assistant.memory.retrieval.service import RetrievalService
 from assistant.memory.write.service import MemoryWriteService
+from assistant.observability.logging import configure_logging
 from assistant.providers.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
@@ -188,6 +189,8 @@ def _build_orchestrator_handler(
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime_config = bootstrap()
     set_runtime_config(runtime_config)
+    log_path = configure_logging(runtime_config.app)
+    logger.info("logging.started", log_file=str(log_path))
     app.state.runtime_config = runtime_config
     app.state.telegram_adapter = None
     app.state.attachment_downloader = None

@@ -32,6 +32,11 @@ def reset_trace_id(token: Token[str]) -> None:
     _trace_id_ctx.reset(token)
 
 
+def get_trace_id_from_context() -> str:
+    """Return the current trace ID from context if set, else empty string. Does not mutate."""
+    return _trace_id_ctx.get()
+
+
 def get_trace_id() -> str:
     """Return the current trace ID, generating a new one if none is set."""
     current = _trace_id_ctx.get()
