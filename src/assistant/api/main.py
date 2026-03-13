@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
 from assistant.admin.router import router as admin_router
+from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.api.deps import set_runtime_config
 from assistant.api.routers import config as config_router
 from assistant.api.routers import health
@@ -33,7 +34,6 @@ from assistant.extensions.registry.registry import ManifestRegistryError
 from assistant.memory.retrieval.service import RetrievalService
 from assistant.memory.write.service import MemoryWriteService
 from assistant.observability.logging import configure_logging
-from assistant.providers.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
 

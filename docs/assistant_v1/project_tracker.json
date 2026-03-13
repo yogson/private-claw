@@ -109,7 +109,7 @@
           "id": "1.5",
           "name": "Anthropic Adapter and Correlation Propagation [CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER]",
           "description": "Integrate Anthropic-first provider adapter baseline and propagate correlation IDs through model call paths.",
-          "scope_path": "src/assistant/providers/",
+          "scope_path": "src/assistant/agent/",
           "status": "implemented",
           "started_date": "2026-03-10",
           "completed_date": "2026-03-10",
@@ -117,11 +117,11 @@
           "files_delivered": [
             "src/assistant/observability/__init__.py",
             "src/assistant/observability/correlation.py",
-            "src/assistant/providers/__init__.py",
-            "src/assistant/providers/interfaces.py",
-            "src/assistant/providers/anthropic.py",
+            "src/assistant/agent/__init__.py",
+            "src/assistant/agent/interfaces.py",
+            "src/assistant/agent/anthropic.py",
             "tests/assistant/observability/test_correlation.py",
-            "tests/assistant/providers/test_anthropic.py"
+            "tests/assistant/agent/test_anthropic.py"
           ]
         }
       ],
@@ -548,8 +548,8 @@
             "src/assistant/extensions/first_party/memory/__init__.py",
             "src/assistant/extensions/first_party/memory/capability.py",
             "plugins/capabilities/memory_ops/manifest.yaml",
-            "src/assistant/providers/interfaces.py",
-            "src/assistant/providers/anthropic.py",
+            "src/assistant/agent/interfaces.py",
+            "src/assistant/agent/anthropic.py",
             "src/assistant/core/orchestrator/service.py",
             "src/assistant/core/orchestrator/memory.py",
             "src/assistant/core/orchestrator/confirmation.py",

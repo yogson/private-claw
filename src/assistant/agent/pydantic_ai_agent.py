@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from assistant.agent.tools import TurnDeps, register_agent_tools
 from assistant.core.orchestrator.memory import MemoryIntentPlan
 from assistant.core.prompts import load_prompt
 from assistant.extensions.first_party.memory import (
@@ -28,10 +29,6 @@ from assistant.extensions.first_party.memory import (
 )
 from assistant.extensions.first_party.memory import (
     memory_propose_update as validate_memory_proposal,
-)
-from assistant.providers.pydantic_ai_tools import (
-    TurnDeps,
-    register_agent_tools,
 )
 from assistant.store.models import (
     AssistantToolCallPayload,

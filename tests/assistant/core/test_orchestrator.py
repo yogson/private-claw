@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
+from assistant.agent.interfaces import MessageRole
+from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesConfig,
@@ -37,8 +39,6 @@ from assistant.core.orchestrator import (
 )
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
-from assistant.providers.interfaces import MessageRole
-from assistant.providers.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.store.models import SessionRecord, SessionRecordType
 
 

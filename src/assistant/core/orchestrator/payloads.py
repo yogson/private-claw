@@ -10,10 +10,10 @@ from typing import Any
 
 import structlog
 
+from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.memory.retrieval.models import RetrievalResult
-from assistant.providers.interfaces import LLMMessage, MessageRole
 from assistant.store.models import SessionRecord, SessionRecordType
 
 logger = structlog.get_logger(__name__)

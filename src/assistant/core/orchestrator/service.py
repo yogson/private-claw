@@ -9,6 +9,13 @@ from typing import Any
 
 import structlog
 
+from assistant.agent.interfaces import LLMMessage, MessageRole
+from assistant.agent.pydantic_ai_agent import (
+    PydanticAITurnAdapter,
+    TurnDeps,
+    _new_messages_to_plans,
+    _new_messages_to_session_records,
+)
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -33,13 +40,6 @@ from assistant.memory.retrieval.service import RetrievalService
 from assistant.memory.store.models import MemoryType
 from assistant.memory.write.service import MemoryWriteService
 from assistant.observability.correlation import reset_trace_id, set_trace_id
-from assistant.providers.interfaces import LLMMessage, MessageRole
-from assistant.providers.pydantic_ai_agent import (
-    PydanticAITurnAdapter,
-    TurnDeps,
-    _new_messages_to_plans,
-    _new_messages_to_session_records,
-)
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterface
 from assistant.store.models import (

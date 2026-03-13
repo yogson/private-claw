@@ -10,6 +10,6 @@ Call `memory_search` in the following cases:
 - Examples: user preferences, past conversations, stored facts about the user, projects, environment, prior decisions or stated interests.
 
 ## When to use `memory_propose_update`
-- user explicitly asks you to remember something (e.g., "remember that...", "save this", "don't forget...").
+- user explicitly asks you to remember something (e.g., "remember that...", "save this", "memorize").
 - you believe that the info provided in the context may be really necessary in future (e.g. data about project that will be needed later)
 

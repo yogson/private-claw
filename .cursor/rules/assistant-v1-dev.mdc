@@ -104,7 +104,7 @@ src/assistant/
 │   └── telegram/   # CMP_CHANNEL_TELEGRAM_ADAPTER
 ├── memory/         # CMP_MEMORY_FILESYSTEM_STORE
 ├── store/          # CMP_STORE_STATE_FACADE and sub-components
-├── providers/      # CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER
+├── agent/          # CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER
 ├── extensions/     # CMP_TOOL_RUNTIME_REGISTRY, CMP_SKILL_RUNTIME_ENGINE
 ├── subagents/      # CMP_AGENT_SUBAGENT_COORDINATOR
 ├── scheduler/      # CMP_AUTOMATION_SCHEDULER
@@ -128,9 +128,9 @@ tests/
 1. **Add tests at feature completion** - Add concise, focused unit tests for the implemented behavior.
 2. **Add integration tests when needed** - If the feature interacts with existing functionality, add focused integration coverage for key interaction paths.
 3. **Keep tests pragmatic** - Cover happy paths and major corner cases; avoid overcomplicated test suites.
-4. **Final quality check** - Run `make format lint` and fix any issues
+4. **Final quality check** - Run `make format lint` and fix any issues. Run tests!
 5. **Update tracker** - Set task status to `implemented`, add `completed_date`, list `files_delivered`
-6. **Update phase** - If all phase tasks complete, set phase status to `completed
+6. **Update phase** - If all phase tasks complete, set phase status to `completed`
 7. **Update project** - If first task started, set `project.status` to `in_progress` and `started_date`
 8. **Git add** - If new files/modules created, stage them for commit
 9. **Summarize** - Report what was implemented and any notes for the task

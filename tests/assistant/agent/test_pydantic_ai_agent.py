@@ -14,7 +14,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from assistant.providers.pydantic_ai_agent import (
+from assistant.agent.pydantic_ai_agent import (
     _llm_messages_to_history,
     _new_messages_to_plans,
     _new_messages_to_session_records,
@@ -95,7 +95,7 @@ def test_provider_module_imports_without_orchestrator_cycle() -> None:
         sys.executable,
         "-c",
         (
-            "import assistant.providers.pydantic_ai_agent as m; "
+            "import assistant.agent.pydantic_ai_agent as m; "
             "assert hasattr(m, 'PydanticAITurnAdapter')"
         ),
     ]
