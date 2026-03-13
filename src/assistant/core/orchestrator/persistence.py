@@ -8,10 +8,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from assistant.core.config.schemas import RuntimeConfig
-from assistant.core.orchestrator.memory import MemoryIntentPlan, MemoryOutcome
+from assistant.core.orchestrator.memory import MemoryOutcome
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import (
-    AssistantToolCallPayload,
     SessionRecord,
     SessionRecordType,
     ToolResultPayload,
@@ -28,18 +27,19 @@ async def persist_turn_initial(
     session_id: str,
     turn_id: str,
     user_text: str,
-    assistant_text: str,
+    assistant_records: list[SessionRecord],
     attachments: list[dict[str, Any]] | None = None,
-    memory_plans: list[MemoryIntentPlan] | None = None,
     invalid_memory_intents: int = 0,
     prompt_trace: dict[str, Any] | None = None,
 ) -> None:
-    """Persist initial turn records and intent precheck audit records."""
-    now = datetime.now(UTC)
-    next_seq = await sessions.get_next_sequence(session_id)
+    """Persist initial turn records including full conversation context for replay/restore.
 
+    assistant_records must contain ASSISTANT_MESSAGE, ASSISTANT_TOOL_CALL, and
+    TOOL_RESULT records (excluding memory_propose_update results, which are
+    persisted separately in persist_turn_outcomes with applied outcomes).
+    """
+    now = datetime.now(UTC)
     user_msg_id = f"msg-{turn_id}-user"
-    assistant_msg_id = f"msg-{turn_id}-assistant"
     user_payload = UserMessagePayload(
         message_id=user_msg_id,
         content=user_text,
@@ -49,28 +49,16 @@ async def persist_turn_initial(
     records: list[SessionRecord] = [
         SessionRecord(
             session_id=session_id,
-            sequence=next_seq,
+            sequence=0,
             event_id=turn_id,
             turn_id=turn_id,
             timestamp=now,
             record_type=SessionRecordType.USER_MESSAGE,
             payload=user_payload.model_dump(),
         ),
-        SessionRecord(
-            session_id=session_id,
-            sequence=next_seq + 1,
-            event_id=assistant_msg_id,
-            turn_id=turn_id,
-            timestamp=now,
-            record_type=SessionRecordType.ASSISTANT_MESSAGE,
-            payload={
-                "message_id": assistant_msg_id,
-                "content": assistant_text,
-                "model_id": config.model.default_model_id,
-            },
-        ),
     ]
-    next_sequence = next_seq + 2
+    records.extend(assistant_records)
+
     capability_audit: dict[str, Any] = {}
     if invalid_memory_intents > 0:
         capability_audit["invalid_memory_intents"] = invalid_memory_intents
@@ -85,7 +73,7 @@ async def persist_turn_initial(
         records.append(
             SessionRecord(
                 session_id=session_id,
-                sequence=next_sequence,
+                sequence=0,
                 event_id=f"turn-summary-{turn_id}",
                 turn_id=turn_id,
                 timestamp=now,
@@ -93,26 +81,6 @@ async def persist_turn_initial(
                 payload=summary_payload.model_dump(),
             )
         )
-        next_sequence += 1
-    for plan in memory_plans or []:
-        call_payload = AssistantToolCallPayload(
-            message_id=f"msg-{plan.tool_call_id}",
-            tool_call_id=plan.tool_call_id,
-            tool_name="memory_propose_update",
-            arguments_json=plan.intent_json,
-        )
-        records.append(
-            SessionRecord(
-                session_id=session_id,
-                sequence=next_sequence,
-                event_id=f"assistant-tool-call-{plan.tool_call_id}",
-                turn_id=turn_id,
-                timestamp=now,
-                record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
-                payload=call_payload.model_dump(),
-            )
-        )
-        next_sequence += 1
     await sessions.append(records)
 
 

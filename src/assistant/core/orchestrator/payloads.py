@@ -324,6 +324,7 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                     {
                         "type": "tool_result",
                         "tool_use_id": tr.payload.get("tool_call_id", ""),
+                        "tool_name": tr.payload.get("tool_name", ""),
                         "content": content_str,
                         "is_error": error is not None,
                     }

@@ -4,6 +4,7 @@ Component ID: CMP_CORE_AGENT_ORCHESTRATOR
 Orchestrator service executing turn lifecycle with persistence and idempotency.
 """
 
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -37,9 +38,15 @@ from assistant.providers.pydantic_ai_agent import (
     PydanticAITurnAdapter,
     TurnDeps,
     _new_messages_to_plans,
+    _new_messages_to_session_records,
 )
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterface
+from assistant.store.models import (
+    AssistantMessagePayload,
+    SessionRecord,
+    SessionRecordType,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -146,6 +153,33 @@ class Orchestrator:
                 },
             }
         memory_plans = _new_messages_to_plans(new_msgs)
+        now = datetime.now(UTC)
+        assistant_msg_id = f"msg-{turn_id}-assistant"
+        assistant_records = _new_messages_to_session_records(
+            new_msgs,
+            session_id=session_id,
+            turn_id=turn_id,
+            timestamp=now,
+            assistant_msg_id=assistant_msg_id,
+            model_id=self._config.model.default_model_id,
+            skip_memory_tool_results=True,
+        )
+        if not assistant_records:
+            assistant_records = [
+                SessionRecord(
+                    session_id=session_id,
+                    sequence=0,
+                    event_id=assistant_msg_id,
+                    turn_id=turn_id,
+                    timestamp=now,
+                    record_type=SessionRecordType.ASSISTANT_MESSAGE,
+                    payload=AssistantMessagePayload(
+                        message_id=assistant_msg_id,
+                        content=response_text,
+                        model_id=self._config.model.default_model_id,
+                    ).model_dump(),
+                )
+            ]
         initial_persisted = False
         try:
             await persist_turn_initial(
@@ -154,9 +188,8 @@ class Orchestrator:
                 session_id=session_id,
                 turn_id=turn_id,
                 user_text=user_content,
-                assistant_text=response_text,
+                assistant_records=assistant_records,
                 attachments=[a.model_dump() for a in attachments],
-                memory_plans=memory_plans,
                 invalid_memory_intents=0,
                 prompt_trace=prompt_trace,
             )
@@ -249,23 +282,12 @@ class Orchestrator:
         matches: list[dict[str, Any]] = []
         for scored in retrieval_result.scored_artifacts[:bounded_limit]:
             artifact = scored.artifact
-            fm = artifact.frontmatter
             body = artifact.body.strip()
             if len(body) > 500:
                 body = body[:500] + "... [truncated]"
-            matches.append(
-                {
-                    "memory_id": fm.memory_id,
-                    "type": fm.type.value,
-                    "score": round(scored.score, 4),
-                    "entities": fm.entities,
-                    "tags": fm.tags,
-                    "body": body,
-                }
-            )
+            matches.append({"body": body})
         return {
             "status": "ok",
             "query": query,
             "matches": matches,
-            "retrieval_mode": retrieval_result.audit.retrieval_mode,
         }

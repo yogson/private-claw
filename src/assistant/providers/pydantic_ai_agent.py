@@ -6,6 +6,7 @@ Replaces manual provider tool protocol handling with Agent-managed tool loop.
 """
 
 import json
+from datetime import datetime
 from typing import Any, cast
 
 from pydantic_ai import Agent
@@ -31,11 +32,18 @@ from assistant.providers.pydantic_ai_tools import (
     normalize_candidate_for_upsert,
     register_agent_tools,
 )
+from assistant.store.models import (
+    AssistantToolCallPayload,
+    SessionRecord,
+    SessionRecordType,
+    ToolResultPayload,
+)
 
 __all__ = [
     "PydanticAITurnAdapter",
     "TurnDeps",
     "_new_messages_to_plans",
+    "_new_messages_to_session_records",
     "_llm_messages_to_history",
     "_normalize_candidate_for_upsert",
 ]
@@ -77,23 +85,66 @@ def _message_to_prompt_content(msg: dict[str, Any]) -> str | list[dict[str, Any]
 
 
 def _llm_messages_to_history(messages: list[dict[str, Any]]) -> list[ModelMessage]:
-    """Convert simple role/content message list to pydantic_ai ModelMessage format."""
+    """Convert LLM messages (incl. tool_use/tool_result content_blocks) to pydantic_ai format.
+
+    Preserves tool calls and tool results for correct replay/restore of conversation context.
+    """
     history: list[ModelMessage] = []
     for msg in messages:
         role = msg.get("role", "")
         content = _message_to_prompt_content(msg)
-        if not content:
-            continue
         if role == "user":
-            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))  # type: ignore[arg-type]
-        elif role == "assistant":
-            text = content if isinstance(content, str) else ""
-            if isinstance(content, list):
+            if isinstance(content, str):
+                if content.strip():
+                    history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+            elif isinstance(content, list):
+                tool_return_parts: list[ToolReturnPart] = []
+                text_content = ""
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        text = part.get("text", "")
-                        break
-            history.append(ModelResponse(parts=[TextPart(content=text)]))
+                    if isinstance(part, dict):
+                        if part.get("type") == "tool_result":
+                            tool_return_parts.append(
+                                ToolReturnPart(
+                                    tool_call_id=part.get("tool_use_id", ""),
+                                    tool_name=part.get("tool_name", "unknown"),
+                                    content=part.get("content", ""),
+                                )
+                            )
+                        elif part.get("type") == "text":
+                            text_content = part.get("text", "") or ""
+                if tool_return_parts:
+                    history.append(ModelRequest(parts=tool_return_parts))
+                elif text_content.strip():
+                    history.append(ModelRequest(parts=[UserPromptPart(content=text_content)]))
+        elif role == "assistant":
+            text_parts: list[str] = []
+            tool_call_parts: list[ToolCallPart] = []
+            if isinstance(content, str) and content.strip():
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            t = part.get("text", "")
+                            if t:
+                                text_parts.append(t)
+                        elif part.get("type") == "tool_use":
+                            args = part.get("input")
+                            if not isinstance(args, dict):
+                                args = {}
+                            tool_call_parts.append(
+                                ToolCallPart(
+                                    tool_call_id=part.get("id", ""),
+                                    tool_name=part.get("name", ""),
+                                    args=args,
+                                )
+                            )
+            parts: list[TextPart | ToolCallPart] = []
+            if text_parts:
+                parts.append(TextPart(content="\n\n".join(text_parts)))
+            parts.extend(tool_call_parts)
+            if parts:
+                history.append(ModelResponse(parts=parts))
     return history
 
 
@@ -197,6 +248,106 @@ def _new_messages_to_plans(new_messages: list[ModelMessage]) -> list[MemoryInten
         result = tool_results.get(tool_call_id, missing_result)
         plans.append(_build_memory_intent_plan(tool_call_id, effective_args, result))
     return plans
+
+
+def _new_messages_to_session_records(
+    new_messages: list[ModelMessage],
+    *,
+    session_id: str,
+    turn_id: str,
+    timestamp: datetime,
+    assistant_msg_id: str,
+    model_id: str | None = None,
+    skip_memory_tool_results: bool = True,
+) -> list[SessionRecord]:
+    """Convert pydantic_ai new_messages to session records for full replay/restore.
+
+    Emits ASSISTANT_MESSAGE, ASSISTANT_TOOL_CALL, and TOOL_RESULT records in
+    chronological order. When skip_memory_tool_results is True, memory_propose_update
+    tool results are omitted (caller persists them separately with applied outcomes).
+    """
+    records: list[SessionRecord] = []
+    assistant_idx = 0
+
+    for msg in new_messages:
+        if isinstance(msg, ModelResponse):
+            text_parts = [p for p in msg.parts if isinstance(p, TextPart)]
+            tool_call_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
+
+            if text_parts:
+                content = " ".join(p.content for p in text_parts if p.content).strip()
+                msg_id = (
+                    assistant_msg_id
+                    if assistant_idx == 0
+                    else f"{assistant_msg_id}-{assistant_idx}"
+                )
+                payload: dict[str, Any] = {
+                    "message_id": msg_id,
+                    "content": content or "",
+                }
+                if model_id:
+                    payload["model_id"] = model_id
+                records.append(
+                    SessionRecord(
+                        session_id=session_id,
+                        sequence=0,
+                        event_id=msg_id,
+                        turn_id=turn_id,
+                        timestamp=timestamp,
+                        record_type=SessionRecordType.ASSISTANT_MESSAGE,
+                        payload=payload,
+                    )
+                )
+                assistant_idx += 1
+
+            for part in tool_call_parts:
+                args = part.args if isinstance(part.args, dict) else {}
+                args_json = json.dumps(args, separators=(",", ":"))
+                call_payload = AssistantToolCallPayload(
+                    message_id=f"msg-{part.tool_call_id}",
+                    tool_call_id=part.tool_call_id,
+                    tool_name=part.tool_name,
+                    arguments_json=args_json,
+                )
+                records.append(
+                    SessionRecord(
+                        session_id=session_id,
+                        sequence=0,
+                        event_id=f"assistant-tool-call-{part.tool_call_id}",
+                        turn_id=turn_id,
+                        timestamp=timestamp,
+                        record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+                        payload=call_payload.model_dump(),
+                    )
+                )
+
+        elif isinstance(msg, ModelRequest):
+            for req_part in msg.parts:
+                if not isinstance(req_part, ToolReturnPart):
+                    continue
+                if skip_memory_tool_results and req_part.tool_name == MEMORY_TOOL_NAME:
+                    continue
+                result = _parse_tool_result_content(req_part.content)
+                result_payload = ToolResultPayload(
+                    message_id=f"msg-result-{req_part.tool_call_id}",
+                    tool_call_id=req_part.tool_call_id,
+                    tool_name=req_part.tool_name,
+                    result=result,
+                    error=None,
+                )
+                records.append(
+                    SessionRecord(
+                        session_id=session_id,
+                        sequence=0,
+                        event_id=f"tool-result-{req_part.tool_call_id}",
+                        turn_id=turn_id,
+                        timestamp=timestamp,
+                        record_type=SessionRecordType.TOOL_RESULT,
+                        payload=result_payload.model_dump(),
+                    )
+                )
+
+    return records
 
 
 class PydanticAITurnAdapter:
