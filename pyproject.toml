@@ -20,6 +20,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "itsdangerous>=2.2.0",
     "aiogram>=3.26.0",
+    "telegramify-markdown>=1.0.0",
     "genai-prices>=0.0.55",
     "rank-bm25>=0.2.2",
     "tavily-python>=0.5.0",

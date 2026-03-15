@@ -30,5 +30,3 @@ def get_agent_tools() -> Sequence[Any]:
             hint="Set TAVILY_API_KEY to enable web search",
         )
     return tools
-
-

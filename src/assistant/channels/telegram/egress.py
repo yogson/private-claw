@@ -18,6 +18,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from assistant.channels.telegram.formatter import format_markdown_for_telegram
 from assistant.channels.telegram.models import ChannelResponse, MessageType
 from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 
@@ -71,11 +72,17 @@ class TelegramEgress:
         last_error = ""
         attempts_made = 0
 
-        text_chunks = (
-            [response.text]
-            if response.message_type == MessageType.INTERACTIVE
-            else self._split_text(response.text)
-        )
+        use_formatting = response.parse_mode is None
+        if use_formatting:
+            formatted_chunks = format_markdown_for_telegram(response.text)
+        else:
+            text_chunks = (
+                [response.text]
+                if response.message_type == MessageType.INTERACTIVE
+                else self._split_text(response.text)
+            )
+            formatted_chunks = [(chunk, []) for chunk in text_chunks]
+
         sent_chunks = 0
         for attempt in range(1, self._max_attempts + 1):
             attempts_made = attempt
@@ -87,14 +94,18 @@ class TelegramEgress:
                     trace_id=response.trace_id,
                 )
             try:
-                for chunk in text_chunks[sent_chunks:]:
+                for chunk_text, chunk_entities in formatted_chunks[sent_chunks:]:
                     reply_markup = self._build_reply_markup(response)
-                    await self._bot.send_message(
-                        chat_id=chat_id,
-                        text=chunk,
-                        parse_mode=response.parse_mode,
-                        reply_markup=reply_markup,
-                    )
+                    send_kwargs: dict = {
+                        "chat_id": chat_id,
+                        "text": chunk_text,
+                        "reply_markup": reply_markup,
+                    }
+                    if chunk_entities:
+                        send_kwargs["entities"] = chunk_entities
+                    else:
+                        send_kwargs["parse_mode"] = response.parse_mode
+                    await self._bot.send_message(**send_kwargs)
                     sent_chunks += 1
                 if self._audit_logger is not None:
                     self._audit_logger.log_egress_success(
