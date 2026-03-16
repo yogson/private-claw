@@ -7,8 +7,8 @@ Index rebuild, repair, and integrity check for memory indexes.
 import json
 from typing import Any
 
-from assistant.memory.retrieval.indexer import MemoryIndexer, scan_artifacts
-from assistant.memory.retrieval.maintenance.models import (
+from assistant.memory.indexing.indexer import MemoryIndexer, scan_artifacts
+from assistant.memory.indexing.maintenance.models import (
     ConsistencyReport,
     IndexIntegrityResult,
     MaintenanceDiagnostics,

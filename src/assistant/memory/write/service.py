@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from assistant.memory.retrieval.indexer import MemoryIndexer
+from assistant.memory.indexing import MemoryIndexer
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
 from assistant.memory.store.parser import parse_memory_file, serialize_memory_artifact
 from assistant.memory.store.paths import MemoryPaths

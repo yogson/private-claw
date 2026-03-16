@@ -4,7 +4,7 @@ Component ID: CMP_MEMORY_FILESYSTEM_STORE
 Deterministic retrieval and index pipeline for memory artifacts.
 """
 
-from assistant.memory.retrieval.indexer import MemoryIndexer
+from assistant.memory.indexing import MemoryIndexer
 from assistant.memory.retrieval.models import (
     RecoveryDiagnostics,
     RetrievalAudit,

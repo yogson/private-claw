@@ -4,12 +4,12 @@ Component ID: CMP_MEMORY_FILESYSTEM_STORE
 Index rebuild, repair, and degraded-mode diagnostics.
 """
 
-from assistant.memory.retrieval.maintenance.models import (
+from assistant.memory.indexing.maintenance.models import (
     ConsistencyReport,
     IndexIntegrityResult,
     MaintenanceDiagnostics,
 )
-from assistant.memory.retrieval.maintenance.service import IndexMaintenanceService
+from assistant.memory.indexing.maintenance.service import IndexMaintenanceService
 
 __all__ = [
     "ConsistencyReport",

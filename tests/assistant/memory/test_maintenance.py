@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from assistant.memory.maintenance import (
+from assistant.memory.indexing.maintenance import (
     ConsistencyReport,
     IndexIntegrityResult,
     IndexMaintenanceService,

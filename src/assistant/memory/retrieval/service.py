@@ -8,8 +8,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from assistant.memory.retrieval.indexer import MemoryIndexer, scan_artifacts
-from assistant.memory.retrieval.maintenance.service import IndexMaintenanceService
+from assistant.memory.indexing import IndexMaintenanceService, MemoryIndexer, scan_artifacts
 from assistant.memory.retrieval.models import (
     RecoveryDiagnostics,
     RetrievalAudit,

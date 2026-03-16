@@ -1,12 +1,11 @@
 """
 Component ID: CMP_MEMORY_FILESYSTEM_STORE
 
-Index rebuild, repair, and degraded-mode diagnostics.
-
-Re-exports from retrieval.maintenance for backward compatibility.
+Shared indexing and index-maintenance lifecycle for memory artifacts.
 """
 
-from assistant.memory.retrieval.maintenance import (
+from assistant.memory.indexing.indexer import MemoryIndexer, scan_artifacts
+from assistant.memory.indexing.maintenance import (
     ConsistencyReport,
     IndexIntegrityResult,
     IndexMaintenanceService,
@@ -18,4 +17,6 @@ __all__ = [
     "IndexIntegrityResult",
     "IndexMaintenanceService",
     "MaintenanceDiagnostics",
+    "MemoryIndexer",
+    "scan_artifacts",
 ]
