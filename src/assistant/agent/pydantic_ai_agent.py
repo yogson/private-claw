@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from assistant.core.config.schemas import RuntimeConfig
 from assistant.agent.tools import TurnDeps, get_agent_tools
 from assistant.core.orchestrator.memory import MemoryIntentPlan
 from assistant.core.orchestrator.models import PendingAskData
@@ -62,14 +63,14 @@ def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[st
     return normalize_candidate_for_upsert(candidate)
 
 
-def _create_agent(model_id: str, system_prompt: str) -> Agent[TurnDeps, str]:
+def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> Agent[TurnDeps, str]:
     """Create Agent with memory_propose_update tool. Output type is str (final assistant text)."""
     return Agent(
         model_id,
         deps_type=TurnDeps,
         system_prompt=system_prompt,
         retries=0,
-        tools=get_agent_tools(),
+        tools=get_agent_tools(config),
     )
 
 
@@ -448,11 +449,14 @@ class PydanticAITurnAdapter:
         self,
         model_id: str,
         max_tokens: int = 1024,
+        config: RuntimeConfig | None = None,
     ) -> None:
         self._model_id = model_id
         self._max_tokens = max_tokens
         self._system_prompt = load_prompt(MEMORY_AGENT_PROMPT_NAME)
-        self._agent = _create_agent(model_id, self._system_prompt)
+        if config is None:
+            raise ValueError("PydanticAITurnAdapter requires config for capability-gated tools")
+        self._agent = _create_agent(model_id, self._system_prompt, config)
 
     @property
     def system_prompt(self) -> str:
