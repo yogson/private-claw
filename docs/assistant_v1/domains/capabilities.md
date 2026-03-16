@@ -1,5 +1,13 @@
 # Capabilities Domain
 
+## Migration (v1 Refactor)
+
+**Breaking change**: Capabilities are now defined in `config/capabilities/*.yaml` (prompt + toolset), not in `plugins/capabilities/`. Tools are configured in `config/tools.yaml`.
+
+- **Old**: `config/capabilities.yaml` had `allowed_capabilities`, `shell_readonly_commands`, `command_allowlist`.
+- **New**: `config/capabilities.yaml` has `enabled_capabilities`, `denied_capabilities` only. Tool params (e.g. `shell_readonly_commands`) live in `config/tools.yaml` and can be overridden per capability in `config/capabilities/<id>.yaml`.
+- **Removed**: `plugins/capabilities/` directory and plugin manifest loading at startup.
+
 ## Purpose
 
 Define the manifest-driven capability and skill ecosystem for v1, including discovery, policy enforcement, and safe runtime invocation.
@@ -27,24 +35,68 @@ Define the manifest-driven capability and skill ecosystem for v1, including disc
 
 | Model ID | File Pattern | Required Fields | Purpose |
 |---|---|---|---|
-| `CMP_DATA_MODEL_TOOL_MANIFEST` | `plugins/capabilities/*/manifest.yaml` | `capability_id`, `version`, `capabilities`, `entrypoint`, `permissions` | Capability registration and policy |
-| `CMP_DATA_MODEL_CAPABILITY_DESCRIPTOR` | `plugins/capabilities/*/tool_descriptor.yaml` | `capability_id`, `summary`, `input_schema`, `safety_notes` | LLM-facing runtime tool description for dynamic activation |
+| `CMP_DATA_MODEL_TOOL_DEFINITION` | `config/tools.yaml` | `tool_id`, `entrypoint`, `enabled`, `default_params` | Tool registration and global defaults |
+| `CMP_DATA_MODEL_CAPABILITY_DEFINITION` | `config/capabilities/*.yaml` | `capability_id`, `prompt`, `tools` | Capability = prompt + toolset + per-tool overrides |
+| `CMP_DATA_MODEL_CAPABILITY_POLICY` | `config/capabilities.yaml` | `enabled_capabilities`, `denied_capabilities` | Operator policy: which capability manifests are active |
 | `CMP_DATA_MODEL_SKILL_MANIFEST` | `plugins/skills/*/manifest.yaml` | `skill_id`, `version`, `entrypoint`, `required_capabilities`, `capabilities` | Skill registration and dependencies |
-| `CMP_DATA_MODEL_CAPABILITY_POLICY` | `config/capabilities.yaml` | `allowed_capabilities`, `denied_capabilities`, `command_allowlist` | Runtime safety policy |
 | `CMP_DATA_MODEL_MCP_SERVER_REGISTRY` | `config/mcp_servers.yaml` | `server_id`, `transport`, `enabled`, `connection` | External MCP server registration and connection policy |
 | `CMP_DATA_MODEL_MCP_TOOL_MAPPING` | `plugins/mcp/*/tool_map.yaml` | `server_id`, `tools`, `capability_id_pattern`, `risk_class` | MCP tool-to-capability mapping and descriptor synthesis |
 
-Capability manifest schema requirements:
-- `capability_id`: string, `cap.<domain>.<action>` naming convention.
-- `version`: semantic version string.
+Tool definition schema (`config/tools.yaml`):
+- `tool_id`: stable identifier (e.g. `shell_execute_readonly`, `memory_search`).
 - `entrypoint`: `<python_module>:<callable_name>` format.
-- `capabilities`: list of concrete capability IDs granted by this manifest.
-- `permissions` object:
-  - `read_only` (bool),
-  - `side_effecting` (bool),
-  - `requires_confirmation` (bool),
-  - `timeout_seconds` (int).
-- Discovery pattern: load manifests from `plugins/capabilities/*/manifest.yaml`; duplicate `capability_id` values are startup errors.
+- `enabled`: bool, default true. Acts as a global kill-switch: if false, the tool is never exposed regardless of capability bindings.
+- `default_params`: optional shell_readonly_commands, command_allowlist, timeouts.
+
+## Capability-First Activation Model
+
+`config/tools.yaml` is the canonical catalog of **all** available tools (typically enabled by default). Capabilities select which subset the agent can use:
+
+- **assistant** (`config/capabilities/assistant.yaml`): baseline capability with general-purpose tools (memory, ask, shell readonly, web search). Does not include higher-risk tools like `shell_execute_allowlisted`.
+- **Add-on capabilities** (e.g. `deploy`, `github-ops`): extend the toolset for specific needs. Example: `deploy` adds `shell_execute_allowlisted` with a `command_allowlist` for `gh`, `git`, etc.
+
+To restrict the general-purpose agent from using `gh` while allowing a specialized "github ops" agent: keep `shell_execute_allowlisted` enabled in `tools.yaml`, omit it from `assistant`, and add it only in a `github-ops` capability. Enable `assistant` for the general agent; enable `assistant` + `github-ops` for the specialized one.
+
+Capability definition schema (`config/capabilities/*.yaml`):
+- `capability_id`: stable identifier (e.g. `assistant`, `omnichem-deploy`).
+- `prompt`: optional system prompt fragment appended for this capability.
+- `tools`: list of `{tool_id, enabled, params_override}` bindings.
+- `tool_overrides`: optional per-tool param overrides keyed by tool_id.
+- Discovery: load all `*.yaml` under `config/capabilities/`; duplicate `capability_id` is a startup error.
+
+## Tool Status and Params Merge Rules
+
+This section defines how runtime tool availability and parameters are resolved from:
+- `config/capabilities.yaml` (policy),
+- `config/capabilities/<id>.yaml` (capability tool bindings/overrides),
+- `config/tools.yaml` (tool definitions/default params).
+
+Resolution flow:
+1. Start from policy:
+   - include only `enabled_capabilities`,
+   - exclude any capability listed in `denied_capabilities`.
+2. Collect `tool_id` values from each surviving capability manifest where binding `enabled=true`.
+3. Keep only tools that also exist in `config/tools.yaml` with `enabled=true`.
+4. Resolve tool callable from `entrypoint`.
+
+Status (enabled/disabled) semantics:
+- A tool is executable only if ALL are true:
+  - capability is enabled by policy and not denied,
+  - capability tool binding exists and `enabled=true`,
+  - global tool definition exists and `enabled=true`.
+- If a capability references a tool that is missing or disabled in `config/tools.yaml`, bootstrap fails (fail-fast).
+
+Parameter merge semantics:
+- Base params come from `config/tools.yaml` -> `tools[].default_params`.
+- Capability overrides are then applied for each enabled capability in `enabled_capabilities` order.
+- Within one capability:
+  - inline `tools[].params_override` is applied first,
+  - `tool_overrides[tool_id]` is applied after it (therefore wins on key conflicts).
+- If multiple capabilities override the same tool/key, later capabilities in `enabled_capabilities` win.
+
+List handling:
+- `command_allowlist` is replaced by override value (not deep-merged item-by-item).
+- `shell_readonly_commands` is replaced by override value (not union-merged).
 
 Skill manifest schema requirements:
 - `skill_id`: stable identifier.
@@ -54,21 +106,9 @@ Skill manifest schema requirements:
 - `dependency_resolution`: all `required_capabilities` must be registered and enabled at load time; unresolved dependencies block skill activation.
 - Discovery pattern: load manifests from `plugins/skills/*/manifest.yaml`; duplicate `skill_id` values are startup errors.
 
-Capability policy schema requirements (`config/capabilities.yaml`):
-- `allowed_capabilities`: list of allowlisted capability IDs.
-- `denied_capabilities`: list of blocked capability IDs.
-- `command_allowlist`: list of allowed command templates with:
-  - `id`,
-  - `command_pattern`,
-  - `allowed_args_pattern`,
-  - `max_timeout_seconds`.
-
-Capability descriptor schema requirements (`plugins/capabilities/*/tool_descriptor.yaml`):
-- `capability_id`: must match a registered manifest capability.
-- `summary`: concise capability purpose in model-friendly text.
-- `input_schema`: JSON-schema-like argument contract for runtime invocation.
-- `safety_notes`: short constraints/confirmation conditions to preserve in prompt context.
-- `examples` (optional): 1-3 compact invocation examples for disambiguation.
+Capability policy schema (`config/capabilities.yaml`):
+- `enabled_capabilities`: list of capability IDs to enable (must have a manifest in `config/capabilities/*.yaml`).
+- `denied_capabilities`: list of capability IDs to block (overrides enabled).
 
 MCP server registry schema requirements (`config/mcp_servers.yaml`):
 - `server_id`: stable identifier, lower snake case.

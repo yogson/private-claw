@@ -15,13 +15,14 @@ from pydantic import BaseModel, ValidationError
 from assistant.core.config.env_utils import apply_env_overrides
 from assistant.core.config.schemas import (
     AppConfig,
-    CapabilitiesConfig,
+    CapabilitiesPolicyConfig,
     McpServersConfig,
     ModelConfig,
     RuntimeConfig,
     SchedulerConfig,
     StoreConfig,
     TelegramChannelConfig,
+    ToolsConfig,
 )
 
 _REDACTED = "***REDACTED***"
@@ -35,7 +36,8 @@ _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
     "app": ("app.yaml", AppConfig, "ASSISTANT_APP"),
     "telegram": ("channel.telegram.yaml", TelegramChannelConfig, "ASSISTANT_CHANNEL_TELEGRAM"),
     "model": ("model.yaml", ModelConfig, "ASSISTANT_MODEL"),
-    "capabilities": ("capabilities.yaml", CapabilitiesConfig, "ASSISTANT_CAPABILITIES"),
+    "capabilities": ("capabilities.yaml", CapabilitiesPolicyConfig, "ASSISTANT_CAPABILITIES"),
+    "tools": ("tools.yaml", ToolsConfig, "ASSISTANT_TOOLS"),
     "mcp_servers": ("mcp_servers.yaml", McpServersConfig, "ASSISTANT_MCP"),
     "scheduler": ("scheduler.yaml", SchedulerConfig, "ASSISTANT_SCHEDULER"),
     "store": ("store.yaml", StoreConfig, "ASSISTANT_STORE"),
@@ -84,7 +86,7 @@ class ConfigLoader:
                 "Startup failed: configuration validation errors:\n"
                 + "\n".join(f"  - {e}" for e in errors)
             )
-        return RuntimeConfig(**domains)
+        return RuntimeConfig(**domains, config_dir=self._config_dir)
 
     def reload_domain(self, domain_name: str) -> Any | None:
         """Reload a single domain from disk and current env overrides.

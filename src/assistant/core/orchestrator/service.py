@@ -17,6 +17,7 @@ from assistant.agent.pydantic_ai_agent import (
     _new_messages_to_plans,
     _new_messages_to_session_records,
 )
+from assistant.agent.tools import build_tool_runtime_params
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -135,12 +136,12 @@ class Orchestrator:
             {"role": m.role.value, "content": m.content, "content_blocks": m.content_blocks}
             for m in messages
         ]
+        tool_params = build_tool_runtime_params(self._config)
         deps = TurnDeps(
             writes_approved=[],
             seen_intent_ids=set(),
             memory_search_handler=self._memory_search if self._memory_retrieval else None,
-            shell_command_allowlist=self._config.capabilities.command_allowlist,
-            shell_readonly_commands=self._config.capabilities.shell_readonly_commands,
+            tool_runtime_params=tool_params,
         )
         response_text, new_msgs, usage = await adapter.run_turn(
             messages=msg_dicts,

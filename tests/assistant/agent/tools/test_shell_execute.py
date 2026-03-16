@@ -23,6 +23,10 @@ _READONLY_FOR_TESTS = [
     "whoami",
 ]
 
+_READONLY_PARAMS = {
+    "shell_execute_readonly": {"shell_readonly_commands": _READONLY_FOR_TESTS},
+}
+
 
 def _ctx(deps: TurnDeps) -> MagicMock:
     ctx = MagicMock()
@@ -36,8 +40,7 @@ def test_shell_execute_readonly_pwd(mock_run: MagicMock) -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=_READONLY_FOR_TESTS,
+        tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, "pwd")
@@ -52,8 +55,7 @@ def test_shell_execute_readonly_ls(mock_run: MagicMock) -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=_READONLY_FOR_TESTS,
+        tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, "ls -la")
@@ -65,8 +67,7 @@ def test_shell_execute_readonly_rejects_disallowed() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=_READONLY_FOR_TESTS,
+        tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, "rm -rf /")
@@ -78,8 +79,7 @@ def test_shell_execute_readonly_rejects_empty() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=_READONLY_FOR_TESTS,
+        tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, "")
@@ -90,8 +90,7 @@ def test_shell_execute_readonly_empty_config_rejects_unavailable() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=[],
+        tool_runtime_params={},
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, "pwd")
@@ -100,7 +99,11 @@ def test_shell_execute_readonly_empty_config_rejects_unavailable() -> None:
 
 
 def test_shell_execute_allowlisted_empty_allowlist() -> None:
-    deps = TurnDeps(writes_approved=[], seen_intent_ids=set(), shell_command_allowlist=[])
+    deps = TurnDeps(
+        writes_approved=[],
+        seen_intent_ids=set(),
+        tool_runtime_params={"shell_execute_allowlisted": {"command_allowlist": []}},
+    )
     ctx = _ctx(deps)
     result = shell_execute_allowlisted(ctx, "gh pr list")
     assert result["status"] == "rejected_unavailable"
@@ -111,7 +114,11 @@ def test_shell_execute_allowlisted_not_in_allowlist() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[CommandAllowlistEntry(id="git", command_pattern="git")],
+        tool_runtime_params={
+            "shell_execute_allowlisted": {
+                "command_allowlist": [CommandAllowlistEntry(id="git", command_pattern="git")],
+            },
+        },
     )
     ctx = _ctx(deps)
     result = shell_execute_allowlisted(ctx, "gh pr list")
@@ -124,7 +131,11 @@ def test_shell_execute_allowlisted_allowed(mock_run: MagicMock) -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[CommandAllowlistEntry(id="echo", command_pattern="echo")],
+        tool_runtime_params={
+            "shell_execute_allowlisted": {
+                "command_allowlist": [CommandAllowlistEntry(id="echo", command_pattern="echo")],
+            },
+        },
     )
     ctx = _ctx(deps)
     result = shell_execute_allowlisted(ctx, "echo hello")
@@ -136,7 +147,11 @@ def test_shell_execute_allowlisted_rejects_empty_command() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[CommandAllowlistEntry(id="ls", command_pattern="ls")],
+        tool_runtime_params={
+            "shell_execute_allowlisted": {
+                "command_allowlist": [CommandAllowlistEntry(id="ls", command_pattern="ls")],
+            },
+        },
     )
     ctx = _ctx(deps)
     result = shell_execute_allowlisted(ctx, "")
@@ -151,8 +166,7 @@ def test_shell_execute_readonly_timeout(mock_run: MagicMock) -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=_READONLY_FOR_TESTS,
+        tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, "find / -name foo")
@@ -164,8 +178,7 @@ def test_shell_execute_readonly_malformed_quoting() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[],
-        shell_readonly_commands=_READONLY_FOR_TESTS,
+        tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
     result = shell_execute_readonly(ctx, 'ls "unclosed')
@@ -176,41 +189,261 @@ def test_shell_execute_allowlisted_rejects_args_not_matching_pattern() -> None:
     deps = TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
-        shell_command_allowlist=[
-            CommandAllowlistEntry(
-                id="gh",
-                command_pattern="gh",
-                allowed_args_pattern=r"pr list|pr view",
-            )
-        ],
+        tool_runtime_params={
+            "shell_execute_allowlisted": {
+                "command_allowlist": [
+                    CommandAllowlistEntry(
+                        id="gh",
+                        command_pattern="gh",
+                        allowed_args_pattern=r"pr list|pr view",
+                    )
+                ],
+            },
+        },
     )
     ctx = _ctx(deps)
     result = shell_execute_allowlisted(ctx, "gh repo clone foo/bar")
     assert result["status"] == "rejected_not_allowed"
 
 
-def test_get_agent_tools_excludes_denied_capability() -> None:
-    """When cap.shell.execute.allowlisted is denied, tool is not registered."""
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_get_agent_tools_included_when_global_and_capability_enabled(
+    mock_load_caps: MagicMock,
+) -> None:
+    """Tool is registered when enabled in tools.yaml and in active capability."""
     from assistant.agent.tools.registry import get_agent_tools
+    from assistant.core.capabilities.schemas import (
+        CapabilityDefinition,
+        CapabilityToolBinding,
+    )
     from assistant.core.config.schemas import (
         AppConfig,
-        CapabilitiesConfig,
+        CapabilitiesPolicyConfig,
         McpServersConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
         StoreConfig,
         TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
     )
 
+    mock_load_caps.return_value = {
+        "assistant": CapabilityDefinition(
+            capability_id="assistant",
+            prompt="",
+            tools=[
+                CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=True),
+            ],
+        ),
+    }
+    tools_config = ToolsConfig(
+        tools=[
+            ToolDefinition(
+                tool_id="shell_execute_readonly",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_readonly",
+                enabled=True,
+            ),
+        ]
+    )
     config = RuntimeConfig(
         app=AppConfig(data_root="/tmp", timezone="UTC"),
         telegram=TelegramChannelConfig(),
         model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
-        capabilities=CapabilitiesConfig(
-            allowed_capabilities=["cap.assistant.ask", "cap.shell.execute.readonly"],
-            denied_capabilities=["cap.shell.execute.allowlisted"],
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant"],
+            denied_capabilities=[],
         ),
+        tools=tools_config,
+        mcp_servers=McpServersConfig(),
+        scheduler=SchedulerConfig(),
+        store=StoreConfig(),
+    )
+    tools = get_agent_tools(config)
+    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    assert "shell_execute_readonly" in tool_names
+
+
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_get_agent_tools_excluded_when_global_disabled(
+    mock_load_caps: MagicMock,
+) -> None:
+    """Tool is not registered when disabled in tools.yaml even if capability enables it."""
+    from assistant.agent.tools.registry import get_agent_tools
+    from assistant.core.capabilities.schemas import (
+        CapabilityDefinition,
+        CapabilityToolBinding,
+    )
+    from assistant.core.config.schemas import (
+        AppConfig,
+        CapabilitiesPolicyConfig,
+        McpServersConfig,
+        ModelConfig,
+        RuntimeConfig,
+        SchedulerConfig,
+        StoreConfig,
+        TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
+    )
+
+    mock_load_caps.return_value = {
+        "assistant": CapabilityDefinition(
+            capability_id="assistant",
+            prompt="",
+            tools=[
+                CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=True),
+            ],
+        ),
+    }
+    tools_config = ToolsConfig(
+        tools=[
+            ToolDefinition(
+                tool_id="shell_execute_readonly",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_readonly",
+                enabled=False,
+            ),
+        ]
+    )
+    config = RuntimeConfig(
+        app=AppConfig(data_root="/tmp", timezone="UTC"),
+        telegram=TelegramChannelConfig(),
+        model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant"],
+            denied_capabilities=[],
+        ),
+        tools=tools_config,
+        mcp_servers=McpServersConfig(),
+        scheduler=SchedulerConfig(),
+        store=StoreConfig(),
+    )
+    tools = get_agent_tools(config)
+    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    assert "shell_execute_readonly" not in tool_names
+
+
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_get_agent_tools_excluded_when_capability_disabled(
+    mock_load_caps: MagicMock,
+) -> None:
+    """Tool is not registered when capability binding has enabled=false even if global enabled."""
+    from assistant.agent.tools.registry import get_agent_tools
+    from assistant.core.capabilities.schemas import (
+        CapabilityDefinition,
+        CapabilityToolBinding,
+    )
+    from assistant.core.config.schemas import (
+        AppConfig,
+        CapabilitiesPolicyConfig,
+        McpServersConfig,
+        ModelConfig,
+        RuntimeConfig,
+        SchedulerConfig,
+        StoreConfig,
+        TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
+    )
+
+    mock_load_caps.return_value = {
+        "assistant": CapabilityDefinition(
+            capability_id="assistant",
+            prompt="",
+            tools=[
+                CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=False),
+            ],
+        ),
+    }
+    tools_config = ToolsConfig(
+        tools=[
+            ToolDefinition(
+                tool_id="shell_execute_readonly",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_readonly",
+                enabled=True,
+            ),
+        ]
+    )
+    config = RuntimeConfig(
+        app=AppConfig(data_root="/tmp", timezone="UTC"),
+        telegram=TelegramChannelConfig(),
+        model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant"],
+            denied_capabilities=[],
+        ),
+        tools=tools_config,
+        mcp_servers=McpServersConfig(),
+        scheduler=SchedulerConfig(),
+        store=StoreConfig(),
+    )
+    tools = get_agent_tools(config)
+    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    assert "shell_execute_readonly" not in tool_names
+
+
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_get_agent_tools_excludes_denied_capability(
+    mock_load_caps: MagicMock,
+) -> None:
+    """When deploy capability is denied, shell_execute_allowlisted is not registered."""
+    from assistant.agent.tools.registry import get_agent_tools
+    from assistant.core.capabilities.schemas import (
+        CapabilityDefinition,
+        CapabilityToolBinding,
+    )
+    from assistant.core.config.schemas import (
+        AppConfig,
+        CapabilitiesPolicyConfig,
+        McpServersConfig,
+        ModelConfig,
+        RuntimeConfig,
+        SchedulerConfig,
+        StoreConfig,
+        TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
+    )
+
+    mock_load_caps.return_value = {
+        "assistant": CapabilityDefinition(
+            capability_id="assistant",
+            prompt="",
+            tools=[
+                CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=True),
+            ],
+        ),
+        "deploy": CapabilityDefinition(
+            capability_id="deploy",
+            prompt="",
+            tools=[
+                CapabilityToolBinding(tool_id="shell_execute_allowlisted", enabled=True),
+                CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=True),
+            ],
+        ),
+    }
+    tools_config = ToolsConfig(
+        tools=[
+            ToolDefinition(
+                tool_id="shell_execute_readonly",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_readonly",
+            ),
+            ToolDefinition(
+                tool_id="shell_execute_allowlisted",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_allowlisted",
+            ),
+        ]
+    )
+    config = RuntimeConfig(
+        app=AppConfig(data_root="/tmp", timezone="UTC"),
+        telegram=TelegramChannelConfig(),
+        model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant", "deploy"],
+            denied_capabilities=["deploy"],
+        ),
+        tools=tools_config,
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),

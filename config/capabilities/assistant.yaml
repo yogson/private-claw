@@ -1,0 +1,16 @@
+# Baseline assistant capability: memory, ask, shell readonly, web search.
+# Equivalent to previous default assistant behavior.
+
+capability_id: assistant
+prompt: ""
+tools:
+  - tool_id: memory_search
+    enabled: true
+  - tool_id: memory_propose_update
+    enabled: true
+  - tool_id: ask_question
+    enabled: true
+  - tool_id: shell_execute_readonly
+    enabled: true
+  - tool_id: web_search
+    enabled: true

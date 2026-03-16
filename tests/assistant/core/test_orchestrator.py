@@ -13,13 +13,14 @@ from assistant.agent.interfaces import MessageRole
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.core.config.schemas import (
     AppConfig,
-    CapabilitiesConfig,
+    CapabilitiesPolicyConfig,
     McpServersConfig,
     ModelConfig,
     RuntimeConfig,
     SchedulerConfig,
     StoreConfig,
     TelegramChannelConfig,
+    ToolsConfig,
 )
 from assistant.core.events.models import (
     AttachmentMeta,
@@ -51,7 +52,11 @@ def _runtime_config() -> RuntimeConfig:
             model_allowlist=["claude-3-5-sonnet-20241022"],
             max_tokens_default=1024,
         ),
-        capabilities=CapabilitiesConfig(allowed_capabilities=["cap.memory.update"]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant"],
+            denied_capabilities=[],
+        ),
+        tools=ToolsConfig(),
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(lock_ttl_seconds=30, idempotency_retention_seconds=86400),

@@ -22,6 +22,28 @@ logger = structlog.get_logger(__name__)
 _MAX_TIMEOUT_SECONDS = 30
 
 
+def _get_tool_params(deps: TurnDeps, tool_id: str) -> dict[str, Any]:
+    """Get merged params for tool from tool_runtime_params."""
+    params = (deps.tool_runtime_params or {}).get(tool_id, {})
+    return {
+        "shell_readonly_commands": params.get("shell_readonly_commands", []),
+        "command_allowlist": params.get("command_allowlist", []),
+    }
+
+
+def _normalize_allowlist(
+    raw: list[CommandAllowlistEntry] | list[dict[str, Any]],
+) -> list[CommandAllowlistEntry]:
+    """Convert allowlist to list of CommandAllowlistEntry."""
+    result: list[CommandAllowlistEntry] = []
+    for item in raw or []:
+        if isinstance(item, CommandAllowlistEntry):
+            result.append(item)
+        elif isinstance(item, dict):
+            result.append(CommandAllowlistEntry(**item))
+    return result
+
+
 def _parse_command(command: str) -> tuple[str, list[str]]:
     """Parse command string into (executable, args). Returns ('', []) on parse error."""
     try:
@@ -40,9 +62,10 @@ def shell_execute_readonly(
 ) -> dict[str, Any]:
     """Execute a read-only shell command.
 
-    Allowed commands come from config capabilities.shell_readonly_commands.
+    Allowed commands come from tool_runtime_params.
     """
-    readonly_commands = getattr(ctx.deps, "shell_readonly_commands", None) or []
+    params = _get_tool_params(ctx.deps, "shell_execute_readonly")
+    readonly_commands = params.get("shell_readonly_commands") or []
     allowed_set = frozenset(
         c.strip().lower() for c in readonly_commands if isinstance(c, str) and c.strip()
     )
@@ -129,12 +152,15 @@ def shell_execute_readonly(
 
 
 def _find_matching_entry(
-    executable: str, args: list[str], allowlist: list[CommandAllowlistEntry]
+    executable: str,
+    args: list[str],
+    allowlist: list[CommandAllowlistEntry] | list[dict[str, Any]],
 ) -> CommandAllowlistEntry | None:
     """Return matching allowlist entry if command and args match a template."""
+    entries = _normalize_allowlist(allowlist)
     exe_lower = executable.lower()
     args_str = " ".join(args)
-    for entry in allowlist:
+    for entry in entries:
         if exe_lower != entry.command_pattern.strip().lower():
             continue
         try:
@@ -155,7 +181,8 @@ def shell_execute_allowlisted(
     Matches command_pattern and allowed_args_pattern (regex). Uses per-entry
     max_timeout_seconds cap.
     """
-    allowlist = getattr(ctx.deps, "shell_command_allowlist", None) or []
+    params = _get_tool_params(ctx.deps, "shell_execute_allowlisted")
+    allowlist = _normalize_allowlist(params.get("command_allowlist") or [])
     if not allowlist:
         logger.info(
             "provider.tool_call.shell_execute_allowlisted",

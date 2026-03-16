@@ -7,7 +7,7 @@ Config domain package exports.
 from assistant.core.config.loader import ConfigLoader
 from assistant.core.config.schemas import (
     AppConfig,
-    CapabilitiesConfig,
+    CapabilitiesPolicyConfig,
     CommandAllowlistEntry,
     McpServersConfig,
     ModelConfig,
@@ -15,11 +15,13 @@ from assistant.core.config.schemas import (
     SchedulerConfig,
     StoreConfig,
     TelegramChannelConfig,
+    ToolDefinition,
+    ToolsConfig,
 )
 
 __all__ = [
     "AppConfig",
-    "CapabilitiesConfig",
+    "CapabilitiesPolicyConfig",
     "CommandAllowlistEntry",
     "ConfigLoader",
     "McpServersConfig",
@@ -28,4 +30,6 @@ __all__ = [
     "SchedulerConfig",
     "StoreConfig",
     "TelegramChannelConfig",
+    "ToolDefinition",
+    "ToolsConfig",
 ]

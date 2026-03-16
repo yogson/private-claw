@@ -26,7 +26,7 @@ def test_build_fields_number_type() -> None:
 
 
 def test_build_fields_line_list_coercion() -> None:
-    fields = _build_fields({"allowed_capabilities"}, {"allowed_capabilities": ["cap.a", "cap.b"]})
+    fields = _build_fields({"enabled_capabilities"}, {"enabled_capabilities": ["cap.a", "cap.b"]})
     f = fields[0]
     assert f["type"] == "textarea"
     assert f["encoding"] == "line_list"
@@ -61,15 +61,15 @@ def test_parse_form_payload_number_coercion() -> None:
 
 
 def test_parse_form_payload_line_list_coercion() -> None:
-    form = _FakeForm({"allowed_capabilities": "cap.a\ncap.b\n  cap.c  "})
+    form = _FakeForm({"enabled_capabilities": "cap.a\ncap.b\n  cap.c  "})
     payload = _parse_form_payload("capabilities", form)
-    assert payload["allowed_capabilities"] == ["cap.a", "cap.b", "cap.c"]
+    assert payload["enabled_capabilities"] == ["cap.a", "cap.b", "cap.c"]
 
 
 def test_parse_form_payload_line_list_empty_lines_stripped() -> None:
-    form = _FakeForm({"allowed_capabilities": "cap.a\n\n  \ncap.b"})
+    form = _FakeForm({"enabled_capabilities": "cap.a\n\n  \ncap.b"})
     payload = _parse_form_payload("capabilities", form)
-    assert payload["allowed_capabilities"] == ["cap.a", "cap.b"]
+    assert payload["enabled_capabilities"] == ["cap.a", "cap.b"]
 
 
 def test_parse_form_payload_only_allowlisted_keys() -> None:

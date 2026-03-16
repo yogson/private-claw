@@ -27,12 +27,8 @@ _ALLOWLISTED_KEYS: dict[str, set[str]] = {
         "startup_drop_pending_updates",
     },
     "model": {"default_model_id", "model_allowlist", "quality_routing", "max_tokens_default"},
-    "capabilities": {
-        "allowed_capabilities",
-        "denied_capabilities",
-        "shell_readonly_commands",
-        "command_allowlist",
-    },
+    "capabilities": {"enabled_capabilities", "denied_capabilities"},
+    "tools": {"tools"},
     "scheduler": {"tick_seconds", "max_lateness_seconds", "max_jobs"},
     "store": {"lock_ttl_seconds", "idempotency_retention_seconds"},
 }
@@ -42,6 +38,7 @@ _FILENAME_MAP: dict[str, str] = {
     "telegram": "channel.telegram.yaml",
     "model": "model.yaml",
     "capabilities": "capabilities.yaml",
+    "tools": "tools.yaml",
     "mcp_servers": "mcp_servers.yaml",
     "scheduler": "scheduler.yaml",
     "store": "store.yaml",
@@ -89,19 +86,21 @@ class ApplyResponse(BaseModel):
 def _domain_schema(domain: str) -> type[BaseModel] | None:
     from assistant.core.config.schemas import (
         AppConfig,
-        CapabilitiesConfig,
+        CapabilitiesPolicyConfig,
         McpServersConfig,
         ModelConfig,
         SchedulerConfig,
         StoreConfig,
         TelegramChannelConfig,
+        ToolsConfig,
     )
 
     mapping: dict[str, type[BaseModel]] = {
         "app": AppConfig,
         "telegram": TelegramChannelConfig,
         "model": ModelConfig,
-        "capabilities": CapabilitiesConfig,
+        "capabilities": CapabilitiesPolicyConfig,
+        "tools": ToolsConfig,
         "mcp_servers": McpServersConfig,
         "scheduler": SchedulerConfig,
         "store": StoreConfig,

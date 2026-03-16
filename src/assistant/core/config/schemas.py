@@ -6,6 +6,7 @@ Each schema corresponds to one config/*.yaml file.
 """
 
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -98,7 +99,7 @@ class ModelConfig(BaseModel):
 
 
 class CommandAllowlistEntry(BaseModel):
-    """Single command template for cap.shell.execute.allowlisted."""
+    """Single command template for shell_execute_allowlisted tool."""
 
     id: str
     command_pattern: str
@@ -106,34 +107,70 @@ class CommandAllowlistEntry(BaseModel):
     max_timeout_seconds: int = Field(default=30, ge=1)
 
 
-class CapabilitiesConfig(BaseModel):
-    """Capabilities and skills configuration (config/capabilities.yaml)."""
+def _coerce_command_allowlist(v: object) -> list[CommandAllowlistEntry]:
+    """Accept list[str] or list[dict] as command_allowlist."""
+    if not isinstance(v, list):
+        return []
+    result: list[CommandAllowlistEntry] = []
+    for item in v:
+        if isinstance(item, str) and item.strip():
+            result.append(
+                CommandAllowlistEntry(
+                    id=item.strip().lower(),
+                    command_pattern=item.strip(),
+                    allowed_args_pattern=".*",
+                    max_timeout_seconds=30,
+                )
+            )
+        elif isinstance(item, dict):
+            result.append(CommandAllowlistEntry(**item))
+    return result
 
-    allowed_capabilities: list[str]
-    denied_capabilities: list[str] = Field(default_factory=list)
-    command_allowlist: list[CommandAllowlistEntry] = Field(default_factory=list)
+
+class ToolDefaultParams(BaseModel):
+    """Default params for tools, merged with capability-level overrides."""
+
     shell_readonly_commands: list[str] = Field(default_factory=list)
+    command_allowlist: list[CommandAllowlistEntry] = Field(default_factory=list)
+    default_timeout_seconds: int = Field(default=15, ge=1)
+    max_timeout_seconds: int = Field(default=30, ge=1)
 
     @field_validator("command_allowlist", mode="before")
     @classmethod
     def _coerce_command_allowlist(cls, v: object) -> list[CommandAllowlistEntry]:
-        """Accept legacy list[str] as command_pattern-only entries."""
-        if not isinstance(v, list):
-            return []
-        result: list[CommandAllowlistEntry] = []
-        for item in v:
-            if isinstance(item, str) and item.strip():
-                result.append(
-                    CommandAllowlistEntry(
-                        id=item.strip().lower(),
-                        command_pattern=item.strip(),
-                        allowed_args_pattern=".*",
-                        max_timeout_seconds=30,
-                    )
-                )
-            elif isinstance(item, dict):
-                result.append(CommandAllowlistEntry(**item))
-        return result
+        return _coerce_command_allowlist(v)
+
+
+class ToolDefinition(BaseModel):
+    """Single tool definition in config/tools.yaml."""
+
+    tool_id: str
+    entrypoint: str
+    enabled: bool = True
+    default_params: ToolDefaultParams = Field(default_factory=ToolDefaultParams)
+
+    @field_validator("entrypoint")
+    @classmethod
+    def validate_entrypoint(cls, v: str) -> str:
+        if not v or ":" not in v:
+            raise ValueError("entrypoint must be <python_module>:<callable_name> format")
+        return v.strip()
+
+
+class ToolsConfig(BaseModel):
+    """Tools configuration (config/tools.yaml)."""
+
+    tools: list[ToolDefinition] = Field(default_factory=list)
+
+
+class CapabilitiesPolicyConfig(BaseModel):
+    """Operator-level capability policy (config/capabilities.yaml).
+
+    Lists which capability manifests from config/capabilities/*.yaml are enabled.
+    """
+
+    enabled_capabilities: list[str] = Field(default_factory=list)
+    denied_capabilities: list[str] = Field(default_factory=list)
 
 
 class McpServerEntry(BaseModel):
@@ -202,7 +239,9 @@ class RuntimeConfig(BaseModel):
     app: AppConfig
     telegram: TelegramChannelConfig
     model: ModelConfig
-    capabilities: CapabilitiesConfig
+    capabilities: CapabilitiesPolicyConfig
+    tools: ToolsConfig
     mcp_servers: McpServersConfig
     scheduler: SchedulerConfig
     store: StoreConfig
+    config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution

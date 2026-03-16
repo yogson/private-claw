@@ -30,13 +30,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     from assistant.core.config.schemas import (
         AppConfig,
-        CapabilitiesConfig,
+        CapabilitiesPolicyConfig,
         McpServersConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
         StoreConfig,
         TelegramChannelConfig,
+        ToolsConfig,
     )
 
     fake_config = RuntimeConfig(
@@ -46,7 +47,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
             default_model_id="claude-3-5-sonnet-20241022",
             model_allowlist=["claude-3-5-sonnet-20241022"],
         ),
-        capabilities=CapabilitiesConfig(allowed_capabilities=[]),
+        capabilities=CapabilitiesPolicyConfig(enabled_capabilities=[], denied_capabilities=[]),
+        tools=ToolsConfig(),
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),

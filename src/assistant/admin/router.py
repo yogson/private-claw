@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -38,12 +39,22 @@ _DOMAIN_LABELS: dict[str, str] = {
     "telegram": "Telegram Channel",
     "model": "Model Routing",
     "capabilities": "Capabilities & Skills",
+    "tools": "Tools",
     "mcp_servers": "MCP Servers",
     "scheduler": "Scheduler",
     "store": "Store / Persistence",
 }
 
-_DOMAIN_ORDER = ["app", "telegram", "model", "capabilities", "mcp_servers", "scheduler", "store"]
+_DOMAIN_ORDER = [
+    "app",
+    "telegram",
+    "model",
+    "capabilities",
+    "tools",
+    "mcp_servers",
+    "scheduler",
+    "store",
+]
 
 # ---------------------------------------------------------------------------
 # Runtime reconciliation advisory table
@@ -64,6 +75,7 @@ _DOMAIN_RESTART_ADVISORY: dict[str, str] = {
     "telegram": "recommended",  # allowlist / polling settings — adapter not fully wired yet
     "model": "recommended",  # model routing — no consumer wired yet
     "capabilities": "recommended",  # capability policy — no consumer wired yet
+    "tools": "required",  # tool definitions — agent built at startup
     "scheduler": "recommended",  # tick / lateness / jobs — no consumer wired yet
     "store": "recommended",  # lock TTL / retention — no consumer wired yet
 }
@@ -99,10 +111,10 @@ _FIELD_DEFS: dict[str, dict[str, Any]] = {
     "quality_routing": {"type": "select", "options": ["quality_first", "cost_first"]},
     "max_tokens_default": {"type": "number"},
     # capabilities
-    "allowed_capabilities": {"type": "textarea", "encoding": "line_list"},
+    "enabled_capabilities": {"type": "textarea", "encoding": "line_list"},
     "denied_capabilities": {"type": "textarea", "encoding": "line_list"},
-    "shell_readonly_commands": {"type": "textarea", "encoding": "line_list"},
-    "command_allowlist": {"type": "textarea", "encoding": "line_list"},
+    # tools
+    "tools": {"type": "textarea", "encoding": "yaml"},
     # scheduler
     "tick_seconds": {"type": "number"},
     "max_lateness_seconds": {"type": "number"},
@@ -135,6 +147,8 @@ def _build_fields(allowed_keys: set[str], current: dict[str, Any]) -> list[dict[
             display_value = ""  # never pre-fill secrets
         elif encoding in ("line_list", "int_list") and isinstance(value, list):
             display_value = "\n".join(str(v) for v in value)
+        elif encoding == "yaml" and value not in (None, ""):
+            display_value = yaml.dump(value, default_flow_style=False, sort_keys=False).strip()
         fields.append(
             {
                 "name": key,
@@ -187,6 +201,12 @@ def _parse_form_payload(domain: str, form: Any) -> dict[str, Any]:
                     except ValueError:
                         items.append(ln)  # type: ignore[arg-type]
             payload[key] = items
+        elif encoding == "yaml":
+            try:
+                parsed = yaml.safe_load(str(raw).strip()) if str(raw).strip() else []
+                payload[key] = parsed if parsed is not None else []
+            except yaml.YAMLError:
+                payload[key] = raw
         else:
             payload[key] = raw
     return payload

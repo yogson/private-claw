@@ -32,8 +32,6 @@ from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session_context import ActiveSessionContextService
-from assistant.extensions.registry import CapabilityRegistry
-from assistant.extensions.registry.registry import ManifestRegistryError
 from assistant.memory.retrieval.service import RetrievalService
 from assistant.memory.write.service import MemoryWriteService
 from assistant.observability.logging import configure_logging
@@ -244,7 +242,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.runtime_config = runtime_config
     app.state.telegram_adapter = None
     app.state.attachment_downloader = None
-    app.state.capability_registry = None
 
     store: StoreFacade | None = None
     polling_task: asyncio.Task[None] | None = None
@@ -252,13 +249,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if runtime_config.telegram.enabled:
         data_root = Path(runtime_config.app.data_root)
-        plugin_root = Path(__file__).resolve().parents[3] / "plugins"
-        capability_registry = CapabilityRegistry(plugin_roots=[plugin_root])
-        try:
-            capability_registry.load()
-        except ManifestRegistryError as exc:
-            raise SystemExit(f"Capability registry load failed: {exc}") from exc
-        app.state.capability_registry = capability_registry
 
         store = StoreFacade(
             data_root=data_root,

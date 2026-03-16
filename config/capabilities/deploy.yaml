@@ -1,0 +1,9 @@
+# Add-on capability: deploy workflows. Adds shell_execute_allowlisted (e.g. gh, git).
+# Enable alongside assistant for deploy-capable agents.
+capability_id: deploy
+prompt: ""
+tools:
+  - tool_id: shell_execute_allowlisted
+    enabled: true
+  - tool_id: shell_execute_readonly
+    enabled: true

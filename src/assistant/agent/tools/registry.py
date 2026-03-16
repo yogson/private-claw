@@ -1,71 +1,147 @@
 """
 Component ID: CMP_PROVIDER_PYDANTIC_AI_AGENT
 
-Tool registration for Pydantic AI agent. Tools are gated by capability policy:
-only tools whose capability_id is in allowed_capabilities and not in denied_capabilities
-are registered. Fail closed when capability is not allowed.
+Tool registration for Pydantic AI agent. Capability-first activation model:
+
+- config/tools.yaml: canonical catalog of ALL available tools (enabled by default).
+  Global enabled=false acts as a hard kill-switch (tool never exposed).
+- config/capabilities/*.yaml: each capability declares which tools it activates.
+  assistant = baseline; add-on capabilities (e.g. deploy, github-ops) extend the set.
+- Runtime availability: tool is exposed only if BOTH (1) enabled in tools.yaml AND
+  (2) listed and enabled in at least one active capability (enabled_capabilities,
+  excluding denied_capabilities).
 """
 
 from collections.abc import Sequence
+from importlib import import_module
+from pathlib import Path
+from typing import Any, cast
 
 import structlog
 from pydantic_ai import Tool
 from pydantic_ai.tools import ToolFuncEither
 
-from assistant.agent.tools.ask_question import ask_question
 from assistant.agent.tools.deps import TurnDeps
-from assistant.agent.tools.memory_propose_update import memory_propose_update
-from assistant.agent.tools.memory_search import memory_search
-from assistant.agent.tools.shell_execute import shell_execute_allowlisted, shell_execute_readonly
-from assistant.agent.tools.tavily_search import get_tavily_search_tool
-from assistant.core.config.schemas import CapabilitiesConfig, RuntimeConfig
+from assistant.core.capabilities.loader import load_capability_definitions
+from assistant.core.config.loader import resolve_config_dir
+from assistant.core.config.schemas import RuntimeConfig
+
+
+def _config_dir(config: RuntimeConfig) -> Path:
+    """Resolve config dir from RuntimeConfig or fallback to env/default."""
+    return config.config_dir if config.config_dir is not None else resolve_config_dir()
+
 
 logger = structlog.get_logger(__name__)
 
 type AgentTool = Tool[TurnDeps] | ToolFuncEither[TurnDeps, ...]
 
-_TOOL_CAPABILITY_MAP: dict[AgentTool, str] = {
-    memory_search: "cap.memory.read",
-    memory_propose_update: "cap.memory.update",
-    ask_question: "cap.assistant.ask",  # core UX, always allowed when in allowed list
-    shell_execute_readonly: "cap.shell.execute.readonly",
-    shell_execute_allowlisted: "cap.shell.execute.allowlisted",
-}
+
+def build_tool_runtime_params(config: RuntimeConfig) -> dict[str, dict[str, Any]]:
+    """Build merged per-tool params from tools.yaml defaults + capability overrides."""
+    tool_ids = _collect_enabled_tool_ids(config)
+    tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
+    definitions = load_capability_definitions(config_dir=_config_dir(config))
+    policy = config.capabilities
+    denied = frozenset(policy.denied_capabilities)
+    enabled = [c for c in policy.enabled_capabilities if c not in denied]
+
+    result: dict[str, dict[str, Any]] = {}
+    for tool_id in tool_ids:
+        definition = tool_defs.get(tool_id)
+        if definition is None:
+            continue
+        params = definition.default_params.model_dump()
+        for cap_id in enabled:
+            cap_def = definitions.get(cap_id)
+            if cap_def is None:
+                continue
+            override = cap_def.get_effective_tool_overrides(tool_id)
+            for k, v in override.items():
+                if k == "command_allowlist" and isinstance(v, list):
+                    params[k] = [x.model_dump() if hasattr(x, "model_dump") else x for x in v]
+                else:
+                    params[k] = v
+        result[tool_id] = params
+    return result
 
 
-def _is_capability_allowed(cap_id: str, caps: CapabilitiesConfig) -> bool:
-    """Return True if capability is explicitly allowed and not denied."""
-    if cap_id in caps.denied_capabilities:
-        return False
-    return cap_id in caps.allowed_capabilities
+def _resolve_entrypoint(entrypoint: str) -> object:
+    """Resolve entrypoint string to Python callable. Raises on failure."""
+    if ":" not in entrypoint:
+        raise ValueError(f"Invalid entrypoint: {entrypoint!r}")
+    module_path, attr = entrypoint.split(":", 1)
+    module_path = module_path.strip()
+    attr = attr.strip()
+    if not module_path or not attr:
+        raise ValueError(f"Invalid entrypoint: {entrypoint!r}")
+    mod = import_module(module_path)
+    obj = getattr(mod, attr)
+    if not callable(obj):
+        raise ValueError(f"Entrypoint {entrypoint!r} is not callable")
+    return obj
+
+
+def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
+    """Collect tool_ids from enabled capabilities (excluding denied)."""
+    policy = config.capabilities
+    denied = frozenset(policy.denied_capabilities)
+    enabled = frozenset(policy.enabled_capabilities)
+    definitions = load_capability_definitions(config_dir=_config_dir(config))
+
+    tool_ids: set[str] = set()
+    for cap_id in enabled:
+        if cap_id in denied:
+            continue
+        definition = definitions.get(cap_id)
+        if definition is None:
+            logger.warning(
+                "provider.tools.capability_missing",
+                capability_id=cap_id,
+                hint="Manifest not found in config/capabilities/*.yaml",
+            )
+            continue
+        for binding in definition.tools:
+            if binding.enabled:
+                tool_ids.add(binding.tool_id)
+    return tool_ids
 
 
 def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
-    """Return tools for the agent, gated by capability policy. Fail closed."""
-    caps = config.capabilities
+    """Return tools for the agent from tools.yaml, gated by enabled capabilities."""
+    tool_ids = _collect_enabled_tool_ids(config)
+    tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
+
     tools: list[AgentTool] = []
-    for tool, cap_id in _TOOL_CAPABILITY_MAP.items():
-        if _is_capability_allowed(cap_id, caps):
-            tools.append(tool)
-        else:
+    for tool_id in sorted(tool_ids):
+        definition = tool_defs.get(tool_id)
+        if definition is None:
             logger.debug(
                 "provider.tools.skipped",
-                capability_id=cap_id,
-                reason="not in allowed_capabilities or in denied_capabilities",
+                tool_id=tool_id,
+                reason="not in tools.yaml or disabled",
             )
-    tavily_tool = get_tavily_search_tool()
-    if tavily_tool is not None and _is_capability_allowed("cap.web.search.query", caps):
-        tools.append(tavily_tool)
-    elif tavily_tool is not None:
-        logger.debug(
-            "provider.tools.tavily_skipped",
-            capability_id="cap.web.search.query",
-            reason="not in allowed_capabilities or in denied_capabilities",
-        )
-    elif _is_capability_allowed("cap.web.search.query", caps):
-        logger.info(
-            "provider.tools.tavily_skipped",
-            reason="TAVILY_API_KEY not set",
-            hint="Set TAVILY_API_KEY to enable web search",
-        )
+            continue
+        try:
+            resolved = _resolve_entrypoint(definition.entrypoint)
+        except Exception as exc:
+            logger.warning(
+                "provider.tools.resolve_failed",
+                tool_id=tool_id,
+                entrypoint=definition.entrypoint,
+                error=str(exc),
+            )
+            continue
+        if tool_id == "web_search":
+            tool_instance = resolved() if callable(resolved) else None
+            if tool_instance is None:
+                logger.info(
+                    "provider.tools.web_search_skipped",
+                    reason="TAVILY_API_KEY not set",
+                    hint="Set TAVILY_API_KEY to enable web search",
+                )
+                continue
+            tools.append(cast(AgentTool, tool_instance))
+        else:
+            tools.append(cast(AgentTool, resolved))
     return tools

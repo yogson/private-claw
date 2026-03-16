@@ -1,29 +1,8 @@
-# Capabilities and skills configuration
+# Capability policy: which capability manifests from config/capabilities/*.yaml are enabled
+# assistant = baseline (memory, ask, shell readonly, web search)
+# Add deploy, github-ops, etc. to extend the toolset
 # Environment override prefix: ASSISTANT_CAPABILITIES_
 
-allowed_capabilities:
-  - cap.assistant.ask
-  - cap.memory.read
-  - cap.memory.write
-  - cap.memory.update
-  - cap.shell.execute.readonly
-  - cap.web.search.query
+enabled_capabilities:
+  - assistant
 denied_capabilities: []
-# Commands allowed for cap.shell.execute.readonly (default: cat, date, env, file, find, grep, head, ls, pwd, stat, tail, wc, which, whoami)
-shell_readonly_commands:
-  - cat
-  - date
-  - env
-  - file
-  - find
-  - grep
-  - head
-  - ls
-  - pwd
-  - stat
-  - tail
-  - wc
-  - which
-  - whoami
-# Add command templates for cap.shell.execute.allowlisted (e.g. gh, git)
-command_allowlist: []

@@ -1,4 +1,4 @@
-Let's review latest changes (consider `@docs/assistant_v1` and `@docs/DEVELOPMENT.md`).
+Go review latest changes (consider `@docs/assistant_v1` and `@docs/DEVELOPMENT.md`).
 
 Focus on:
 - Correctness, regressions, and edge cases

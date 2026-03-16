@@ -9,6 +9,7 @@ import base64
 import binascii
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 from pydantic_ai import Agent
@@ -24,8 +25,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from assistant.core.config.schemas import RuntimeConfig
 from assistant.agent.tools import TurnDeps, get_agent_tools
+from assistant.core.capabilities.loader import load_capability_definitions
+from assistant.core.config.loader import resolve_config_dir
+from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.orchestrator.memory import MemoryIntentPlan
 from assistant.core.orchestrator.models import PendingAskData
 from assistant.core.prompts import load_prompt
@@ -42,6 +45,12 @@ from assistant.store.models import (
     SessionRecordType,
     ToolResultPayload,
 )
+
+
+def _config_dir(config: RuntimeConfig) -> Path:
+    """Resolve config dir from RuntimeConfig or fallback to env/default."""
+    return config.config_dir if config.config_dir is not None else resolve_config_dir()
+
 
 __all__ = [
     "PydanticAITurnAdapter",
@@ -61,6 +70,23 @@ MEMORY_AGENT_PROMPT_NAME = "memory_agent_system"
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
     """Backward-compatible wrapper for existing tests/importers."""
     return normalize_candidate_for_upsert(candidate)
+
+
+def _compose_system_prompt(config: RuntimeConfig) -> str:
+    """Compose system prompt from base + enabled capability prompts."""
+    base = load_prompt(MEMORY_AGENT_PROMPT_NAME)
+    policy = config.capabilities
+    denied = frozenset(policy.denied_capabilities)
+    enabled = frozenset(policy.enabled_capabilities)
+    definitions = load_capability_definitions(config_dir=_config_dir(config))
+    parts = [base]
+    for cap_id in sorted(enabled):
+        if cap_id in denied:
+            continue
+        definition = definitions.get(cap_id)
+        if definition and definition.prompt.strip():
+            parts.append(definition.prompt.strip())
+    return "\n\n".join(parts)
 
 
 def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> Agent[TurnDeps, str]:
@@ -453,9 +479,9 @@ class PydanticAITurnAdapter:
     ) -> None:
         self._model_id = model_id
         self._max_tokens = max_tokens
-        self._system_prompt = load_prompt(MEMORY_AGENT_PROMPT_NAME)
         if config is None:
             raise ValueError("PydanticAITurnAdapter requires config for capability-gated tools")
+        self._system_prompt = _compose_system_prompt(config)
         self._agent = _create_agent(model_id, self._system_prompt, config)
 
     @property
