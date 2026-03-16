@@ -16,7 +16,7 @@ from assistant.agent.tools.deps import TurnDeps
 
 logger = structlog.get_logger(__name__)
 
-_MAX_TIMEOUT_SECONDS = 30
+_MAX_TIMEOUT_SECONDS = 60
 _RS = "\x1e"  # record separator
 _US = "\x1f"  # unit separator
 
@@ -343,6 +343,22 @@ on run argv
   set theBody to item 2 of argv
   set theListName to item 3 of argv
   set theYear to item 4 of argv
+  set theDate to missing value
+  if theYear is not "" then
+    set theMonth to item 5 of argv as integer
+    set theDay to item 6 of argv as integer
+    set theHour to item 7 of argv as integer
+    set theMin to item 8 of argv as integer
+    set baseDate to current date
+    tell baseDate
+      set its day to 1
+      set its month to theMonth
+      set its year to theYear as integer
+      set its day to theDay
+      set its time to (theHour * hours + theMin * minutes)
+    end tell
+    set theDate to baseDate
+  end if
   tell application "Reminders"
     if theListName is not "" then
       set targetList to list theListName
@@ -350,29 +366,17 @@ on run argv
       set targetList to default list
     end if
     tell targetList
-      set newRem to make new reminder with properties {{name:theTitle, body:theBody}}
-      if theYear is not "" then
-        set theMonth to item 5 of argv as integer
-        set theDay to item 6 of argv as integer
-        set theHour to item 7 of argv as integer
-        set theMin to item 8 of argv as integer
-        set baseDate to current date
-        tell baseDate
-          set its day to 1
-          set its month to theMonth
-          set its year to theYear as integer
-          set its day to theDay
-          set its time to (theHour * hours + theMin * minutes)
-        end tell
-        set due date of newRem to baseDate
-        set remind me date of newRem to baseDate
+      if theDate is not missing value then
+        make new reminder at end with properties {{name:theTitle, body:theBody, due date:theDate, remind me date:theDate}}
+      else
+        make new reminder at end with properties {{name:theTitle, body:theBody}}
       end if
     end tell
     return "created"
   end tell
 end run
 """
-    raw = _run_applescript(script, args)
+    raw = _run_applescript(script, args, timeout_seconds=45)
     out = _normalize_result(raw, "macos_reminders_write")
     if raw["status"] == "ok":
         out["data"] = {"created": True, "title": title}
