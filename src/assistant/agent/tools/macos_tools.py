@@ -292,9 +292,19 @@ def macos_reminders_write(
     title: str,
     body: str = "",
     list_name: str | None = None,
-    due_date: str | None = None,
+    due_year: int | None = None,
+    due_month: int | None = None,
+    due_day: int | None = None,
+    due_hour: int | None = None,
+    due_minute: int | None = None,
 ) -> dict[str, Any]:
-    """Create a new Reminder with given title, optional body, list, and due date."""
+    """Create a new Reminder with given title, optional body, list, and due/remind date.
+
+    For a reminder with a notification trigger, pass due_year, due_month, due_day, due_hour,
+    due_minute (all required together). The agent must compute the concrete date/time and pass
+    these integers. E.g. for "March 17, 2026 11:00 AM": due_year=2026, due_month=3, due_day=17,
+    due_hour=11, due_minute=0. Both due date and remind-me (notification trigger) are set.
+    """
     if not _is_macos():
         logger.info(
             "provider.tool_call.macos_reminders_write",
@@ -312,12 +322,27 @@ def macos_reminders_write(
         )
         return {"status": "rejected_invalid", "reason": "title is required", "data": ""}
 
+    has_date = all(x is not None for x in (due_year, due_month, due_day, due_hour, due_minute))
+    if has_date:
+        args = [
+            title,
+            body or "",
+            list_name or "",
+            str(due_year),
+            str(due_month),
+            str(due_day),
+            str(due_hour),
+            str(due_minute),
+        ]
+    else:
+        args = [title, body or "", list_name or "", "", "", "", "", ""]
+
     script = """
 on run argv
   set theTitle to item 1 of argv
   set theBody to item 2 of argv
   set theListName to item 3 of argv
-  set theDue to item 4 of argv
+  set theYear to item 4 of argv
   tell application "Reminders"
     if theListName is not "" then
       set targetList to list theListName
@@ -326,24 +351,37 @@ on run argv
     end if
     tell targetList
       set newRem to make new reminder with properties {{name:theTitle, body:theBody}}
-      if theDue is not "" then
-        try
-          set due date of newRem to (date theDue)
-        end try
+      if theYear is not "" then
+        set theMonth to item 5 of argv as integer
+        set theDay to item 6 of argv as integer
+        set theHour to item 7 of argv as integer
+        set theMin to item 8 of argv as integer
+        set baseDate to current date
+        tell baseDate
+          set its day to 1
+          set its month to theMonth
+          set its year to theYear as integer
+          set its day to theDay
+          set its time to (theHour * hours + theMin * minutes)
+        end tell
+        set due date of newRem to baseDate
+        set remind me date of newRem to baseDate
       end if
     end tell
     return "created"
   end tell
 end run
 """
-    raw = _run_applescript(
-        script,
-        [title, body or "", list_name or "", due_date or ""],
-    )
+    raw = _run_applescript(script, args)
     out = _normalize_result(raw, "macos_reminders_write")
     if raw["status"] == "ok":
         out["data"] = {"created": True, "title": title}
-        logger.info("provider.tool_call.macos_reminders_write", status="ok", title=title)
+        log_extra: dict[str, Any] = {"status": "ok", "title": title}
+        if has_date:
+            log_extra["due"] = (
+                f"{due_year}-{due_month:02d}-{due_day:02d} {due_hour:02d}:{due_minute:02d}"
+            )
+        logger.info("provider.tool_call.macos_reminders_write", **log_extra)
     else:
         logger.warning(
             "provider.tool_call.macos_reminders_write",

@@ -197,6 +197,27 @@ def test_macos_reminders_write_rejects_empty_title() -> None:
 
 @patch("assistant.agent.tools.macos_tools.sys.platform", "darwin")
 @patch("assistant.agent.tools.macos_tools.subprocess.run")
+def test_macos_reminders_write_with_due_date_passes_components(mock_run: MagicMock) -> None:
+    """When due components are provided, they are passed to osascript."""
+    mock_run.return_value = MagicMock(returncode=0, stdout="created", stderr="")
+    result = macos_reminders_write(
+        _ctx(_deps()),
+        title="Get some money",
+        due_year=2026,
+        due_month=3,
+        due_day=17,
+        due_hour=11,
+        due_minute=0,
+    )
+    assert result["status"] == "ok"
+    call_args = mock_run.call_args
+    cmd = call_args[0][0]
+    args = cmd[cmd.index("--") + 1 :]
+    assert args == ["Get some money", "", "", "2026", "3", "17", "11", "0"]
+
+
+@patch("assistant.agent.tools.macos_tools.sys.platform", "darwin")
+@patch("assistant.agent.tools.macos_tools.subprocess.run")
 def test_macos_notes_read_timeout(mock_run: MagicMock) -> None:
     mock_run.side_effect = subprocess.TimeoutExpired("osascript", 20)
     result = macos_notes_read(_ctx(_deps()))

@@ -6,7 +6,8 @@ capability_id: macos_personal
 prompt: |
   When the user asks to read or create Notes or Reminders, use the macOS tools.
   For Notes: macos_notes_read lists recent notes; macos_notes_write creates a note with title and body.
-  For Reminders: macos_reminders_read lists reminders; macos_reminders_write creates a reminder with title, optional body, list_name, and due_date.
+  For Reminders: macos_reminders_read lists reminders; macos_reminders_write creates a reminder with title, optional body, list_name, and optional due_year, due_month, due_day, due_hour, due_minute.
+  When the user specifies a time (e.g. "tomorrow 11 AM", "March 17 at 3pm"), compute the concrete date/time and pass due_year, due_month, due_day, due_hour, due_minute (all five required together). E.g. for "March 17, 2026 11:00 AM": due_year=2026, due_month=3, due_day=17, due_hour=11, due_minute=0. This sets both due date and notification trigger.
   Ask for clarification if required fields (e.g. title) are missing.
 tools:
   - tool_id: macos_notes_read

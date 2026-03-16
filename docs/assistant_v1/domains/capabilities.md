@@ -66,7 +66,7 @@ The **macos_personal** capability (`config/capabilities/macos_personal.yaml`) ex
 - `macos_notes_read` – list recent Notes (name, body)
 - `macos_notes_write` – create a Note (title, body)
 - `macos_reminders_read` – list Reminders (name, body, due_date)
-- `macos_reminders_write` – create a Reminder (title, body, list_name, due_date)
+- `macos_reminders_write` – create a Reminder (title, body, list_name, due_year, due_month, due_day, due_hour, due_minute)
 
 **Activation**: Add `macos_personal` to `enabled_capabilities` in `config/capabilities.yaml`:
 
