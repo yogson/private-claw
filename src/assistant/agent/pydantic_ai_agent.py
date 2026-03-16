@@ -62,7 +62,7 @@ def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[st
     return normalize_candidate_for_upsert(candidate)
 
 
-def _create_memory_agent(model_id: str, system_prompt: str) -> Agent[TurnDeps, str]:
+def _create_agent(model_id: str, system_prompt: str) -> Agent[TurnDeps, str]:
     """Create Agent with memory_propose_update tool. Output type is str (final assistant text)."""
     return Agent(
         model_id,
@@ -452,7 +452,7 @@ class PydanticAITurnAdapter:
         self._model_id = model_id
         self._max_tokens = max_tokens
         self._system_prompt = load_prompt(MEMORY_AGENT_PROMPT_NAME)
-        self._agent = _create_memory_agent(model_id, self._system_prompt)
+        self._agent = _create_agent(model_id, self._system_prompt)
 
     @property
     def system_prompt(self) -> str:
