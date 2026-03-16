@@ -31,6 +31,7 @@ from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
+from assistant.core.session_context import ActiveSessionContextService
 from assistant.extensions.registry import CapabilityRegistry
 from assistant.extensions.registry.registry import ManifestRegistryError
 from assistant.memory.retrieval.service import RetrievalService
@@ -299,10 +300,14 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         transcription_service = build_transcription_service(runtime_config.telegram)
+        active_session_context = ActiveSessionContextService(
+            data_root / "runtime" / "active_session_context.json"
+        )
         adapter = TelegramAdapter(
             runtime_config.telegram,
             transcription_service=transcription_service,
             session_store=store.sessions,
+            active_session_context=active_session_context,
         )
         app.state.telegram_adapter = adapter
 

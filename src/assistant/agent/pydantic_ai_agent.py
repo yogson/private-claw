@@ -483,10 +483,10 @@ class PydanticAITurnAdapter:
             model=self._model_id,
             model_settings=model_settings,
         )
-        response_text = result.output if isinstance(result.output, str) else str(result.output)
+        response_text = result.output
         new_msgs = result.new_messages()
         usage = None
-        usage_obj = result.usage() if callable(result.usage) else result.usage
+        usage_obj = result.usage()
         if usage_obj is not None:
             usage = {
                 "input_tokens": getattr(usage_obj, "input_tokens", 0)

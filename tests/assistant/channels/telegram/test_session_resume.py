@@ -7,11 +7,19 @@ import hmac as _hmac_module
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from assistant.channels.telegram.models import EventSource, EventType, MessageType, NormalizedEvent
+from assistant.channels.telegram.adapter import TelegramAdapter
+from assistant.channels.telegram.models import (
+    CallbackQueryMeta,
+    EventSource,
+    EventType,
+    MessageType,
+    NormalizedEvent,
+)
 from assistant.channels.telegram.session_resume import (
     _CALLBACK_TTL_SECONDS,
     SessionEntry,
@@ -19,6 +27,8 @@ from assistant.channels.telegram.session_resume import (
     _extract_label,
     _extract_preview,
 )
+from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.session_context import ActiveSessionContextService
 from assistant.store.models import SessionRecord, SessionRecordType
 
 # ---------------------------------------------------------------------------
@@ -57,8 +67,6 @@ def _make_store(sessions: dict[str, list[SessionRecord]]) -> MagicMock:
 
 
 def _make_event(text: str | None = None, callback_data: str | None = None) -> NormalizedEvent:
-    from assistant.channels.telegram.models import CallbackQueryMeta
-
     cq = None
     if callback_data is not None:
         cq = CallbackQueryMeta(
@@ -345,9 +353,6 @@ class TestExtractHelpers:
 
 class TestAdapterSessionResume:
     def _make_adapter(self, with_store: bool = True) -> tuple:  # type: ignore[type-arg]
-        from assistant.channels.telegram.adapter import TelegramAdapter
-        from assistant.core.config.schemas import TelegramChannelConfig
-
         config = TelegramChannelConfig(
             enabled=True,
             bot_token="12345:token",
@@ -448,13 +453,13 @@ class TestAdapterSessionResume:
 
     def test_clear_active_session(self) -> None:
         adapter, _ = self._make_adapter()
-        adapter._active_sessions[_CHAT_ID] = f"tg:{_CHAT_ID}"
+        adapter._active_session_context.set_active_session(f"telegram:{_CHAT_ID}", f"tg:{_CHAT_ID}")
         adapter.clear_active_session(_CHAT_ID)
         assert adapter.get_active_session(_CHAT_ID) is None
 
     def test_apply_session_context_overrides_session_id(self) -> None:
         adapter, _ = self._make_adapter()
-        adapter._active_sessions[_CHAT_ID] = "tg:999"
+        adapter._active_session_context.set_active_session(f"telegram:{_CHAT_ID}", "tg:999")
         event = _make_event(text="hello")
         result = adapter._apply_session_context(event)
         assert result is not None
@@ -517,3 +522,51 @@ class TestAdapterSessionResume:
         event = _make_event(text="/new")
         event = event.model_copy(update={"metadata": {"chat_id": "not-a-number"}})
         assert adapter.start_new_session(event) is None
+
+    def test_active_session_persists_across_adapter_restart(self, tmp_path: Path) -> None:
+        context_path = tmp_path / "active_session_context.json"
+        context = ActiveSessionContextService(context_path)
+        config = TelegramChannelConfig(
+            enabled=True,
+            bot_token="12345:token",
+            allowlist=[_CHAT_ID],
+            session_resume_hmac_secret=_SECRET,
+        )
+        first = TelegramAdapter(
+            config, session_store=_make_store({}), active_session_context=context
+        )
+        event = _make_event(text="/new")
+        first_session_id = first.start_new_session(event)
+        assert first_session_id is not None
+
+        restarted_context = ActiveSessionContextService(context_path)
+        restarted = TelegramAdapter(
+            config,
+            session_store=_make_store({}),
+            active_session_context=restarted_context,
+        )
+        assert restarted.get_active_session(_CHAT_ID) == first_session_id
+
+    def test_clear_active_session_updates_persisted_state(self, tmp_path: Path) -> None:
+        context_path = tmp_path / "active_session_context.json"
+        config = TelegramChannelConfig(
+            enabled=True,
+            bot_token="12345:token",
+            allowlist=[_CHAT_ID],
+            session_resume_hmac_secret=_SECRET,
+        )
+        first = TelegramAdapter(
+            config,
+            session_store=_make_store({}),
+            active_session_context=ActiveSessionContextService(context_path),
+        )
+        event = _make_event(text="/new")
+        assert first.start_new_session(event) is not None
+        first.clear_active_session(_CHAT_ID)
+
+        restarted = TelegramAdapter(
+            config,
+            session_store=_make_store({}),
+            active_session_context=ActiveSessionContextService(context_path),
+        )
+        assert restarted.get_active_session(_CHAT_ID) is None

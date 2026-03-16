@@ -34,6 +34,10 @@ from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard
 from assistant.channels.telegram.session_resume import SessionResumeService
 from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.session_context import (
+    ActiveSessionContextInterface,
+    ActiveSessionContextService,
+)
 from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
@@ -63,6 +67,8 @@ class TelegramAdapter:
     Pass a SessionStoreInterface to enable the guided session-resume flow:
     users can list recent sessions and switch the active session via signed
     inline keyboard callbacks.
+    Active session routing is delegated to ActiveSessionContextInterface so
+    the selected session can survive process restarts.
     """
 
     def __init__(
@@ -70,9 +76,11 @@ class TelegramAdapter:
         config: TelegramChannelConfig,
         transcription_service: VoiceTranscriptionService | None = None,
         session_store: SessionStoreInterface | None = None,
+        active_session_context: ActiveSessionContextInterface | None = None,
     ) -> None:
         self._config = config
         self._session_store = session_store
+        self._active_session_context = active_session_context or ActiveSessionContextService()
         guard = AllowlistGuard(config.allowlist)
         audit_logger = ChannelAuditLogger()
         throttle_guard = ChannelThrottleGuard(max_per_window=config.throttle_max_per_minute)
@@ -94,8 +102,6 @@ class TelegramAdapter:
                 hmac_secret=secret,
                 max_sessions=config.session_resume_max_sessions,
             )
-        # chat_id -> active session_id override (in-memory, resets on restart)
-        self._active_sessions: dict[int, str] = {}
         self._memory_confirmation_tokens: dict[str, _MemoryConfirmationToken] = {}
 
     def process_update(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
@@ -293,7 +299,9 @@ class TelegramAdapter:
         if chat_id <= 0:
             return None
         session_id = f"tg:{chat_id}:{uuid.uuid4().hex[:12]}"
-        self._active_sessions[chat_id] = session_id
+        self._active_session_context.set_active_session(
+            self._build_session_context_id(chat_id), session_id
+        )
         logger.info(
             "telegram.adapter.session_new.activated",
             chat_id=chat_id,
@@ -345,7 +353,7 @@ class TelegramAdapter:
         Process a signed session-resume callback and update the active session for the chat.
 
         Returns the selected session_id on success, None if the payload is invalid.
-        The active session persists in memory for subsequent events from the same chat.
+        The active session is stored in the configured session-context service.
         """
         if self._session_resume is None or event.callback_query is None:
             return None
@@ -360,7 +368,9 @@ class TelegramAdapter:
             )
             return None
         if chat_id:
-            self._active_sessions[chat_id] = session_id
+            self._active_session_context.set_active_session(
+                self._build_session_context_id(chat_id), session_id
+            )
             logger.info(
                 "telegram.adapter.session_resume.activated",
                 chat_id=chat_id,
@@ -371,17 +381,23 @@ class TelegramAdapter:
 
     def get_active_session(self, chat_id: int) -> str | None:
         """Return the currently active session override for the given chat, or None."""
-        return self._active_sessions.get(chat_id)
+        if chat_id <= 0:
+            return None
+        return self._active_session_context.get_active_session(
+            self._build_session_context_id(chat_id)
+        )
 
     def clear_active_session(self, chat_id: int) -> None:
         """Remove any active session override for the given chat."""
-        self._active_sessions.pop(chat_id, None)
+        if chat_id <= 0:
+            return
+        self._active_session_context.clear_active_session(self._build_session_context_id(chat_id))
 
     def _apply_session_context(self, event: NormalizedEvent | None) -> NormalizedEvent | None:
         if event is None:
             return None
         chat_id = int(event.metadata.get("chat_id", 0))
-        active = self._active_sessions.get(chat_id) if chat_id else None
+        active = self.get_active_session(chat_id)
         if active and active != event.session_id:
             return event.model_copy(update={"session_id": active})
         return event
@@ -427,3 +443,6 @@ class TelegramAdapter:
         expired = [k for k, v in self._memory_confirmation_tokens.items() if v.expires_at <= now]
         for key in expired:
             self._memory_confirmation_tokens.pop(key, None)
+
+    def _build_session_context_id(self, chat_id: int) -> str:
+        return f"telegram:{chat_id}"
