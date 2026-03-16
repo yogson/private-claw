@@ -57,6 +57,28 @@ Tool definition schema (`config/tools.yaml`):
 
 To restrict the general-purpose agent from using `gh` while allowing a specialized "github ops" agent: keep `shell_execute_allowlisted` enabled in `tools.yaml`, omit it from `assistant`, and add it only in a `github-ops` capability. Enable `assistant` for the general agent; enable `assistant` + `github-ops` for the specialized one.
 
+### macOS Personal Capability
+
+The **macos_personal** capability (`config/capabilities/macos_personal.yaml`) exposes Notes and Reminders tools. It is opt-in and disabled by default.
+
+**Tool IDs** (in `config/tools.yaml`):
+
+- `macos_notes_read` – list recent Notes (name, body)
+- `macos_notes_write` – create a Note (title, body)
+- `macos_reminders_read` – list Reminders (name, body, due_date)
+- `macos_reminders_write` – create a Reminder (title, body, list_name, due_date)
+
+**Activation**: Add `macos_personal` to `enabled_capabilities` in `config/capabilities.yaml`:
+
+```yaml
+enabled_capabilities:
+  - assistant
+  - macos_personal
+denied_capabilities: []
+```
+
+**Platform**: Tools return `rejected_platform` on non-macOS (non-darwin) systems. On macOS, they invoke AppleScript via `osascript` with bounded timeouts.
+
 Capability definition schema (`config/capabilities/*.yaml`):
 - `capability_id`: stable identifier (e.g. `assistant`, `omnichem-deploy`).
 - `prompt`: optional system prompt fragment appended for this capability.

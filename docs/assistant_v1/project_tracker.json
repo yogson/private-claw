@@ -574,16 +574,22 @@
           "status": "implemented",
           "started_date": "2026-03-15",
           "completed_date": "2026-03-15",
-          "notes": "Web search (Tavily) pre-existing. Shell policy wrappers: cap.shell.execute.readonly (built-in allowlist: ls, cat, pwd, etc.) and cap.shell.execute.allowlisted (config command_allowlist). gh usable via command_allowlist. macOS bridges deferred.",
+          "notes": "Web search (Tavily) pre-existing. Shell policy wrappers: cap.shell.execute.readonly (built-in allowlist: ls, cat, pwd, etc.) and cap.shell.execute.allowlisted (config command_allowlist). gh usable via command_allowlist. macOS bridges: Notes and Reminders read/write via macos_personal capability (opt-in, AppleScript/osascript).",
           "files_delivered": [
             "src/assistant/agent/tools/shell_execute.py",
             "src/assistant/agent/tools/deps.py",
             "src/assistant/agent/tools/registry.py",
+            "src/assistant/agent/tools/macos_tools.py",
             "src/assistant/core/orchestrator/service.py",
             "plugins/capabilities/shell_readonly/manifest.yaml",
             "plugins/capabilities/shell_allowlisted/manifest.yaml",
+            "config/tools.yaml",
             "config/capabilities.yaml",
-            "tests/assistant/agent/tools/test_shell_execute.py"
+            "config/capabilities/macos_personal.yaml",
+            "tests/assistant/agent/tools/test_shell_execute.py",
+            "tests/assistant/agent/tools/test_macos_tools.py",
+            "tests/assistant/core/test_bootstrap.py",
+            "docs/assistant_v1/domains/capabilities.md"
           ]
         },
         {

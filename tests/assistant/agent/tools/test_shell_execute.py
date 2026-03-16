@@ -485,7 +485,9 @@ def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tool
         app=AppConfig(data_root="/tmp", timezone="UTC"),
         telegram=TelegramChannelConfig(),
         model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
-        capabilities=CapabilitiesPolicyConfig(enabled_capabilities=["assistant"], denied_capabilities=[]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant"], denied_capabilities=[]
+        ),
         tools=ToolsConfig(
             tools=[
                 ToolDefinition(
@@ -538,7 +540,9 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
         app=AppConfig(data_root="/tmp", timezone="UTC"),
         telegram=TelegramChannelConfig(),
         model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
-        capabilities=CapabilitiesPolicyConfig(enabled_capabilities=["assistant"], denied_capabilities=[]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["assistant"], denied_capabilities=[]
+        ),
         tools=ToolsConfig(
             tools=[
                 ToolDefinition(

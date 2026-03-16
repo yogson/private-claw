@@ -170,3 +170,54 @@ def test_bootstrap_fails_when_tool_entrypoint_invalid(config_dir: Path) -> None:
     )
     with pytest.raises(SystemExit, match="failed to resolve"):
         bootstrap(config_dir)
+
+
+def test_bootstrap_succeeds_with_macos_personal_capability(config_dir: Path) -> None:
+    """Bootstrap succeeds when macos_personal capability and tools are correctly configured."""
+    (config_dir / "capabilities" / "macos_personal.yaml").write_text(
+        yaml.dump(
+            {
+                "capability_id": "macos_personal",
+                "prompt": "",
+                "tools": [
+                    {"tool_id": "macos_notes_read", "enabled": True},
+                    {"tool_id": "macos_notes_write", "enabled": True},
+                    {"tool_id": "macos_reminders_read", "enabled": True},
+                    {"tool_id": "macos_reminders_write", "enabled": True},
+                ],
+            }
+        )
+    )
+    with open(config_dir / "capabilities.yaml") as f:
+        cap_data = yaml.safe_load(f)
+    cap_data["enabled_capabilities"].append("macos_personal")
+    (config_dir / "capabilities.yaml").write_text(yaml.dump(cap_data))
+    with open(config_dir / "tools.yaml") as f:
+        tools_data = yaml.safe_load(f)
+    tools_data["tools"].extend(
+        [
+            {
+                "tool_id": "macos_notes_read",
+                "entrypoint": "assistant.agent.tools.macos_tools:macos_notes_read",
+                "enabled": True,
+            },
+            {
+                "tool_id": "macos_notes_write",
+                "entrypoint": "assistant.agent.tools.macos_tools:macos_notes_write",
+                "enabled": True,
+            },
+            {
+                "tool_id": "macos_reminders_read",
+                "entrypoint": "assistant.agent.tools.macos_tools:macos_reminders_read",
+                "enabled": True,
+            },
+            {
+                "tool_id": "macos_reminders_write",
+                "entrypoint": "assistant.agent.tools.macos_tools:macos_reminders_write",
+                "enabled": True,
+            },
+        ]
+    )
+    (config_dir / "tools.yaml").write_text(yaml.dump(tools_data))
+    cfg = bootstrap(config_dir)
+    assert isinstance(cfg, RuntimeConfig)

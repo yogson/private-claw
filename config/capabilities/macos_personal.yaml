@@ -1,0 +1,19 @@
+# macOS personal integration: Notes and Reminders read/write.
+# Opt-in: add macos_personal to enabled_capabilities in config/capabilities.yaml.
+# Requires macOS (darwin); tools return rejected_platform on other OS.
+
+capability_id: macos_personal
+prompt: |
+  When the user asks to read or create Notes or Reminders, use the macOS tools.
+  For Notes: macos_notes_read lists recent notes; macos_notes_write creates a note with title and body.
+  For Reminders: macos_reminders_read lists reminders; macos_reminders_write creates a reminder with title, optional body, list_name, and due_date.
+  Ask for clarification if required fields (e.g. title) are missing.
+tools:
+  - tool_id: macos_notes_read
+    enabled: true
+  - tool_id: macos_notes_write
+    enabled: true
+  - tool_id: macos_reminders_read
+    enabled: true
+  - tool_id: macos_reminders_write
+    enabled: true

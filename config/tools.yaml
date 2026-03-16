@@ -45,3 +45,19 @@ tools:
   - tool_id: web_search
     entrypoint: assistant.agent.tools.tavily_search:get_tavily_search_tool
     enabled: true
+
+  - tool_id: macos_notes_read
+    entrypoint: assistant.agent.tools.macos_tools:macos_notes_read
+    enabled: true
+
+  - tool_id: macos_notes_write
+    entrypoint: assistant.agent.tools.macos_tools:macos_notes_write
+    enabled: true
+
+  - tool_id: macos_reminders_read
+    entrypoint: assistant.agent.tools.macos_tools:macos_reminders_read
+    enabled: true
+
+  - tool_id: macos_reminders_write
+    entrypoint: assistant.agent.tools.macos_tools:macos_reminders_write
+    enabled: true
