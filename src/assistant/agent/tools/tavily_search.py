@@ -6,11 +6,12 @@ Uses TAVILY_API_KEY from environment. Tool is only registered when key is set.
 """
 
 import os
+from typing import Any
 
 from pydantic_ai.common_tools.tavily import tavily_search_tool
 
 
-def get_tavily_search_tool():
+def get_tavily_search_tool() -> Any | None:
     """Return Tavily search tool if TAVILY_API_KEY is set, else None."""
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:

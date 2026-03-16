@@ -8,6 +8,7 @@ from assistant.core.config.loader import ConfigLoader
 from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesConfig,
+    CommandAllowlistEntry,
     McpServersConfig,
     ModelConfig,
     RuntimeConfig,
@@ -19,6 +20,7 @@ from assistant.core.config.schemas import (
 __all__ = [
     "AppConfig",
     "CapabilitiesConfig",
+    "CommandAllowlistEntry",
     "ConfigLoader",
     "McpServersConfig",
     "ModelConfig",

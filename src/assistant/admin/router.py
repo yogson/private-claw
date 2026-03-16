@@ -101,6 +101,7 @@ _FIELD_DEFS: dict[str, dict[str, Any]] = {
     # capabilities
     "allowed_capabilities": {"type": "textarea", "encoding": "line_list"},
     "denied_capabilities": {"type": "textarea", "encoding": "line_list"},
+    "shell_readonly_commands": {"type": "textarea", "encoding": "line_list"},
     "command_allowlist": {"type": "textarea", "encoding": "line_list"},
     # scheduler
     "tick_seconds": {"type": "number"},

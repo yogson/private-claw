@@ -27,7 +27,12 @@ _ALLOWLISTED_KEYS: dict[str, set[str]] = {
         "startup_drop_pending_updates",
     },
     "model": {"default_model_id", "model_allowlist", "quality_routing", "max_tokens_default"},
-    "capabilities": {"allowed_capabilities", "denied_capabilities", "command_allowlist"},
+    "capabilities": {
+        "allowed_capabilities",
+        "denied_capabilities",
+        "shell_readonly_commands",
+        "command_allowlist",
+    },
     "scheduler": {"tick_seconds", "max_lateness_seconds", "max_jobs"},
     "store": {"lock_ttl_seconds", "idempotency_retention_seconds"},
 }

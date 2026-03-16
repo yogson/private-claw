@@ -97,12 +97,43 @@ class ModelConfig(BaseModel):
         return self
 
 
+class CommandAllowlistEntry(BaseModel):
+    """Single command template for cap.shell.execute.allowlisted."""
+
+    id: str
+    command_pattern: str
+    allowed_args_pattern: str = ".*"
+    max_timeout_seconds: int = Field(default=30, ge=1)
+
+
 class CapabilitiesConfig(BaseModel):
     """Capabilities and skills configuration (config/capabilities.yaml)."""
 
     allowed_capabilities: list[str]
     denied_capabilities: list[str] = Field(default_factory=list)
-    command_allowlist: list[str] = Field(default_factory=list)
+    command_allowlist: list[CommandAllowlistEntry] = Field(default_factory=list)
+    shell_readonly_commands: list[str] = Field(default_factory=list)
+
+    @field_validator("command_allowlist", mode="before")
+    @classmethod
+    def _coerce_command_allowlist(cls, v: object) -> list[CommandAllowlistEntry]:
+        """Accept legacy list[str] as command_pattern-only entries."""
+        if not isinstance(v, list):
+            return []
+        result: list[CommandAllowlistEntry] = []
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                result.append(
+                    CommandAllowlistEntry(
+                        id=item.strip().lower(),
+                        command_pattern=item.strip(),
+                        allowed_args_pattern=".*",
+                        max_timeout_seconds=30,
+                    )
+                )
+            elif isinstance(item, dict):
+                result.append(CommandAllowlistEntry(**item))
+        return result
 
 
 class McpServerEntry(BaseModel):

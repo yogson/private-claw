@@ -571,10 +571,20 @@
           "name": "First-party Capability Set and Skill Wrappers [CMP_TOOL_RUNTIME_REGISTRY]",
           "description": "Implement first-party web research, shell wrappers, macOS bridges, and gh integration capabilities.",
           "scope_path": "src/assistant/extensions/first_party/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-15",
+          "completed_date": "2026-03-15",
+          "notes": "Web search (Tavily) pre-existing. Shell policy wrappers: cap.shell.execute.readonly (built-in allowlist: ls, cat, pwd, etc.) and cap.shell.execute.allowlisted (config command_allowlist). gh usable via command_allowlist. macOS bridges deferred.",
+          "files_delivered": [
+            "src/assistant/agent/tools/shell_execute.py",
+            "src/assistant/agent/tools/deps.py",
+            "src/assistant/agent/tools/registry.py",
+            "src/assistant/core/orchestrator/service.py",
+            "plugins/capabilities/shell_readonly/manifest.yaml",
+            "plugins/capabilities/shell_allowlisted/manifest.yaml",
+            "config/capabilities.yaml",
+            "tests/assistant/agent/tools/test_shell_execute.py"
+          ]
         },
         {
           "id": "5.4",

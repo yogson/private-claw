@@ -139,6 +139,8 @@ class Orchestrator:
             writes_approved=[],
             seen_intent_ids=set(),
             memory_search_handler=self._memory_search if self._memory_retrieval else None,
+            shell_command_allowlist=self._config.capabilities.command_allowlist,
+            shell_readonly_commands=self._config.capabilities.shell_readonly_commands,
         )
         response_text, new_msgs, usage = await adapter.run_turn(
             messages=msg_dicts,

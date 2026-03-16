@@ -1,0 +1,10 @@
+capability_id: cap.shell.execute.readonly
+version: 1.0.0
+entrypoint: assistant.agent.tools.shell_execute:shell_execute_readonly
+capabilities:
+  - cap.shell.execute.readonly
+permissions:
+  read_only: true
+  side_effecting: false
+  requires_confirmation: false
+  timeout_seconds: 30

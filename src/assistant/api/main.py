@@ -287,6 +287,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pydantic_ai_adapter = PydanticAITurnAdapter(
             model_id=model_id,
             max_tokens=runtime_config.model.max_tokens_default,
+            config=runtime_config,
         )
 
         orchestrator = Orchestrator(
