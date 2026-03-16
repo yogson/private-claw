@@ -24,11 +24,7 @@ _MAX_TIMEOUT_SECONDS = 30
 
 def _get_tool_params(deps: TurnDeps, tool_id: str) -> dict[str, Any]:
     """Get merged params for tool from tool_runtime_params."""
-    params = (deps.tool_runtime_params or {}).get(tool_id, {})
-    return {
-        "shell_readonly_commands": params.get("shell_readonly_commands", []),
-        "command_allowlist": params.get("command_allowlist", []),
-    }
+    return (deps.tool_runtime_params or {}).get(tool_id, {})
 
 
 def _normalize_allowlist(

@@ -130,14 +130,16 @@ def _coerce_command_allowlist(v: object) -> list[CommandAllowlistEntry]:
 class ToolDefaultParams(BaseModel):
     """Default params for tools, merged with capability-level overrides."""
 
-    shell_readonly_commands: list[str] = Field(default_factory=list)
-    command_allowlist: list[CommandAllowlistEntry] = Field(default_factory=list)
-    default_timeout_seconds: int = Field(default=15, ge=1)
-    max_timeout_seconds: int = Field(default=30, ge=1)
+    shell_readonly_commands: list[str] | None = None
+    command_allowlist: list[CommandAllowlistEntry] | None = None
+    default_timeout_seconds: int | None = Field(default=None, ge=1)
+    max_timeout_seconds: int | None = Field(default=None, ge=1)
 
     @field_validator("command_allowlist", mode="before")
     @classmethod
-    def _coerce_command_allowlist(cls, v: object) -> list[CommandAllowlistEntry]:
+    def _coerce_command_allowlist(cls, v: object) -> list[CommandAllowlistEntry] | None:
+        if v is None:
+            return None
         return _coerce_command_allowlist(v)
 
 
@@ -147,7 +149,7 @@ class ToolDefinition(BaseModel):
     tool_id: str
     entrypoint: str
     enabled: bool = True
-    default_params: ToolDefaultParams = Field(default_factory=ToolDefaultParams)
+    default_params: ToolDefaultParams | None = None
 
     @field_validator("entrypoint")
     @classmethod

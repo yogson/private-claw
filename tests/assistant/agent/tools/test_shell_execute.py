@@ -452,3 +452,125 @@ def test_get_agent_tools_excludes_denied_capability(
     tool_names = [getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_allowlisted" not in tool_names
     assert "shell_execute_readonly" in tool_names
+
+
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tools(
+    mock_load_caps: MagicMock,
+) -> None:
+    """Non-shell tools should not receive shell-specific default params implicitly."""
+    from assistant.agent.tools.registry import build_tool_runtime_params
+    from assistant.core.capabilities.schemas import CapabilityDefinition, CapabilityToolBinding
+    from assistant.core.config.schemas import (
+        AppConfig,
+        CapabilitiesPolicyConfig,
+        McpServersConfig,
+        ModelConfig,
+        RuntimeConfig,
+        SchedulerConfig,
+        StoreConfig,
+        TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
+    )
+
+    mock_load_caps.return_value = {
+        "assistant": CapabilityDefinition(
+            capability_id="assistant",
+            prompt="",
+            tools=[CapabilityToolBinding(tool_id="memory_search", enabled=True)],
+        )
+    }
+    config = RuntimeConfig(
+        app=AppConfig(data_root="/tmp", timezone="UTC"),
+        telegram=TelegramChannelConfig(),
+        model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
+        capabilities=CapabilitiesPolicyConfig(enabled_capabilities=["assistant"], denied_capabilities=[]),
+        tools=ToolsConfig(
+            tools=[
+                ToolDefinition(
+                    tool_id="memory_search",
+                    entrypoint="assistant.agent.tools.memory_search:memory_search",
+                    enabled=True,
+                )
+            ]
+        ),
+        mcp_servers=McpServersConfig(),
+        scheduler=SchedulerConfig(),
+        store=StoreConfig(),
+    )
+
+    params = build_tool_runtime_params(config)
+    assert params["memory_search"] == {}
+
+
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
+    mock_load_caps: MagicMock,
+) -> None:
+    """Shell tools keep only their explicitly configured params."""
+    from assistant.agent.tools.registry import build_tool_runtime_params
+    from assistant.core.capabilities.schemas import CapabilityDefinition, CapabilityToolBinding
+    from assistant.core.config.schemas import (
+        AppConfig,
+        CapabilitiesPolicyConfig,
+        McpServersConfig,
+        ModelConfig,
+        RuntimeConfig,
+        SchedulerConfig,
+        StoreConfig,
+        TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
+    )
+
+    mock_load_caps.return_value = {
+        "assistant": CapabilityDefinition(
+            capability_id="assistant",
+            prompt="",
+            tools=[
+                CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=True),
+                CapabilityToolBinding(tool_id="shell_execute_allowlisted", enabled=True),
+            ],
+        )
+    }
+    config = RuntimeConfig(
+        app=AppConfig(data_root="/tmp", timezone="UTC"),
+        telegram=TelegramChannelConfig(),
+        model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
+        capabilities=CapabilitiesPolicyConfig(enabled_capabilities=["assistant"], denied_capabilities=[]),
+        tools=ToolsConfig(
+            tools=[
+                ToolDefinition(
+                    tool_id="shell_execute_readonly",
+                    entrypoint="assistant.agent.tools.shell_execute:shell_execute_readonly",
+                    enabled=True,
+                    default_params={"shell_readonly_commands": ["ls", "pwd"]},
+                ),
+                ToolDefinition(
+                    tool_id="shell_execute_allowlisted",
+                    entrypoint="assistant.agent.tools.shell_execute:shell_execute_allowlisted",
+                    enabled=True,
+                    default_params={
+                        "command_allowlist": [{"id": "echo", "command_pattern": "echo"}]
+                    },
+                ),
+            ]
+        ),
+        mcp_servers=McpServersConfig(),
+        scheduler=SchedulerConfig(),
+        store=StoreConfig(),
+    )
+
+    params = build_tool_runtime_params(config)
+    assert params["shell_execute_readonly"] == {"shell_readonly_commands": ["ls", "pwd"]}
+    assert params["shell_execute_allowlisted"] == {
+        "command_allowlist": [
+            {
+                "id": "echo",
+                "command_pattern": "echo",
+                "allowed_args_pattern": ".*",
+                "max_timeout_seconds": 30,
+            }
+        ]
+    }

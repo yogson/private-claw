@@ -7,23 +7,14 @@ tools:
   - tool_id: memory_search
     entrypoint: assistant.agent.tools.memory_search:memory_search
     enabled: true
-    default_params:
-      shell_readonly_commands: []
-      command_allowlist: []
 
   - tool_id: memory_propose_update
     entrypoint: assistant.agent.tools.memory_propose_update:memory_propose_update
     enabled: true
-    default_params:
-      shell_readonly_commands: []
-      command_allowlist: []
 
   - tool_id: ask_question
     entrypoint: assistant.agent.tools.ask_question:ask_question
     enabled: true
-    default_params:
-      shell_readonly_commands: []
-      command_allowlist: []
 
   - tool_id: shell_execute_readonly
     entrypoint: assistant.agent.tools.shell_execute:shell_execute_readonly
@@ -44,18 +35,13 @@ tools:
         - wc
         - which
         - whoami
-      command_allowlist: []
 
   - tool_id: shell_execute_allowlisted
     entrypoint: assistant.agent.tools.shell_execute:shell_execute_allowlisted
     enabled: true
     default_params:
-      shell_readonly_commands: []
       command_allowlist: []
 
   - tool_id: web_search
     entrypoint: assistant.agent.tools.tavily_search:get_tavily_search_tool
     enabled: true
-    default_params:
-      shell_readonly_commands: []
-      command_allowlist: []

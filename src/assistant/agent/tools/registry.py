@@ -51,7 +51,11 @@ def build_tool_runtime_params(config: RuntimeConfig) -> dict[str, dict[str, Any]
         definition = tool_defs.get(tool_id)
         if definition is None:
             continue
-        params = definition.default_params.model_dump()
+        params = (
+            definition.default_params.model_dump(exclude_none=True)
+            if definition.default_params is not None
+            else {}
+        )
         for cap_id in enabled:
             cap_def = definitions.get(cap_id)
             if cap_def is None:
