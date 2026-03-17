@@ -16,7 +16,7 @@ from assistant.extensions.first_party.memory import (
     canonicalize_memory_args,
     memory_propose_update,
 )
-from assistant.memory.write.service import MemoryWriteService
+from assistant.memory.interfaces import MemoryWriterInterface
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import SessionRecord, SessionRecordType, ToolResultPayload
 
@@ -37,7 +37,9 @@ class PendingMemoryConfirmation:
 class MemoryConfirmationService:
     """Reads pending memory intents from session logs and applies user decisions."""
 
-    def __init__(self, sessions: SessionStoreInterface, memory_writer: MemoryWriteService) -> None:
+    def __init__(
+        self, sessions: SessionStoreInterface, memory_writer: MemoryWriterInterface
+    ) -> None:
         self._sessions = sessions
         self._memory_writer = memory_writer
 
@@ -99,6 +101,7 @@ class MemoryConfirmationService:
         session_id: str,
         tool_call_id: str,
         approve: bool,
+        user_id: str | None = None,
     ) -> tuple[bool, str]:
         pending = await self.list_pending(session_id)
         target = next((p for p in pending if p.tool_call_id == tool_call_id), None)
@@ -119,7 +122,8 @@ class MemoryConfirmationService:
             raw_args = json.loads(target.raw_arguments_json)
             raw_args["intent_id"] = tool_call_id
             intent = memory_propose_update(raw_args)
-            audit = self._memory_writer.apply_intent(intent)
+            effective_user_id = user_id if user_id else session_id
+            audit = self._memory_writer.apply_intent(intent, user_id=effective_user_id)
             await self._append_result(
                 session_id=session_id,
                 turn_id=target.turn_id,

@@ -220,6 +220,7 @@ def test_get_agent_tools_included_when_global_and_capability_enabled(
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -259,6 +260,7 @@ def test_get_agent_tools_included_when_global_and_capability_enabled(
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
     tool_names = [getattr(t, "__name__", str(t)) for t in tools]
@@ -279,6 +281,7 @@ def test_get_agent_tools_excluded_when_global_disabled(
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -318,6 +321,7 @@ def test_get_agent_tools_excluded_when_global_disabled(
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
     tool_names = [getattr(t, "__name__", str(t)) for t in tools]
@@ -338,6 +342,7 @@ def test_get_agent_tools_excluded_when_capability_disabled(
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -377,6 +382,7 @@ def test_get_agent_tools_excluded_when_capability_disabled(
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
     tool_names = [getattr(t, "__name__", str(t)) for t in tools]
@@ -397,6 +403,7 @@ def test_get_agent_tools_excludes_denied_capability(
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -447,6 +454,7 @@ def test_get_agent_tools_excludes_denied_capability(
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
     tool_names = [getattr(t, "__name__", str(t)) for t in tools]
@@ -465,6 +473,7 @@ def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tool
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -500,6 +509,7 @@ def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tool
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
 
     params = build_tool_runtime_params(config)
@@ -517,6 +527,7 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -564,6 +575,7 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
 
     params = build_tool_runtime_params(config)

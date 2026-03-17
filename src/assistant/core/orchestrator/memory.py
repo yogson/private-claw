@@ -12,8 +12,8 @@ from assistant.extensions.first_party.memory import (
     MemoryProposalToolCall,
     memory_propose_update,
 )
+from assistant.memory.interfaces import MemoryWriterInterface
 from assistant.memory.write.models import MemoryUpdateIntent, WriteAudit
-from assistant.memory.write.service import MemoryWriteService
 
 MAX_MEMORY_WRITES_PER_TURN = 3
 
@@ -106,7 +106,8 @@ def build_memory_intent_plans(
 
 def apply_approved_memory_intents(
     plans: list[MemoryIntentPlan],
-    memory_writer: MemoryWriteService | None,
+    memory_writer: MemoryWriterInterface | None,
+    user_id: str | None = None,
 ) -> list[MemoryOutcome]:
     """Apply approved memory plans and return normalized outcomes."""
     outcomes: list[MemoryOutcome] = []
@@ -137,7 +138,7 @@ def apply_approved_memory_intents(
             )
             continue
         try:
-            audit: WriteAudit = memory_writer.apply_intent(plan.intent)
+            audit: WriteAudit = memory_writer.apply_intent(plan.intent, user_id=user_id)
         except Exception as exc:
             outcomes.append(
                 (

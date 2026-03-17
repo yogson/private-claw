@@ -17,6 +17,7 @@ from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesPolicyConfig,
     McpServersConfig,
+    MemoryConfig,
     ModelConfig,
     RuntimeConfig,
     SchedulerConfig,
@@ -41,6 +42,7 @@ _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
     "mcp_servers": ("mcp_servers.yaml", McpServersConfig, "ASSISTANT_MCP"),
     "scheduler": ("scheduler.yaml", SchedulerConfig, "ASSISTANT_SCHEDULER"),
     "store": ("store.yaml", StoreConfig, "ASSISTANT_STORE"),
+    "memory": ("memory.yaml", MemoryConfig, "ASSISTANT_MEMORY"),
 }
 
 

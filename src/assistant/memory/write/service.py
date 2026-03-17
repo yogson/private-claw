@@ -44,7 +44,7 @@ class MemoryWriteService:
         self._dedup_enabled = dedup_enabled
         self._seen_intent_ids = load_seen_intent_ids(self._paths.data_root)
 
-    def apply_intent(self, intent: MemoryUpdateIntent) -> WriteAudit:
+    def apply_intent(self, intent: MemoryUpdateIntent, user_id: str | None = None) -> WriteAudit:
         """Apply a memory update intent. Returns audit with status and affected memory_id."""
         if intent.intent_id in self._seen_intent_ids:
             return WriteAudit(

@@ -196,6 +196,7 @@ def minimal_runtime_config(tmp_path: Path) -> RuntimeConfig:
     from assistant.core.config.schemas import (
         AppConfig,
         CapabilitiesPolicyConfig,
+        MemoryConfig,
         ModelConfig,
         SchedulerConfig,
         StoreConfig,
@@ -216,5 +217,6 @@ def minimal_runtime_config(tmp_path: Path) -> RuntimeConfig:
         mcp_servers=McpServersConfig(servers=[], defaults=McpDefaults(), timeouts=McpTimeouts()),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
         config_dir=config_dir,
     )

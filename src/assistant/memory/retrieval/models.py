@@ -12,6 +12,10 @@ from assistant.memory.store.models import MemoryArtifact, MemoryType
 class RetrievalQuery(BaseModel):
     """Query for memory retrieval (INT_ORCH_CONTEXT_BUILD input)."""
 
+    user_id: str | None = Field(
+        default=None,
+        description="User/session scope for retrieval (required for Mem0)",
+    )
     intent_entities: list[str] = Field(default_factory=list, description="Entities from user turn")
     intent_tags: list[str] = Field(default_factory=list, description="Topical tags from user turn")
     intent_types: list[MemoryType] = Field(

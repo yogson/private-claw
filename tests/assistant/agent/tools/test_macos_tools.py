@@ -252,6 +252,7 @@ def test_get_agent_tools_includes_macos_when_capability_enabled(
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -309,6 +310,7 @@ def test_get_agent_tools_includes_macos_when_capability_enabled(
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
     tool_names = [getattr(t, "__name__", str(t)) for t in tools]

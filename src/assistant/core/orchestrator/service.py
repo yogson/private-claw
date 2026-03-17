@@ -38,10 +38,9 @@ from assistant.core.orchestrator.persistence import (
     persist_turn_outcomes,
     persist_turn_terminal_failed,
 )
+from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
 from assistant.memory.retrieval.models import RetrievalQuery
-from assistant.memory.retrieval.service import RetrievalService
 from assistant.memory.store.models import MemoryType
-from assistant.memory.write.service import MemoryWriteService
 from assistant.observability.correlation import reset_trace_id, set_trace_id
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterface
@@ -71,8 +70,8 @@ class Orchestrator:
         config: RuntimeConfig,
         idempotency: IngressIdempotencyService,
         attachment_downloader: AttachmentDownloaderInterface | None = None,
-        memory_writer: MemoryWriteService | None = None,
-        memory_retrieval: RetrievalService | None = None,
+        memory_writer: MemoryWriterInterface | None = None,
+        memory_retrieval: MemoryRetrievalInterface | None = None,
         pydantic_ai_adapter: PydanticAITurnAdapter | None = None,
     ) -> None:
         self._store = store
@@ -137,10 +136,17 @@ class Orchestrator:
             for m in messages
         ]
         tool_params = build_tool_runtime_params(self._config)
+        memory_handler = None
+        if self._memory_retrieval:
+
+            def _handler(q: str, limit: int, mt: list[str] | None) -> dict[str, Any]:
+                return self._memory_search(q, limit, mt, user_id=user_id)
+
+            memory_handler = _handler
         deps = TurnDeps(
             writes_approved=[],
             seen_intent_ids=set(),
-            memory_search_handler=self._memory_search if self._memory_retrieval else None,
+            memory_search_handler=memory_handler,
             tool_runtime_params=tool_params,
         )
         response_text, new_msgs, usage = await adapter.run_turn(
@@ -210,7 +216,9 @@ class Orchestrator:
                 user_id=user_id,
             )
             initial_persisted = True
-            outcomes = apply_approved_memory_intents(memory_plans, self._memory_writer)
+            outcomes = apply_approved_memory_intents(
+                memory_plans, self._memory_writer, user_id=user_id
+            )
             await persist_turn_outcomes(
                 self._store.sessions,
                 session_id=session_id,
@@ -277,7 +285,11 @@ class Orchestrator:
             reset_trace_id(token)
 
     def _memory_search(
-        self, query: str, limit: int, memory_types: list[str] | None
+        self,
+        query: str,
+        limit: int,
+        memory_types: list[str] | None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         if self._memory_retrieval is None:
             return {
@@ -292,6 +304,7 @@ class Orchestrator:
             except ValueError:
                 continue
         retrieval_query = RetrievalQuery(
+            user_id=user_id,
             user_query_text=query.strip() if query else "",
             intent_types=intent_types,
         )

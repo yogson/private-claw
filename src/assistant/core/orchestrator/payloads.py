@@ -6,6 +6,7 @@ Payload helpers for user input extraction and multimodal attachment packaging.
 
 import base64
 import json
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -54,6 +55,31 @@ _TEXT_ATTACHMENT_EXTENSIONS = frozenset(
     }
 )
 _FALLBACK_MIME_TYPE = "application/octet-stream"
+_DEBUG_LOG = Path(__file__).resolve().parents[4] / ".cursor" / "debug-2322a9.log"
+
+
+def _debug_log_ask_question_args(tool_name: str, args: dict[str, Any]) -> None:
+    if tool_name != "ask_question":
+        return
+    opts = args.get("options")
+    if opts is not None and isinstance(opts, str):
+        try:
+            with open(_DEBUG_LOG, "a") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "2322a9",
+                            "hypothesisId": "H2",
+                            "location": "payloads.py:records_to_messages",
+                            "message": "ask_question options from history is string",
+                            "data": {"source": "history_replay"},
+                            "timestamp": __import__("time").time_ns() // 1_000_000,
+                        }
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
 
 
 def extract_user_text(event: OrchestratorEvent) -> str:
@@ -257,6 +283,7 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                     args = json.loads(args_json)
                 except json.JSONDecodeError:
                     args = {}
+                _debug_log_ask_question_args(tc.payload.get("tool_name", ""), args)
                 blocks.append(
                     {
                         "type": "tool_use",
@@ -292,6 +319,7 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                     args = json.loads(args_json)
                 except json.JSONDecodeError:
                     args = {}
+                _debug_log_ask_question_args(tc.payload.get("tool_name", ""), args)
                 blocks.append(
                     {
                         "type": "tool_use",
@@ -311,25 +339,29 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                 )
             i = j
         elif record.record_type == SessionRecordType.TOOL_RESULT:
-            blocks = []
+            # Collect consecutive TOOL_RESULT records, deduplicating by tool_call_id.
+            # Memory confirmation flow appends a second result for the same tool_call_id
+            # after user confirms; Anthropic requires exactly one tool_result per tool_use.
+            # Keep the last result per tool_call_id (definitive outcome).
+            seen: dict[str, dict[str, Any]] = {}
             j = i
             while j < len(records) and records[j].record_type == SessionRecordType.TOOL_RESULT:
                 tr = records[j]
+                tid = tr.payload.get("tool_call_id", "")
                 result = tr.payload.get("result")
                 error = tr.payload.get("error")
                 content_str = (
                     json.dumps(result, separators=(",", ":")) if result is not None else ""
                 )
-                blocks.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tr.payload.get("tool_call_id", ""),
-                        "tool_name": tr.payload.get("tool_name", ""),
-                        "content": content_str,
-                        "is_error": error is not None,
-                    }
-                )
+                seen[tid] = {
+                    "type": "tool_result",
+                    "tool_use_id": tid,
+                    "tool_name": tr.payload.get("tool_name", ""),
+                    "content": content_str,
+                    "is_error": error is not None,
+                }
                 j += 1
+            blocks = list(seen.values())
             if blocks:
                 messages.append(
                     LLMMessage(

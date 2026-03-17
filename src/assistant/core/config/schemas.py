@@ -226,6 +226,22 @@ class StoreBackend(StrEnum):
     FILESYSTEM = "filesystem"
 
 
+class MemoryConfig(BaseModel):
+    """Mem0 Platform memory configuration (config/memory.yaml).
+
+    api_key is required when Mem0 is the active memory backend.
+    Env override prefix: ASSISTANT_MEMORY_
+    """
+
+    api_key: str = Field(default="", description="Mem0 Platform API key")
+    default_user_id: str = Field(
+        default="default",
+        description="Fallback user_id when session has no user_id",
+    )
+    org_id: str | None = Field(default=None, description="Mem0 org ID (optional)")
+    project_id: str | None = Field(default=None, description="Mem0 project ID (optional)")
+
+
 class StoreConfig(BaseModel):
     """Store / persistence configuration (config/store.yaml)."""
 
@@ -246,4 +262,5 @@ class RuntimeConfig(BaseModel):
     mcp_servers: McpServersConfig
     scheduler: SchedulerConfig
     store: StoreConfig
+    memory: MemoryConfig
     config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution

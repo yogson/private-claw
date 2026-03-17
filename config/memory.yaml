@@ -1,0 +1,8 @@
+# Mem0 Platform memory configuration
+# Environment override prefix: ASSISTANT_MEMORY_
+# Required: Set api_key via ASSISTANT_MEMORY_API_KEY or configure below
+
+api_key: ""
+default_user_id: "default"
+# org_id: null
+# project_id: null

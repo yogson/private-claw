@@ -32,6 +32,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         RuntimeConfig,
         SchedulerConfig,
@@ -52,6 +53,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
 
     with patch("assistant.core.bootstrap.bootstrap", return_value=fake_config):

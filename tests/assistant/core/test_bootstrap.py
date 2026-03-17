@@ -48,6 +48,7 @@ def config_dir(tmp_path: Path) -> Path:
             "retry_policy": {"max_attempts": 3, "backoff_seconds": 60},
         },
         "store.yaml": {"backend": "filesystem", "lock_ttl_seconds": 30, "atomic_write": True},
+        "memory.yaml": {"api_key": "test", "default_user_id": "default"},
     }
     for filename, data in files.items():
         (tmp_path / filename).write_text(yaml.dump(data))

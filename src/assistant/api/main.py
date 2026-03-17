@@ -32,8 +32,7 @@ from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session_context import ActiveSessionContextService
-from assistant.memory.retrieval.service import RetrievalService
-from assistant.memory.write.service import MemoryWriteService
+from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
@@ -147,6 +146,7 @@ def _build_orchestrator_handler(
                 session_id=mem_session_id,
                 tool_call_id=mem_tool_call_id,
                 approve=approve,
+                user_id=event.user_id,
             )
             return ChannelResponse(
                 response_id=str(uuid.uuid4()),
@@ -261,9 +261,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             store.idempotency,
             default_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
         )
-        memory_retrieval = RetrievalService(data_root)
-        memory_retrieval.ensure_indexes()
-        memory_writer = MemoryWriteService(data_root)
+        if not runtime_config.memory.api_key.strip():
+            raise SystemExit(
+                "Mem0 api_key is required. Set ASSISTANT_MEMORY_API_KEY or "
+                "configure api_key in config/memory.yaml"
+            ) from None
+        memory_writer = Mem0MemoryWriteService(runtime_config.memory, data_root=data_root)
+        memory_retrieval = Mem0RetrievalService(runtime_config.memory)
         memory_confirmations = MemoryConfirmationService(store.sessions, memory_writer)
         attachment_downloader = TelegramFileDownloader(
             bot_token=runtime_config.telegram.bot_token,

@@ -2,7 +2,10 @@
 
 from unittest.mock import MagicMock
 
-from assistant.agent.tools.ask_question import ask_question
+from assistant.agent.tools.ask_question import (
+    _coerce_options_list,
+    ask_question,
+)
 from assistant.agent.tools.deps import TurnDeps
 
 
@@ -42,3 +45,12 @@ def test_ask_question_rejects_allow_multiple() -> None:
 
     assert result["status"] == "rejected_invalid"
     assert "allow_multiple" in result["reason"].lower()
+
+
+def test_coerce_options_list_parses_json_string() -> None:
+    """_coerce_options_list parses JSON string when LLM returns string instead of array."""
+    assert _coerce_options_list(["A", "B"]) == ["A", "B"]
+    assert _coerce_options_list('["A", "B"]') == ["A", "B"]
+    assert _coerce_options_list('["Амадеус", "Бетховен"]') == ["Амадеус", "Бетховен"]
+    assert _coerce_options_list("[]") == []
+    assert _coerce_options_list("invalid") == []

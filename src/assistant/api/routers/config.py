@@ -31,6 +31,7 @@ _ALLOWLISTED_KEYS: dict[str, set[str]] = {
     "tools": {"tools"},
     "scheduler": {"tick_seconds", "max_lateness_seconds", "max_jobs"},
     "store": {"lock_ttl_seconds", "idempotency_retention_seconds"},
+    "memory": {"default_user_id", "org_id", "project_id"},
 }
 
 _FILENAME_MAP: dict[str, str] = {
@@ -42,6 +43,7 @@ _FILENAME_MAP: dict[str, str] = {
     "mcp_servers": "mcp_servers.yaml",
     "scheduler": "scheduler.yaml",
     "store": "store.yaml",
+    "memory": "memory.yaml",
 }
 
 
@@ -88,6 +90,7 @@ def _domain_schema(domain: str) -> type[BaseModel] | None:
         AppConfig,
         CapabilitiesPolicyConfig,
         McpServersConfig,
+        MemoryConfig,
         ModelConfig,
         SchedulerConfig,
         StoreConfig,
@@ -104,6 +107,7 @@ def _domain_schema(domain: str) -> type[BaseModel] | None:
         "mcp_servers": McpServersConfig,
         "scheduler": SchedulerConfig,
         "store": StoreConfig,
+        "memory": MemoryConfig,
     }
     return mapping.get(domain)
 

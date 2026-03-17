@@ -32,6 +32,7 @@ VALID_TOOLS = {
 VALID_MCP = {"servers": []}
 VALID_SCHEDULER = {"tick_seconds": 10, "retry_policy": {"max_attempts": 3, "backoff_seconds": 60}}
 VALID_STORE = {"backend": "filesystem", "lock_ttl_seconds": 30, "atomic_write": True}
+VALID_MEMORY = {"api_key": "test", "default_user_id": "default"}
 
 
 @pytest.fixture()
@@ -46,6 +47,7 @@ def config_dir(tmp_path: Path) -> Path:
         "mcp_servers.yaml": VALID_MCP,
         "scheduler.yaml": VALID_SCHEDULER,
         "store.yaml": VALID_STORE,
+        "memory.yaml": VALID_MEMORY,
     }
     for filename, data in files.items():
         (tmp_path / filename).write_text(yaml.dump(data))

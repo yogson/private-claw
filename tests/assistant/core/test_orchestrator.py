@@ -15,6 +15,7 @@ from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesPolicyConfig,
     McpServersConfig,
+    MemoryConfig,
     ModelConfig,
     RuntimeConfig,
     SchedulerConfig,
@@ -60,6 +61,7 @@ def _runtime_config() -> RuntimeConfig:
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(lock_ttl_seconds=30, idempotency_retention_seconds=86400),
+        memory=MemoryConfig(api_key="test"),
     )
 
 
@@ -302,6 +304,73 @@ class TestRecordsToMessages:
         assert msgs[2].role == MessageRole.USER
         assert msgs[2].content_blocks is not None
         assert any(b.get("type") == "tool_result" for b in msgs[2].content_blocks)
+
+    def test_deduplicates_tool_results_for_same_tool_call_id(self) -> None:
+        """Memory confirmation appends a second TOOL_RESULT for same tool_call_id; emit only last."""
+        records = [
+            SessionRecord(
+                session_id="s1",
+                sequence=0,
+                event_id="e1",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": "m1", "content": "Remember my name"},
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=1,
+                event_id="e2",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+                payload={
+                    "message_id": "m2",
+                    "tool_call_id": "call-1",
+                    "tool_name": "memory_propose_update",
+                    "arguments_json": '{"intent_id":"i1","action":"create"}',
+                },
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=2,
+                event_id="e3",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.TOOL_RESULT,
+                payload={
+                    "message_id": "m3",
+                    "tool_call_id": "call-1",
+                    "tool_name": "memory_propose_update",
+                    "result": {"status": "pending_confirmation", "requires_user_confirmation": True},
+                    "error": None,
+                },
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=3,
+                event_id="e4",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.TOOL_RESULT,
+                payload={
+                    "message_id": "m4",
+                    "tool_call_id": "call-1",
+                    "tool_name": "memory_propose_update",
+                    "result": {"status": "written", "memory_id": "mem-1"},
+                    "error": None,
+                },
+            ),
+        ]
+        msgs = _records_to_messages(records)
+        assert len(msgs) == 3  # user, assistant (tool_use), user (tool_result)
+        tool_result_blocks = [
+            b for b in (msgs[2].content_blocks or []) if b.get("type") == "tool_result"
+        ]
+        assert len(tool_result_blocks) == 1
+        content = json.loads(tool_result_blocks[0]["content"])
+        assert content["status"] == "written"
+        assert content.get("memory_id") == "mem-1"
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesPolicyConfig,
     McpServersConfig,
+    MemoryConfig,
     ModelConfig,
     RuntimeConfig,
     SchedulerConfig,
@@ -39,6 +40,7 @@ def _runtime_config(allowlist: list[int]) -> RuntimeConfig:
         mcp_servers=McpServersConfig(),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
     )
 
 
@@ -48,11 +50,14 @@ def test_startup_calls_build_transcription_service_with_telegram_config() -> Non
     Telegram config during app startup when telegram is enabled.
     """
     config = _runtime_config(allowlist=[123456])
+    mock_mem0_client = MagicMock()
     with (
         patch("assistant.api.main.bootstrap", return_value=config),
         patch("assistant.api.main.build_transcription_service") as mock_factory,
         patch("assistant.api.main.run_polling", new_callable=AsyncMock) as mock_polling,
         patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
+        patch("assistant.memory.mem0.write.MemoryClient", mock_mem0_client),
+        patch("assistant.memory.mem0.retrieval.MemoryClient", mock_mem0_client),
     ):
         from assistant.api.main import app
 
@@ -66,10 +71,13 @@ def test_startup_calls_build_transcription_service_with_telegram_config() -> Non
 def test_startup_starts_polling_when_telegram_enabled() -> None:
     """Verifies run_polling is started as a background task when telegram is enabled."""
     config = _runtime_config(allowlist=[123456])
+    mock_mem0_client = MagicMock()
     with (
         patch("assistant.api.main.bootstrap", return_value=config),
         patch("assistant.api.main.run_polling", new_callable=AsyncMock) as mock_polling,
         patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
+        patch("assistant.memory.mem0.write.MemoryClient", mock_mem0_client),
+        patch("assistant.memory.mem0.retrieval.MemoryClient", mock_mem0_client),
     ):
         from assistant.api.main import app
 
