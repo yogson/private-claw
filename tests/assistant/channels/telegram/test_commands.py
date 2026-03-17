@@ -17,6 +17,7 @@ def test_build_bot_commands_contains_supported_command_set() -> None:
         "/new",
         "/reset",
         "/sessions",
+        "/model",
         "/usage",
     ]
 
@@ -30,6 +31,8 @@ def test_build_bot_commands_contains_supported_command_set() -> None:
         ("/reset", TelegramCommand.RESET),
         ("/sessions", TelegramCommand.SESSIONS),
         ("/sessions@my_bot", TelegramCommand.SESSIONS),
+        ("/model", TelegramCommand.MODEL),
+        ("/model@my_bot", TelegramCommand.MODEL),
         ("/usage", TelegramCommand.USAGE),
         ("/usage@my_bot", TelegramCommand.USAGE),
     ],
@@ -50,6 +53,8 @@ def test_extract_supported_command_matches_known_commands(
         "/unknown",
         "/sessions-extra",
         "/sessions_extra",
+        "/model-extra",
+        "/model_extra",
         "/usage-extra",
     ],
 )

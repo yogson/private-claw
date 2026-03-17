@@ -135,8 +135,11 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     mock_adapter.is_session_reset_available.return_value = True
     mock_adapter.is_session_resume_request.return_value = False
     mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.get_model_override.return_value = None
 
     mock_orchestrator = MagicMock()
     from assistant.core.orchestrator.models import OrchestratorResult
@@ -290,8 +293,11 @@ async def test_handler_returns_interactive_reply_keyboard_when_pending_ask() -> 
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False
     mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.get_model_override.return_value = None
 
     pending_ask = PendingAskData(
         question_id="tc-1",
@@ -392,6 +398,8 @@ async def test_handler_handles_usage_without_orchestrator_call() -> None:
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False
     mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = True
     mock_adapter.is_memory_confirmation_callback.return_value = False
 
@@ -444,6 +452,8 @@ async def test_handler_handles_usage_unavailable_when_no_service() -> None:
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False
     mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = True
     mock_adapter.is_memory_confirmation_callback.return_value = False
 
@@ -455,4 +465,52 @@ async def test_handler_handles_usage_unavailable_when_no_service() -> None:
 
     assert response is not None
     assert response.text == "Usage stats not available."
+    mock_orchestrator.execute_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
+    """Invalid/expired ms: callback returns invalid message, does not reach orchestrator."""
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.channels.telegram.models import CallbackQueryMeta
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-model-cb",
+        event_type=EventType.USER_CALLBACK_QUERY,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-model-cb",
+        text=None,
+        callback_query=CallbackQueryMeta(
+            callback_id="cq1",
+            callback_data="ms:bad:sig",
+            origin_message_id=1,
+            ui_version="1",
+        ),
+        metadata={"chat_id": 123},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = True
+    mock_adapter.is_usage_request.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.handle_model_callback.return_value = None
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock()
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
+    response = await handler(event)
+
+    assert response is not None
+    assert response.text == "Invalid or expired model selection."
+    mock_adapter.handle_model_callback.assert_called_once_with(event)
     mock_orchestrator.execute_turn.assert_not_called()

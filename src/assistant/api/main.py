@@ -31,7 +31,10 @@ from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
-from assistant.core.session_context import ActiveSessionContextService
+from assistant.core.session_context import (
+    ActiveSessionContextService,
+    SessionModelContextService,
+)
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
@@ -121,6 +124,31 @@ def _build_orchestrator_handler(
                 message_type=MessageType.TEXT,
                 text="Invalid or expired session selection.",
             )
+        if adapter.is_model_request(event):
+            chat_id = int(event.metadata.get("chat_id", 0))
+            return await adapter.build_model_menu_response(
+                chat_id, event.session_id, event.trace_id
+            )
+        if adapter.is_model_callback_request(event):
+            model_id = adapter.handle_model_callback(event)
+            if model_id:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text=f"Model set to `{model_id}`. Continue your conversation.",
+                    parse_mode="Markdown",
+                )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Invalid or expired model selection.",
+            )
         if adapter.is_memory_confirmation_callback(event):
             if memory_confirmations is None:
                 return ChannelResponse(
@@ -172,6 +200,10 @@ def _build_orchestrator_handler(
             )
 
         orch_event = mapper.map(event)
+        chat_id = int(event.metadata.get("chat_id", 0))
+        model_override = adapter.get_model_override(chat_id) if chat_id else None
+        if model_override:
+            orch_event = orch_event.model_copy(update={"model_id_override": model_override})
         orch_result = await orchestrator.execute_turn(orch_event)
         if orch_result is None:
             return None
@@ -298,11 +330,17 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         active_session_context = ActiveSessionContextService(
             data_root / "runtime" / "active_session_context.json"
         )
+        model_context = SessionModelContextService(
+            data_root / "runtime" / "active_model_context.json"
+        )
         adapter = TelegramAdapter(
             runtime_config.telegram,
             transcription_service=transcription_service,
             session_store=store.sessions,
             active_session_context=active_session_context,
+            model_context=model_context,
+            model_allowlist=runtime_config.model.model_allowlist,
+            default_model_id=runtime_config.model.default_model_id,
         )
         app.state.telegram_adapter = adapter
 

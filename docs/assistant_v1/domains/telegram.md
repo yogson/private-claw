@@ -96,12 +96,24 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
 - Subsequent user turns in the same chat are routed to the newly activated session until another session switch command/callback is applied.
 
+### Model Selection Flow
+
+- v1 supports per-chat LLM model selection via the `/model` bot command:
+  - user sends `/model` (or `/model@botname` in group contexts),
+  - adapter returns an interactive message listing models from `config/model.yaml` `model_allowlist`,
+  - user selects one via inline button callback,
+  - selected `model_id` becomes the active model override for subsequent turns in the same chat (stored per chat, including group/supergroup with negative chat IDs).
+- Model list is sourced from `config/model.yaml` `model_allowlist`.
+- Callback payload format: `ms:{model_id}:{ts36}:{sig}` (same TTL and HMAC binding as session resume).
+- Model override is persisted per chat in `runtime/active_model_context.json`.
+
 ### Commands Menu Flow
 
 - v1 configures Telegram native bot commands during polling startup using Bot API command metadata:
   - `/new` - start a fresh session for the current chat,
   - `/reset` - clear context for the currently active session,
   - `/sessions` - list recent sessions and resume one via inline callbacks,
+  - `/model` - select LLM model for the current session,
   - `/usage` - show token and cost usage statistics for current session, today (UTC), and this month (UTC).
 - `/usage` is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
 - Usage aggregation is user-scoped: only usage attributed to the requesting user (via `user_id` on assistant records or turn-level correlation) is counted; shared-session usage from other participants is excluded.

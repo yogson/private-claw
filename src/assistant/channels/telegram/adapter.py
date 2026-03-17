@@ -24,6 +24,7 @@ from assistant.channels.telegram.memory_confirmation_callbacks import (
     sign_memory_confirmation_callback,
     verify_memory_confirmation_callback,
 )
+from assistant.channels.telegram.model_select import ModelSelectService
 from assistant.channels.telegram.models import (
     ActionButton,
     ChannelResponse,
@@ -37,6 +38,8 @@ from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
     ActiveSessionContextService,
+    SessionModelContextInterface,
+    SessionModelContextService,
 )
 from assistant.store.interfaces import SessionStoreInterface
 
@@ -77,10 +80,23 @@ class TelegramAdapter:
         transcription_service: VoiceTranscriptionService | None = None,
         session_store: SessionStoreInterface | None = None,
         active_session_context: ActiveSessionContextInterface | None = None,
+        model_context: SessionModelContextInterface | None = None,
+        model_allowlist: list[str] | None = None,
+        default_model_id: str | None = None,
     ) -> None:
         self._config = config
         self._session_store = session_store
         self._active_session_context = active_session_context or ActiveSessionContextService()
+        self._model_context = model_context or SessionModelContextService()
+        self._model_allowlist = model_allowlist or []
+        self._default_model_id = default_model_id or ""
+        secret = config.session_resume_hmac_secret or config.bot_token
+        self._model_select: ModelSelectService | None = None
+        if self._model_allowlist and secret:
+            self._model_select = ModelSelectService(
+                model_allowlist=self._model_allowlist,
+                hmac_secret=secret,
+            )
         guard = AllowlistGuard(config.allowlist)
         audit_logger = ChannelAuditLogger()
         throttle_guard = ChannelThrottleGuard(max_per_window=config.throttle_max_per_minute)
@@ -286,9 +302,82 @@ class TelegramAdapter:
         """Return True when the event text is the /new command."""
         return extract_supported_command(event.text) == TelegramCommand.NEW
 
+    def is_model_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /model command."""
+        if self._model_select is None:
+            return False
+        return extract_supported_command(event.text) == TelegramCommand.MODEL
+
+    def is_model_callback_request(self, event: NormalizedEvent) -> bool:
+        """Return True if the event looks like a model-select callback (by prefix)."""
+        if self._model_select is None or event.callback_query is None:
+            return False
+        data = event.callback_query.callback_data or ""
+        return data.startswith("ms:")
+
     def is_usage_request(self, event: NormalizedEvent) -> bool:
         """Return True when the event text is the /usage command."""
         return extract_supported_command(event.text) == TelegramCommand.USAGE
+
+    async def build_model_menu_response(
+        self, chat_id: int, session_id: str, trace_id: str
+    ) -> ChannelResponse:
+        """Build and return an interactive ChannelResponse listing available models."""
+        if self._model_select is None:
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=session_id,
+                trace_id=trace_id,
+                message_type=MessageType.TEXT,
+                text="Model selection is not available.",
+            )
+        current_model = (
+            self._model_context.get_model_override(self._build_session_context_id(chat_id))
+            or self._default_model_id
+        )
+        return self._model_select.build_model_menu(
+            current_session_id=session_id,
+            chat_id=chat_id,
+            trace_id=trace_id,
+            current_model_id=current_model,
+        )
+
+    def handle_model_callback(self, event: NormalizedEvent) -> str | None:
+        """
+        Process a signed model-select callback and update the model override for the chat.
+
+        Returns the selected model_id on success, None if invalid.
+        """
+        if self._model_select is None or event.callback_query is None:
+            return None
+        chat_id = int(event.metadata.get("chat_id", 0))
+        model_id = self._model_select.verify_callback(
+            event.callback_query.callback_data, expected_chat_id=chat_id
+        )
+        if model_id is None or model_id not in self._model_allowlist:
+            logger.warning(
+                "telegram.adapter.model_select.invalid_callback",
+                trace_id=event.trace_id,
+            )
+            return None
+        if chat_id != 0:
+            self._model_context.set_model_override(
+                self._build_session_context_id(chat_id), model_id
+            )
+            logger.info(
+                "telegram.adapter.model_select.activated",
+                chat_id=chat_id,
+                model_id=model_id,
+                trace_id=event.trace_id,
+            )
+        return model_id
+
+    def get_model_override(self, chat_id: int) -> str | None:
+        """Return the model override for the given chat, or None."""
+        if chat_id == 0:
+            return None
+        return self._model_context.get_model_override(self._build_session_context_id(chat_id))
 
     def start_new_session(self, event: NormalizedEvent) -> str | None:
         """Create and activate a new session id for the event chat context."""

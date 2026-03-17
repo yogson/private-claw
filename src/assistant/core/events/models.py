@@ -101,5 +101,6 @@ class OrchestratorEvent(BaseModel):
     attachments: list[AttachmentMeta] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    model_id_override: str | None = None
 
     scheduler: SchedulerMeta | None = None

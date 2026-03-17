@@ -16,6 +16,7 @@ class TelegramCommand(StrEnum):
     NEW = "/new", "Start a fresh session for this chat."
     RESET = "/reset", "Clear context for the active session."
     SESSIONS = "/sessions", "List recent sessions and resume one."
+    MODEL = "/model", "Select LLM model for the current session."
     USAGE = "/usage", "Show token and cost usage statistics."
 
     def __new__(cls, value: str, description: str) -> "TelegramCommand":

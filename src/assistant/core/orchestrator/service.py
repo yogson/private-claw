@@ -125,11 +125,16 @@ class Orchestrator:
         turn_id: str,
         trace_id: str,
         user_id: str | None = None,
+        model_id_override: str | None = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
         adapter = self._pydantic_ai_adapter
         if adapter is None:
             raise RuntimeError("Pydantic AI adapter not configured")
+
+        model_id = model_id_override or self._config.model.default_model_id
+        if model_id not in self._config.model.model_allowlist:
+            model_id = self._config.model.default_model_id
 
         msg_dicts = [
             {"role": m.role.value, "content": m.content, "content_blocks": m.content_blocks}
@@ -153,6 +158,7 @@ class Orchestrator:
             messages=msg_dicts,
             deps=deps,
             trace_id=trace_id,
+            model_id=model_id,
         )
         prompt_trace: dict[str, Any] | None = None
         if self._config.model.prompt_trace_enabled:
@@ -172,7 +178,7 @@ class Orchestrator:
             turn_id=turn_id,
             timestamp=now,
             assistant_msg_id=assistant_msg_id,
-            model_id=self._config.model.default_model_id,
+            model_id=model_id,
             usage=usage,
             user_id=user_id,
             skip_memory_tool_results=True,
@@ -181,7 +187,7 @@ class Orchestrator:
             fallback_payload: dict[str, Any] = {
                 "message_id": assistant_msg_id,
                 "content": response_text,
-                "model_id": self._config.model.default_model_id,
+                "model_id": model_id,
             }
             if usage is not None:
                 fallback_payload["usage"] = usage
@@ -280,6 +286,7 @@ class Orchestrator:
                 turn_id=turn_id,
                 trace_id=trace_id,
                 user_id=event.user_id,
+                model_id_override=event.model_id_override,
             )
         finally:
             reset_trace_id(token)

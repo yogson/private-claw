@@ -495,13 +495,18 @@ class PydanticAITurnAdapter:
         messages: list[dict[str, Any]],
         deps: TurnDeps,
         trace_id: str,
+        model_id: str | None = None,
     ) -> tuple[str, list[ModelMessage], dict[str, int] | None]:
         """
         Execute one turn. messages includes history + current user message (last).
         Returns (response_text, new_messages, usage).
+        When model_id is provided, uses it for this turn; otherwise uses default.
         """
         if not messages:
             return "", [], None
+        effective_model = model_id if model_id else self._model_id
+        if effective_model and not effective_model.startswith("anthropic:"):
+            effective_model = f"anthropic:{effective_model}"
         user_prompt = _message_to_user_prompt_content(messages[-1])
         history_msgs = messages[:-1] if len(messages) > 1 else []
         history = _llm_messages_to_history(history_msgs)
@@ -510,7 +515,7 @@ class PydanticAITurnAdapter:
             user_prompt,
             message_history=history,
             deps=deps,
-            model=self._model_id,
+            model=effective_model or self._model_id,
             model_settings=model_settings,
         )
         response_text = result.output
