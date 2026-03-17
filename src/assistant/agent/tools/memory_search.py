@@ -52,9 +52,7 @@ def memory_search(
             if isinstance(m, dict):
                 body = m.get("body", "")
                 body_str = body if isinstance(body, str) else str(body)
-                match_bodies.append(
-                    body_str[:500] + ("..." if len(body_str) > 500 else "")
-                )
+                match_bodies.append(body_str[:500] + ("..." if len(body_str) > 500 else ""))
         logger.info(
             "provider.tool_result.memory_search",
             status=result.get("status", "ok"),

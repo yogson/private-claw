@@ -308,12 +308,19 @@ class TestBuildSessionMenu:
 
 
 class TestExtractHelpers:
-    def test_label_prefers_turn_summary(self) -> None:
+    def test_label_uses_first_user_message(self) -> None:
         records = [
             _make_record("s", SessionRecordType.USER_MESSAGE, {"content": "hello"}),
-            _make_record("s", SessionRecordType.TURN_SUMMARY, {"summary_text": "Summary title"}),
+            _make_record("s", SessionRecordType.TURN_SUMMARY, {"summary_text": "turn diagnostics"}),
         ]
-        assert _extract_label(records) == "Summary title"
+        assert _extract_label(records) == "hello"
+
+    def test_label_skips_turn_diagnostics(self) -> None:
+        records = [
+            _make_record("s", SessionRecordType.TURN_SUMMARY, {"summary_text": "turn diagnostics"}),
+            _make_record("s", SessionRecordType.USER_MESSAGE, {"content": "Купить кормушку"}),
+        ]
+        assert _extract_label(records) == "Купить кормушку"
 
     def test_label_falls_back_to_user_message(self) -> None:
         records = [_make_record("s", SessionRecordType.USER_MESSAGE, {"content": "hello world"})]

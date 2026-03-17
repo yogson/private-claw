@@ -11,12 +11,11 @@ MAX_LABEL_LENGTH = 40
 
 
 def extract_label(records: list[SessionRecord]) -> str:
-    """Build a user-facing label from summary, first user message, or session id."""
-    for record in records:
-        if record.record_type == SessionRecordType.TURN_SUMMARY:
-            text = str(record.payload.get("summary_text", ""))
-            if text:
-                return text[:MAX_LABEL_LENGTH]
+    """Build a user-facing label from the first user message or session id.
+
+    TURN_SUMMARY (e.g. "turn diagnostics") is intentionally skipped so sessions
+    show meaningful conversation context instead of internal metadata.
+    """
     for record in records:
         if record.record_type == SessionRecordType.USER_MESSAGE:
             content = str(record.payload.get("content", ""))
