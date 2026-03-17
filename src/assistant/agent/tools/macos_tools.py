@@ -367,7 +367,8 @@ on run argv
     end if
     tell targetList
       if theDate is not missing value then
-        make new reminder at end with properties {{name:theTitle, body:theBody, due date:theDate, remind me date:theDate}}
+        make new reminder at end with properties {{name:theTitle, body:theBody, \
+due date:theDate, remind me date:theDate}}
       else
         make new reminder at end with properties {{name:theTitle, body:theBody}}
       end if

@@ -21,10 +21,11 @@ import structlog
 from pydantic_ai import Tool
 from pydantic_ai.tools import ToolFuncEither
 
-from assistant.agent.tools.deps import TurnDeps
+from assistant.agent.deps import TurnDeps
 from assistant.core.capabilities.loader import load_capability_definitions
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
+from assistant.extensions.mcp.bridge import McpBridge
 
 
 def _config_dir(config: RuntimeConfig) -> Path:
@@ -87,7 +88,11 @@ def _resolve_entrypoint(entrypoint: str) -> object:
 
 
 def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
-    """Collect tool_ids from enabled capabilities (excluding denied)."""
+    """Collect tool_ids from enabled capabilities (excluding denied).
+
+    MCP tools: cap.mcp.<server>.<tool> in enabled_capabilities are added directly
+    (no capability manifest required); they are gated by tool mapping and server config.
+    """
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
     enabled = frozenset(policy.enabled_capabilities)
@@ -96,6 +101,9 @@ def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
     tool_ids: set[str] = set()
     for cap_id in enabled:
         if cap_id in denied:
+            continue
+        if cap_id.startswith("cap.mcp."):
+            tool_ids.add(cap_id)
             continue
         definition = definitions.get(cap_id)
         if definition is None:
@@ -112,12 +120,14 @@ def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
 
 
 def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
-    """Return tools for the agent from tools.yaml, gated by enabled capabilities."""
+    """Return tools for the agent from tools.yaml and MCP bridge, gated by enabled capabilities."""
     tool_ids = _collect_enabled_tool_ids(config)
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
+    mcp_ids = {t for t in tool_ids if t.startswith("cap.mcp.")}
+    first_party_ids = tool_ids - mcp_ids
 
     tools: list[AgentTool] = []
-    for tool_id in sorted(tool_ids):
+    for tool_id in sorted(first_party_ids):
         definition = tool_defs.get(tool_id)
         if definition is None:
             logger.debug(
@@ -148,4 +158,9 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
             tools.append(cast(AgentTool, tool_instance))
         else:
             tools.append(cast(AgentTool, resolved))
+
+    if mcp_ids:
+        bridge = McpBridge(config)
+        mcp_tools = bridge.get_tools_for_capability_ids(mcp_ids)
+        tools.extend(cast(list[AgentTool], mcp_tools))
     return tools

@@ -148,7 +148,7 @@ Parallel constraints:
   1. Implement manifest discovery/validation and runtime registry lifecycle for capabilities and skills (`CMP_TOOL_RUNTIME_REGISTRY`, `CMP_SKILL_RUNTIME_ENGINE`).
   2. Implement dedicated memory operations capability and orchestrator wiring for memory proposal/apply flows (`CMP_TOOL_RUNTIME_REGISTRY`, `CMP_CORE_AGENT_ORCHESTRATOR`, `CMP_MEMORY_FILESYSTEM_STORE`).
   3. Implement remaining first-party capability set: web research, shell policy wrappers, macOS bridges, and `gh` integration (`CMP_TOOL_RUNTIME_REGISTRY`).
-  4. Implement MCP bridge from server registry and tool mapping (`config/mcp_servers.yaml` + `plugins/mcp/*/tool_map.yaml`) with risk-class policy gates (`CMP_TOOL_RUNTIME_REGISTRY`).
+  4. Implement MCP bridge integration from server registry (`config/mcp_servers.yaml` + `plugins/mcp/*/tool_map.yaml`) with mapped-tool allowlisting and risk-class policy gates; reuse existing first-party tool mapping runtime (`CMP_TOOL_RUNTIME_REGISTRY`).
   5. Implement dynamic capability shortlist selection and descriptor injection model (top-N, policy pre-filtered) (`CMP_TOOL_RUNTIME_REGISTRY`, `CMP_CORE_AGENT_ORCHESTRATOR`).
   6. Implement sub-agent coordinator with schema validation, model allowlist, capability subset checks, budget/concurrency/TTL/heartbeat controls (`CMP_AGENT_SUBAGENT_COORDINATOR`).
   7. Implement parent-child trace and audit correlation for capability and sub-agent paths (`CMP_OBSERVABILITY_LOGGING`, `CMP_AGENT_SUBAGENT_COORDINATOR`).
@@ -159,14 +159,14 @@ Parallel constraints:
 - Deliverables:
   - Capability/skill runtime with policy enforcement.
   - Dedicated memory operations capability path integrated with orchestrator policy gates.
-  - MCP-enabled capability mapping and safe tool activation path.
+  - MCP bridge integration with mapped-tool allowlisting and safe tool activation path.
   - Sub-agent spawn/result/error contract enforcement implementation.
   - Audit history for capability and sub-agent executions.
 - Success Criteria:
   - Capabilities/skills load deterministically and invalid manifests are rejected.
   - Memory operations run through dedicated capability contracts with auditable proposal/apply outcomes.
   - Per-turn tool context is shortlist-based, not full-catalog injection.
-  - MCP tools require explicit mapping and pass policy/confirmation gates.
+  - Mapped MCP tools remain deny-by-default until explicitly allowlisted and pass policy/confirmation gates.
   - Sub-agent requests enforce model/capability/budget/concurrency constraints and remain auditable.
 
 ### Phase 6: Scheduler, Reminder Lifecycle, and Operational Hardening

@@ -133,22 +133,23 @@ Capability policy schema (`config/capabilities.yaml`):
 - `denied_capabilities`: list of capability IDs to block (overrides enabled).
 
 MCP server registry schema requirements (`config/mcp_servers.yaml`):
-- `server_id`: stable identifier, lower snake case.
-- `transport`: one of `stdio`, `http`.
+- `id`: stable identifier, lower snake case (runtime uses `id`; docs may refer to `server_id`).
+- `url`: SSE endpoint URL (v1 supports HTTP/SSE transport).
 - `enabled`: bool.
-- `connection`: transport-specific connection config (command/args/env_refs for stdio, base_url/headers for http).
-- `tool_policy`: optional server-level default policy (`allow`, `deny`, `confirm`).
+- `tool_policy`: server-level policy. `deny` blocks all mapped tools; `deny_by_default` or `allow` permits allowlisted tools. Defaults from `defaults.tool_policy` apply when server has no override.
 
 MCP tool mapping schema requirements (`plugins/mcp/*/tool_map.yaml`):
 - `server_id`: must reference a registered MCP server.
-- `capability_id_pattern`: must resolve to `cap.mcp.<server>.<tool>`.
 - `tools`: explicit allowlisted tool definitions with:
-  - `tool_name`,
-  - `summary`,
-  - `input_schema`,
+  - `tool_name` (required),
+  - `summary` (optional),
+  - `input_schema` (optional, JSON schema for tool args),
   - `risk_class` (`readonly`, `interactive`, `side_effecting`),
   - `requires_confirmation` (bool override).
-- `descriptor_overrides` (optional): custom `safety_notes` or examples per mapped tool.
+
+Capability IDs are derived as `cap.mcp.<server_id>.<tool_name>`. The runtime does not support `capability_id_pattern` or `descriptor_overrides` in v1; these may be added in a future release.
+
+MCP activation: Add `cap.mcp.<server>.<tool>` to `enabled_capabilities` in `config/capabilities.yaml` to expose allowlisted MCP tools. No separate capability manifest is required; tool mapping and server config gate availability.
 
 ## Dynamic Activation Model (Normative)
 

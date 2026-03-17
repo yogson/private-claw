@@ -1,0 +1,22 @@
+# MCP tool mapping for chrome_devtools server
+# Capability IDs: cap.mcp.chrome_devtools.<tool_name>
+# Add to enabled_capabilities in config/capabilities.yaml to activate
+
+server_id: chrome_devtools
+tools:
+  - tool_name: browser_navigate
+    summary: Navigate to a URL in the browser
+    risk_class: interactive
+    requires_confirmation: false
+  - tool_name: browser_snapshot
+    summary: Capture page structure and element refs for interaction
+    risk_class: readonly
+    requires_confirmation: false
+  - tool_name: browser_click
+    summary: Click an element by ref
+    risk_class: interactive
+    requires_confirmation: true
+  - tool_name: browser_type
+    summary: Type text into an element
+    risk_class: interactive
+    requires_confirmation: false

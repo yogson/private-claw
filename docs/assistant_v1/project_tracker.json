@@ -594,13 +594,27 @@
         },
         {
           "id": "5.4",
-          "name": "MCP Bridge and Tool Mapping Gates [CMP_TOOL_RUNTIME_REGISTRY]",
-          "description": "Implement MCP bridge from server registry and explicit tool mapping with risk-class policy gates.",
+          "name": "MCP Bridge Integration and Policy Gates [CMP_TOOL_RUNTIME_REGISTRY]",
+          "description": "Implement MCP bridge integration from server registry with mapped-tool allowlisting and risk-class policy gates; reuse existing first-party tool mapping runtime.",
           "scope_path": "src/assistant/extensions/mcp/",
-          "status": "not_started",
-          "completed_date": null,
-          "notes": "",
-          "files_delivered": []
+          "status": "implemented",
+          "started_date": "2026-03-17",
+          "completed_date": "2026-03-17",
+          "notes": "MCP bridge: tool mapping loader (plugins/mcp/*/tool_map.yaml), SSE client session, McpBridge.get_tools_for_capability_ids. enabled_capabilities can include cap.mcp.<server>.<tool> directly. get_agent_tools wires MCP tools. Risk-class and requires_confirmation in descriptors; audit logging on invoke. Self-review: moved TurnDeps to agent.deps to avoid late import; removed dead tool_policy check; added MCP activation note to capabilities.md. 8 unit tests.",
+          "files_delivered": [
+            "src/assistant/agent/deps.py",
+            "src/assistant/agent/tools/deps.py",
+            "src/assistant/extensions/mcp/__init__.py",
+            "src/assistant/extensions/mcp/models.py",
+            "src/assistant/extensions/mcp/loader.py",
+            "src/assistant/extensions/mcp/client.py",
+            "src/assistant/extensions/mcp/bridge.py",
+            "src/assistant/agent/tools/registry.py",
+            "plugins/mcp/chrome_devtools/tool_map.yaml",
+            "tests/assistant/extensions/mcp/__init__.py",
+            "tests/assistant/extensions/mcp/test_mcp_bridge.py",
+            "docs/assistant_v1/domains/capabilities.md"
+          ]
         },
         {
           "id": "5.5",
@@ -636,7 +650,7 @@
       "deliverables": [
         "Capability and skill runtime with policy enforcement",
         "Dedicated memory operations capability path integrated with orchestrator policy gates",
-        "MCP-enabled capability mapping and safe tool activation path",
+        "MCP bridge integration with mapped-tool allowlisting and safe activation path",
         "Sub-agent spawn/result/error contract enforcement implementation",
         "Audit history for capability and sub-agent executions"
       ],
@@ -644,7 +658,7 @@
         "Capabilities and skills load deterministically and invalid manifests are rejected",
         "Memory operations run through dedicated capability contracts with auditable proposal/apply outcomes",
         "Per-turn tool context is shortlist-based, not full-catalog injection",
-        "MCP tools require explicit mapping and pass policy and confirmation gates",
+        "Mapped MCP tools remain deny-by-default until explicitly allowlisted and pass policy and confirmation gates",
         "Sub-agent requests enforce model, capability, budget, and concurrency constraints with auditable traces"
       ]
     },
