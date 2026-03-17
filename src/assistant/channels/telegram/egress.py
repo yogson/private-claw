@@ -76,14 +76,12 @@ class TelegramEgress:
         if use_formatting:
             formatted_chunks = format_markdown_for_telegram(response.text)
         else:
-            text_chunks = (
-                [response.text]
-                if response.message_type == MessageType.INTERACTIVE
-                else self._split_text(response.text)
-            )
+            text_chunks = self._split_text(response.text)
             formatted_chunks = [(chunk, []) for chunk in text_chunks]
 
         sent_chunks = 0
+        total_chunks = len(formatted_chunks)
+        base_reply_markup = self._build_reply_markup(response)
         for attempt in range(1, self._max_attempts + 1):
             attempts_made = attempt
             if self._audit_logger is not None:
@@ -94,8 +92,11 @@ class TelegramEgress:
                     trace_id=response.trace_id,
                 )
             try:
-                for chunk_text, chunk_entities in formatted_chunks[sent_chunks:]:
-                    reply_markup = self._build_reply_markup(response)
+                for chunk_index, (chunk_text, chunk_entities) in enumerate(
+                    formatted_chunks[sent_chunks:], start=sent_chunks
+                ):
+                    is_last_chunk = chunk_index == total_chunks - 1
+                    reply_markup = base_reply_markup if is_last_chunk else None
                     send_kwargs: dict = {
                         "chat_id": chat_id,
                         "text": chunk_text,
