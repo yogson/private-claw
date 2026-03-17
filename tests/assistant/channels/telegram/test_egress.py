@@ -97,6 +97,21 @@ class TestTelegramEgresSend:
         assert second_chunk == retried_chunk
 
     @pytest.mark.asyncio
+    async def test_long_interactive_send_is_split_and_keyboard_only_on_last_chunk(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        response = _make_interactive_response().model_copy(update={"text": "A" * 9000})
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            result = await egress.send(response, chat_id=123)
+        assert result is True
+        assert mock_send.call_count == 3
+        for i, call in enumerate(mock_send.call_args_list):
+            assert len(call.kwargs["text"]) <= 4096
+            if i < 2:
+                assert call.kwargs["reply_markup"] is None
+            else:
+                assert call.kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
     async def test_retryable_network_error_exhausts_attempts(self) -> None:
         egress = TelegramEgress(bot_token="12345:test-token", max_attempts=2, base_delay=0.0)
         with (
