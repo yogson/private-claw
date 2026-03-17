@@ -31,6 +31,12 @@ The coordinator is the sole authority for:
 - enforcing budget/concurrency/time limits,
 - returning normalized results.
 
+Current v1 implementation mapping:
+- Spawn surface is exposed to the model via `delegate_subagent_task`.
+- Request stage sequence is selected from capability-manifest workflow definitions.
+- Backend-specific parameters are carried through `backend_params` while keeping core contracts backend-agnostic.
+- Claude Code is implemented as the first provider adapter behind a reusable backend interface.
+
 Normative precedence:
 1. This document for contract shape and coordinator decision contract.
 2. `docs/assistant_v1/domains/subagents.md` for runtime behavior.

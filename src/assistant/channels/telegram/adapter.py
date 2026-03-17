@@ -34,6 +34,7 @@ from assistant.channels.telegram.models import (
 from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard
 from assistant.channels.telegram.session_resume import SessionResumeService
+from assistant.channels.telegram.task_callbacks import sign_task_callback, verify_task_callback
 from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
@@ -208,6 +209,29 @@ class TelegramAdapter:
         self._cleanup_expired_memory_confirmation_tokens()
         return token in self._memory_confirmation_tokens
 
+    def is_task_callback(self, event: NormalizedEvent) -> bool:
+        """Return True if callback_data is a valid signed delegated-task callback."""
+        if event.callback_query is None:
+            return False
+        chat_id = int(event.metadata.get("chat_id", 0))
+        token = verify_task_callback(
+            callback_data=event.callback_query.callback_data,
+            expected_chat_id=chat_id,
+            secret=self._task_callback_secret(),
+        )
+        return token is not None
+
+    def parse_task_callback(self, event: NormalizedEvent) -> tuple[str, str] | None:
+        """Parse a task callback and return (task_id, action)."""
+        if event.callback_query is None:
+            return None
+        chat_id = int(event.metadata.get("chat_id", 0))
+        return verify_task_callback(
+            callback_data=event.callback_query.callback_data,
+            expected_chat_id=chat_id,
+            secret=self._task_callback_secret(),
+        )
+
     def consume_memory_confirmation_callback(
         self, event: NormalizedEvent
     ) -> tuple[str, str, bool] | None:
@@ -290,6 +314,56 @@ class TelegramAdapter:
                     label="Reject",
                     callback_id=f"reject-{tool_call_id}",
                     callback_data=reject_cb,
+                ),
+            ],
+        )
+
+    def build_task_result_response(
+        self,
+        *,
+        chat_id: int,
+        session_id: str,
+        trace_id: str,
+        task_id: str,
+        status: str,
+        summary: str = "",
+        fallback_text: str = "",
+    ) -> ChannelResponse:
+        """Build task completion message with inline actions for status and summary."""
+        text = fallback_text.strip() or f"Delegated task `{task_id}` status: *{status}*."
+        if summary.strip():
+            text = f"{text}\n\n{summary.strip()}"
+        status_cb = sign_task_callback(
+            task_id=task_id,
+            action="status",
+            chat_id=chat_id,
+            secret=self._task_callback_secret(),
+        )
+        summary_cb = sign_task_callback(
+            task_id=task_id,
+            action="summary",
+            chat_id=chat_id,
+            secret=self._task_callback_secret(),
+        )
+        return ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id=session_id,
+            trace_id=trace_id,
+            message_type=MessageType.INTERACTIVE,
+            text=text,
+            parse_mode="Markdown",
+            ui_kind="inline_keyboard",
+            actions=[
+                ActionButton(
+                    label="Show status",
+                    callback_id=f"task-status-{task_id}",
+                    callback_data=status_cb,
+                ),
+                ActionButton(
+                    label="Show summary",
+                    callback_id=f"task-summary-{task_id}",
+                    callback_data=summary_cb,
                 ),
             ],
         )
@@ -535,3 +609,9 @@ class TelegramAdapter:
 
     def _build_session_context_id(self, chat_id: int) -> str:
         return f"telegram:{chat_id}"
+
+    def _task_callback_secret(self) -> bytes:
+        secret = (self._config.session_resume_hmac_secret or "").encode()
+        if not secret:
+            secret = self._config.bot_token.encode()
+        return secret

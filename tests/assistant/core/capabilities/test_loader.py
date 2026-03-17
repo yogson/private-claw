@@ -107,3 +107,36 @@ def test_load_tool_overrides_merge(tmp_path: Path) -> None:
     assert "deploy" in result
     overrides = result["deploy"].get_effective_tool_overrides("shell_execute_readonly")
     assert overrides.get("shell_readonly_commands") == ["gh", "git", "ssh"]
+
+
+def test_load_valid_manifest_with_delegation_workflow(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities"
+    cap_dir.mkdir()
+    (cap_dir / "delegation.yaml").write_text(
+        yaml.dump(
+            {
+                "capability_id": "delegation_coding",
+                "prompt": "",
+                "tools": [{"tool_id": "delegate_subagent_task", "enabled": True}],
+                "delegation": {
+                    "workflow_id": "coding_flow",
+                    "backend": "claude_code",
+                    "stages": [
+                        {
+                            "stage_id": "implement",
+                            "purpose": "implement requested changes",
+                            "model_id": "claude-sonnet-4-5",
+                            "timeout_seconds": 600,
+                            "max_turns": 8,
+                        }
+                    ],
+                },
+            }
+        )
+    )
+    result = load_capability_definitions(config_dir=tmp_path)
+    assert "delegation_coding" in result
+    workflow = result["delegation_coding"].delegation
+    assert workflow is not None
+    assert workflow.backend == "claude_code"
+    assert workflow.stages[0].stage_id == "implement"

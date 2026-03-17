@@ -59,6 +59,26 @@ def _validate_tools_and_capabilities(
             ) from None
 
 
+def _validate_delegation_workflows(
+    runtime_config: RuntimeConfig,
+    definitions: dict[str, Any],
+) -> None:
+    policy = runtime_config.capabilities
+    denied = frozenset(policy.denied_capabilities)
+    enabled_caps = [c for c in policy.enabled_capabilities if c not in denied]
+    model_allowlist = frozenset(runtime_config.model.model_allowlist)
+    for cap_id in enabled_caps:
+        definition = definitions.get(cap_id)
+        if definition is None or definition.delegation is None:
+            continue
+        for stage in definition.delegation.stages:
+            if stage.model_id not in model_allowlist:
+                raise SystemExit(
+                    f"Capability '{cap_id}' delegation stage '{stage.stage_id}' "
+                    f"uses model '{stage.model_id}' outside model_allowlist"
+                ) from None
+
+
 def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
     """Load and validate all configuration domains.
 
@@ -84,5 +104,6 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
             ) from None
 
     _validate_tools_and_capabilities(runtime_config, definitions)
+    _validate_delegation_workflows(runtime_config, definitions)
 
     return runtime_config

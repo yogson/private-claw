@@ -128,6 +128,16 @@ Chrome-devtools MCP example set:
 - `cap.mcp.chrome_devtools.browser_scroll`
 - `cap.mcp.chrome_devtools.browser_wait`
 
+### 12) Delegation Capabilities
+
+- `cap.delegation.task.enqueue`
+- `cap.delegation.task.status`
+- `cap.delegation.workflow.coding`
+
+Implementation note:
+- In runtime config, delegated coding workflows are currently represented by the
+  `delegation_coding` capability manifest and the `delegate_subagent_task` tool.
+
 ## Policy Rules
 
 These are catalog-level policy invariants. Runtime enforcement behavior is defined in `docs/assistant_v1/domains/capabilities.md`.

@@ -37,6 +37,16 @@ class CapabilityToolOverride(BaseModel):
     command_allowlist: list[CommandAllowlistEntry] | None = None
     default_timeout_seconds: int | None = None
     max_timeout_seconds: int | None = None
+    delegation_allowed_backends: list[str] | None = None
+    delegation_model_allowlist: list[str] | None = None
+    delegation_default_ttl_seconds: int | None = None
+    delegation_max_ttl_seconds: int | None = None
+    delegation_max_concurrent_tasks: int | None = None
+    delegation_per_task_token_cap: int | None = None
+    delegation_per_session_token_cap: int | None = None
+    delegation_global_token_cap: int | None = None
+    delegation_budget_window_seconds: int | None = None
+    delegation_estimated_tokens_per_turn: int | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod
@@ -54,6 +64,43 @@ class CapabilityToolBinding(BaseModel):
     params_override: CapabilityToolOverride | None = None
 
 
+class DelegationStageDefinition(BaseModel):
+    """Single stage in a delegated workflow."""
+
+    stage_id: str
+    purpose: str
+    model_id: str
+    timeout_seconds: int = Field(default=300, ge=1)
+    max_turns: int = Field(default=8, ge=1)
+    enabled: bool = True
+    backend_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class DelegationWorkflowDefinition(BaseModel):
+    """Provider-agnostic delegation workflow attached to a capability."""
+
+    workflow_id: str
+    backend: str
+    result_format: str = "text"
+    stages: list[DelegationStageDefinition] = Field(default_factory=list)
+    backend_params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("stages")
+    @classmethod
+    def _validate_stages(
+        cls,
+        stages: list[DelegationStageDefinition],
+    ) -> list[DelegationStageDefinition]:
+        if not stages:
+            raise ValueError("stages must contain at least one item")
+        ids = [s.stage_id for s in stages]
+        if len(ids) != len(set(ids)):
+            raise ValueError("stage_id values must be unique")
+        if not any(s.enabled for s in stages):
+            raise ValueError("at least one stage must be enabled")
+        return stages
+
+
 class CapabilityDefinition(BaseModel):
     """Capability manifest schema (config/capabilities/*.yaml).
 
@@ -64,6 +111,7 @@ class CapabilityDefinition(BaseModel):
     prompt: str = ""
     tools: list[CapabilityToolBinding] = Field(default_factory=list)
     tool_overrides: dict[str, CapabilityToolOverride] = Field(default_factory=dict)
+    delegation: DelegationWorkflowDefinition | None = None
 
     def get_effective_tool_overrides(self, tool_id: str) -> dict[str, Any]:
         """Merge tool_overrides[tool_id] with any inline params from tools list."""

@@ -134,6 +134,16 @@ class ToolDefaultParams(BaseModel):
     command_allowlist: list[CommandAllowlistEntry] | None = None
     default_timeout_seconds: int | None = Field(default=None, ge=1)
     max_timeout_seconds: int | None = Field(default=None, ge=1)
+    delegation_allowed_backends: list[str] | None = None
+    delegation_model_allowlist: list[str] | None = None
+    delegation_default_ttl_seconds: int | None = Field(default=None, ge=1)
+    delegation_max_ttl_seconds: int | None = Field(default=None, ge=1)
+    delegation_max_concurrent_tasks: int | None = Field(default=None, ge=1)
+    delegation_per_task_token_cap: int | None = Field(default=None, ge=1)
+    delegation_per_session_token_cap: int | None = Field(default=None, ge=1)
+    delegation_global_token_cap: int | None = Field(default=None, ge=1)
+    delegation_budget_window_seconds: int | None = Field(default=None, ge=1)
+    delegation_estimated_tokens_per_turn: int | None = Field(default=None, ge=1)
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

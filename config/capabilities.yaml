@@ -5,4 +5,5 @@
 
 enabled_capabilities:
   - assistant
+  - delegation_coding
 denied_capabilities: []

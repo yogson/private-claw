@@ -21,6 +21,7 @@ from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.api.deps import set_runtime_config
 from assistant.api.routers import config as config_router
 from assistant.api.routers import health
+from assistant.api.routers import tasks as tasks_router
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.ingestion.factory import build_transcription_service
 from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDownloader
@@ -28,6 +29,7 @@ from assistant.channels.telegram.models import ChannelResponse, MessageType, Nor
 from assistant.channels.telegram.polling import run_polling
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.core.bootstrap import bootstrap
+from assistant.core.capabilities.loader import load_capability_definitions
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
@@ -39,6 +41,9 @@ from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
+from assistant.subagents.backends import ClaudeCodeBackendAdapter
+from assistant.subagents.coordinator import DelegationCoordinator
+from assistant.subagents.telegram_notify import DelegationTelegramNotifier
 
 logger = structlog.get_logger(__name__)
 
@@ -50,7 +55,8 @@ load_dotenv()
 def _build_orchestrator_handler(
     adapter: TelegramAdapter,
     orchestrator: Orchestrator,
-    memory_confirmations: MemoryConfirmationService | None,
+    delegation_coordinator: DelegationCoordinator | None = None,
+    memory_confirmations: MemoryConfirmationService | None = None,
     usage_service: Any = None,
 ) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
     mapper = NormalizedEventMapper()
@@ -184,6 +190,51 @@ def _build_orchestrator_handler(
                 message_type=MessageType.TEXT,
                 text=message,
             )
+        if adapter.is_task_callback(event):
+            parsed = adapter.parse_task_callback(event)
+            if parsed is None:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Invalid or expired task action.",
+                )
+            task_id, action = parsed
+            task = None
+            if delegation_coordinator is not None:
+                task = await delegation_coordinator.get_task(task_id)
+            if task is None:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text=f"Task `{task_id}` not found.",
+                    parse_mode="Markdown",
+                )
+            if action == "status":
+                text = (
+                    f"Task `{task.task_id}` status: *{task.status.value}*\nType: `{task.task_type}`"
+                )
+                if task.error:
+                    text += f"\nError: {task.error}"
+            else:
+                summary = ""
+                if isinstance(task.result, dict):
+                    summary = str(task.result.get("summary", "")).strip()
+                text = summary or f"Task `{task.task_id}` has no summary yet."
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=task.parent_session_id or event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text=text,
+                parse_mode="Markdown",
+            )
         if adapter.is_usage_request(event):
             if usage_service is not None:
                 return cast(
@@ -274,6 +325,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.runtime_config = runtime_config
     app.state.telegram_adapter = None
     app.state.attachment_downloader = None
+    app.state.store = None
+    app.state.delegation_coordinator = None
 
     store: StoreFacade | None = None
     polling_task: asyncio.Task[None] | None = None
@@ -288,6 +341,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             idempotency_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
         )
         await store.initialize()
+        app.state.store = store
 
         idempotency = IngressIdempotencyService(
             store.idempotency,
@@ -316,16 +370,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             config=runtime_config,
         )
 
-        orchestrator = Orchestrator(
-            store=store,
-            config=runtime_config,
-            idempotency=idempotency,
-            attachment_downloader=attachment_downloader,
-            memory_writer=memory_writer,
-            memory_retrieval=memory_retrieval,
-            pydantic_ai_adapter=pydantic_ai_adapter,
-        )
-
         transcription_service = build_transcription_service(runtime_config.telegram)
         active_session_context = ActiveSessionContextService(
             data_root / "runtime" / "active_session_context.json"
@@ -344,13 +388,39 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
+        capabilities = load_capability_definitions(config_dir=runtime_config.config_dir)
+        delegation_notifier = DelegationTelegramNotifier(adapter)
+        delegation_coordinator = DelegationCoordinator(
+            store=store,
+            config=runtime_config,
+            capability_definitions=capabilities,
+            backends=[ClaudeCodeBackendAdapter()],
+            completion_callback=delegation_notifier.notify_task_terminal,
+        )
+        await delegation_coordinator.start()
+        app.state.delegation_coordinator = delegation_coordinator
+        orchestrator = Orchestrator(
+            store=store,
+            config=runtime_config,
+            idempotency=idempotency,
+            attachment_downloader=attachment_downloader,
+            memory_writer=memory_writer,
+            memory_retrieval=memory_retrieval,
+            pydantic_ai_adapter=pydantic_ai_adapter,
+            delegation_coordinator=delegation_coordinator,
+        )
+
         usage_service = UsageStatsService(
             session_store=store.sessions,
             archive_dir=data_root / "runtime" / "usage_archive",
             default_model_id=runtime_config.model.default_model_id,
         )
         handler = _build_orchestrator_handler(
-            adapter, orchestrator, memory_confirmations, usage_service=usage_service
+            adapter,
+            orchestrator,
+            delegation_coordinator,
+            memory_confirmations,
+            usage_service=usage_service,
         )
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
@@ -384,6 +454,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if downloader is not None:
             await downloader.close()
         if store is not None:
+            coordinator = app.state.delegation_coordinator
+            if coordinator is not None:
+                await coordinator.stop()
             await store.shutdown()
 
 
@@ -395,6 +468,7 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(config_router.router)
+app.include_router(tasks_router.router)
 app.include_router(admin_router)
 
 

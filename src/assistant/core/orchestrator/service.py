@@ -48,6 +48,7 @@ from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
 )
+from assistant.subagents.interfaces import DelegationCoordinatorInterface
 
 logger = structlog.get_logger(__name__)
 
@@ -73,6 +74,7 @@ class Orchestrator:
         memory_writer: MemoryWriterInterface | None = None,
         memory_retrieval: MemoryRetrievalInterface | None = None,
         pydantic_ai_adapter: PydanticAITurnAdapter | None = None,
+        delegation_coordinator: DelegationCoordinatorInterface | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -81,6 +83,7 @@ class Orchestrator:
         self._memory_writer = memory_writer
         self._memory_retrieval = memory_retrieval
         self._pydantic_ai_adapter = pydantic_ai_adapter
+        self._delegation_coordinator = delegation_coordinator
 
     async def execute_turn(self, event: OrchestratorEvent) -> OrchestratorResult | None:
         """
@@ -148,10 +151,24 @@ class Orchestrator:
                 return self._memory_search(q, limit, mt, user_id=user_id)
 
             memory_handler = _handler
+        delegation_handler = None
+        if self._delegation_coordinator is not None:
+            coordinator = self._delegation_coordinator
+
+            async def delegation_handler(payload: dict[str, Any]) -> dict[str, Any]:
+                return await coordinator.enqueue_from_tool(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    user_id=user_id,
+                    request=payload,
+                )
+
         deps = TurnDeps(
             writes_approved=[],
             seen_intent_ids=set(),
             memory_search_handler=memory_handler,
+            delegation_enqueue_handler=delegation_handler,
             tool_runtime_params=tool_params,
         )
         response_text, new_msgs, usage = await adapter.run_turn(

@@ -128,3 +128,12 @@ Coordinator enforcement rules:
 - Claude Code agent tasks are used as the primary coding offload path and produce auditable lifecycle records equivalent to other backends.
 - Cursor-agent tasks execute only when explicitly authorized and produce the same auditable lifecycle records.
 
+## Current v1 Implementation Notes
+
+- Delegation entrypoint tool: `delegate_subagent_task`.
+- Workflow source of truth: capability manifest `delegation` section (workflow id, backend, ordered stages).
+- Coordinator implementation: `src/assistant/subagents/coordinator.py`.
+- Backend abstraction: `DelegationBackendAdapterInterface` with provider routing in coordinator.
+- First backend implementation: `ClaudeCodeBackendAdapter` (`src/assistant/subagents/backends/claude_code.py`).
+- Completion notifications: Telegram proactive messages with signed callbacks for task status/summary actions.
+

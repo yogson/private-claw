@@ -5,7 +5,7 @@ Dependencies injected into agent tools for turn execution.
 Placed at agent level to avoid circular imports with extensions (e.g. MCP bridge).
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,6 +19,7 @@ class TurnDeps:
     writes_approved: list[None]  # mutable: append when we approve a write
     seen_intent_ids: set[str]  # mutable: deduplicate intent_id per turn
     memory_search_handler: Callable[[str, int, list[str] | None], dict[str, Any]] | None = None
+    delegation_enqueue_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
     tool_runtime_params: dict[str, dict[str, Any]] = field(
         default_factory=dict
     )  # per-tool merged params from tools.yaml + capability overrides
