@@ -342,7 +342,10 @@ class TestRecordsToMessages:
                     "message_id": "m3",
                     "tool_call_id": "call-1",
                     "tool_name": "memory_propose_update",
-                    "result": {"status": "pending_confirmation", "requires_user_confirmation": True},
+                    "result": {
+                        "status": "pending_confirmation",
+                        "requires_user_confirmation": True,
+                    },
                     "error": None,
                 },
             ),
