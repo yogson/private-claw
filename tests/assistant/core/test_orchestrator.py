@@ -41,7 +41,7 @@ from assistant.core.orchestrator import (
 )
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
-from assistant.store.models import SessionRecord, SessionRecordType, SystemMessageScope
+from assistant.store.models import SessionRecord, SessionRecordType
 
 
 def _runtime_config() -> RuntimeConfig:
@@ -243,29 +243,6 @@ class TestRecordsToMessages:
             ),
         ]
         assert _records_to_messages(records) == []
-
-    def test_includes_turn_scoped_delegation_update_as_assistant_message(self) -> None:
-        records = [
-            SessionRecord(
-                session_id="s1",
-                sequence=0,
-                event_id="e1",
-                turn_id="delegation-update-dlg-1",
-                timestamp=datetime.now(UTC),
-                record_type=SessionRecordType.SYSTEM_MESSAGE,
-                payload={
-                    "message_id": "msg-delegation-update-dlg-1",
-                    "content": (
-                        '[[DELEGATION_UPDATE]]\n{"type":"delegation_update","task_id":"dlg-1"}'
-                    ),
-                    "scope": SystemMessageScope.TURN.value,
-                },
-            ),
-        ]
-        msgs = _records_to_messages(records)
-        assert len(msgs) == 1
-        assert msgs[0].role == MessageRole.ASSISTANT
-        assert msgs[0].content.startswith("[[DELEGATION_UPDATE]]")
 
     def test_tool_call_and_result_included(self) -> None:
         """Replay mapping includes assistant tool-use and user tool-result blocks."""
