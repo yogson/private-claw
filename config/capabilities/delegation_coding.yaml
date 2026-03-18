@@ -1,35 +1,9 @@
 capability_id: delegation_coding
 prompt: |
   You can delegate longer coding tasks to reusable background sub-agents.
-  Use delegate_subagent_task for multi-stage workflows when the task is expected
-  to outlive the current turn.
+  Use delegate_subagent_task with objective and optional model_id when the task
+  is expected to outlive the current turn.
 tools:
   - tool_id: delegate_subagent_task
     enabled: true
-delegation:
-  workflow_id: coding_implement_review_pr
-  backend: claude_code
-  result_format: markdown_summary
-  backend_params:
-    permission_mode: default
-    effort: medium
-  stages:
-    - stage_id: implement
-      purpose: implement requested code changes
-      model_id: claude-sonnet-4-5
-      timeout_seconds: 900
-      max_turns: 10
-      enabled: true
-    - stage_id: review
-      purpose: review implementation and identify risks
-      model_id: claude-sonnet-4-5
-      timeout_seconds: 600
-      max_turns: 8
-      enabled: true
-    - stage_id: create_pr
-      purpose: create pull request with current changes
-      model_id: claude-sonnet-4-5
-      timeout_seconds: 600
-      max_turns: 8
-      enabled: true
 

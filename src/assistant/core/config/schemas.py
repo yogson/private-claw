@@ -135,6 +135,7 @@ class ToolDefaultParams(BaseModel):
     default_timeout_seconds: int | None = Field(default=None, ge=1)
     max_timeout_seconds: int | None = Field(default=None, ge=1)
     delegation_allowed_backends: list[str] | None = None
+    delegation_default_model_id: str | None = None
     delegation_model_allowlist: list[str] | None = None
     delegation_default_ttl_seconds: int | None = Field(default=None, ge=1)
     delegation_max_ttl_seconds: int | None = Field(default=None, ge=1)
@@ -144,6 +145,8 @@ class ToolDefaultParams(BaseModel):
     delegation_global_token_cap: int | None = Field(default=None, ge=1)
     delegation_budget_window_seconds: int | None = Field(default=None, ge=1)
     delegation_estimated_tokens_per_turn: int | None = Field(default=None, ge=1)
+    delegation_default_max_turns: int | None = Field(default=None, ge=1)
+    delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

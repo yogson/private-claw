@@ -224,31 +224,9 @@ def test_bootstrap_succeeds_with_macos_personal_capability(config_dir: Path) -> 
     assert isinstance(cfg, RuntimeConfig)
 
 
-def test_bootstrap_fails_when_delegation_stage_model_not_allowlisted(config_dir: Path) -> None:
-    (config_dir / "capabilities" / "delegation_coding.yaml").write_text(
-        yaml.dump(
-            {
-                "capability_id": "delegation_coding",
-                "prompt": "",
-                "tools": [{"tool_id": "delegate_subagent_task", "enabled": True}],
-                "delegation": {
-                    "workflow_id": "coding",
-                    "backend": "claude_code",
-                    "stages": [
-                        {
-                            "stage_id": "implement",
-                            "purpose": "implement",
-                            "model_id": "claude-opus",
-                        }
-                    ],
-                },
-            }
-        )
-    )
-    with open(config_dir / "capabilities.yaml") as f:
-        cap_data = yaml.safe_load(f)
-    cap_data["enabled_capabilities"].append("delegation_coding")
-    (config_dir / "capabilities.yaml").write_text(yaml.dump(cap_data))
+def test_bootstrap_fails_when_delegation_default_model_not_allowlisted(
+    config_dir: Path,
+) -> None:
     with open(config_dir / "tools.yaml") as f:
         tools_data = yaml.safe_load(f)
     tools_data["tools"].append(
@@ -256,8 +234,11 @@ def test_bootstrap_fails_when_delegation_stage_model_not_allowlisted(config_dir:
             "tool_id": "delegate_subagent_task",
             "entrypoint": "assistant.agent.tools.delegate_subagent_task:delegate_subagent_task",
             "enabled": True,
+            "default_params": {
+                "delegation_default_model_id": "claude-opus-4-5",
+            },
         }
     )
     (config_dir / "tools.yaml").write_text(yaml.dump(tools_data))
-    with pytest.raises(SystemExit, match="outside model_allowlist"):
+    with pytest.raises(SystemExit, match="delegation_default_model_id"):
         bootstrap(config_dir)

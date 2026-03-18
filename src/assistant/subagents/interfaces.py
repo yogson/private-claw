@@ -8,11 +8,11 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from assistant.store.models import TaskRecord
-from assistant.subagents.contracts import DelegationStageResult, DelegationStageRun
+from assistant.subagents.contracts import DelegationResult, DelegationRun
 
 
 class DelegationBackendAdapterInterface(ABC):
-    """Backend adapter interface for staged delegated execution."""
+    """Backend adapter interface for delegated execution."""
 
     @property
     @abstractmethod
@@ -20,8 +20,8 @@ class DelegationBackendAdapterInterface(ABC):
         """Stable backend identifier used in workflow routing."""
 
     @abstractmethod
-    async def execute_stage(self, stage: DelegationStageRun) -> DelegationStageResult:
-        """Execute one stage and return normalized output."""
+    async def execute(self, request: DelegationRun) -> DelegationResult:
+        """Execute delegated task and return normalized output."""
 
 
 class DelegationCoordinatorInterface(ABC):

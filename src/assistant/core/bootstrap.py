@@ -11,7 +11,7 @@ from typing import Any
 from assistant.agent.tools.registry import _resolve_entrypoint
 from assistant.core.capabilities.loader import CapabilityLoadError, load_capability_definitions
 from assistant.core.config.loader import ConfigLoader, ConfigLoadError, resolve_config_dir
-from assistant.core.config.schemas import RuntimeConfig
+from assistant.core.config.schemas import RuntimeConfig, ToolDefinition
 
 
 def _validate_tools_and_capabilities(
@@ -59,24 +59,21 @@ def _validate_tools_and_capabilities(
             ) from None
 
 
-def _validate_delegation_workflows(
+def _validate_delegation_defaults(
     runtime_config: RuntimeConfig,
-    definitions: dict[str, Any],
+    tools: list[ToolDefinition],
 ) -> None:
-    policy = runtime_config.capabilities
-    denied = frozenset(policy.denied_capabilities)
-    enabled_caps = [c for c in policy.enabled_capabilities if c not in denied]
+    """Validate delegation tool defaults against model allowlist."""
     model_allowlist = frozenset(runtime_config.model.model_allowlist)
-    for cap_id in enabled_caps:
-        definition = definitions.get(cap_id)
-        if definition is None or definition.delegation is None:
+    for tool in tools:
+        if tool.default_params is None:
             continue
-        for stage in definition.delegation.stages:
-            if stage.model_id not in model_allowlist:
-                raise SystemExit(
-                    f"Capability '{cap_id}' delegation stage '{stage.stage_id}' "
-                    f"uses model '{stage.model_id}' outside model_allowlist"
-                ) from None
+        default_model = tool.default_params.delegation_default_model_id
+        if default_model and default_model not in model_allowlist:
+            raise SystemExit(
+                f"Tool '{tool.tool_id}' has delegation_default_model_id '{default_model}' "
+                f"not in model_allowlist"
+            ) from None
 
 
 def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
@@ -104,6 +101,6 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
             ) from None
 
     _validate_tools_and_capabilities(runtime_config, definitions)
-    _validate_delegation_workflows(runtime_config, definitions)
+    _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)
 
     return runtime_config

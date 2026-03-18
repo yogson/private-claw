@@ -1,7 +1,7 @@
 """
 Component ID: CMP_AGENT_SUBAGENT_COORDINATOR
 
-Background delegation coordinator for staged provider-backed tasks.
+Background delegation coordinator for provider-backed tasks.
 """
 
 import asyncio
@@ -13,11 +13,10 @@ from typing import Any
 
 import structlog
 
-from assistant.core.capabilities.schemas import CapabilityDefinition, DelegationWorkflowDefinition
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.store.interfaces import StoreFacadeInterface
 from assistant.store.models import TaskRecord, TaskStatus
-from assistant.subagents.contracts import DelegationAcceptResult, DelegationStageRun
+from assistant.subagents.contracts import DelegationAcceptResult, DelegationRun
 from assistant.subagents.interfaces import (
     DelegationBackendAdapterInterface,
     DelegationCoordinatorInterface,
@@ -28,6 +27,7 @@ logger = structlog.get_logger(__name__)
 _COORDINATOR_SLEEP_SECONDS = 1.0
 _DEFAULT_MAX_WORKERS = 3
 _DEFAULT_BUDGET_WINDOW_SECONDS = 86400
+_DEFAULT_BACKEND = "claude_code"
 
 
 class DelegationCoordinator(DelegationCoordinatorInterface):
@@ -38,13 +38,11 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         *,
         store: StoreFacadeInterface,
         config: RuntimeConfig,
-        capability_definitions: dict[str, CapabilityDefinition],
         backends: list[DelegationBackendAdapterInterface],
         completion_callback: Callable[[TaskRecord], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._config = config
-        self._capability_definitions = capability_definitions
         self._backends = {b.backend_id: b for b in backends}
         self._completion_callback = completion_callback
         self._stop = asyncio.Event()
@@ -89,31 +87,32 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             session_id=session_id,
             turn_id=turn_id,
             trace_id=trace_id,
-            workflow_id=request.get("workflow_id"),
+            model_id=request.get("model_id"),
         )
         objective = str(request.get("objective", "")).strip()
         if not objective:
             return self._rejected("rejected_invalid", "objective is required")
-        workflow = self._resolve_workflow(request.get("workflow_id"))
-        if workflow is None:
-            return self._rejected(
-                "rejected_invalid",
-                "no delegation workflow is configured in enabled capabilities",
-            )
-        backend_id = workflow.backend.strip()
+        backend_id = self._resolve_backend(request)
         if backend_id not in self._backends:
             return self._rejected("rejected_invalid", f"backend '{backend_id}' is not available")
 
         tool_params = request.get("tool_params", {})
+        model_id = self._resolve_model_id(request, tool_params)
+        if model_id is None:
+            attempted_model = self._attempted_model_id(request, tool_params)
+            return self._rejected(
+                "rejected_policy",
+                f"model_id '{attempted_model}' is not allowed",
+            )
         if not self._backend_allowed(backend_id, tool_params):
             return self._rejected(
                 "rejected_policy",
                 f"backend '{backend_id}' is not in delegation_allowed_backends",
             )
-        if not self._models_allowed(workflow, tool_params):
+        if not self._model_allowed(model_id, tool_params):
             return self._rejected(
                 "rejected_policy",
-                "one or more workflow stage models are not allowlisted",
+                "model_id is not in delegation_model_allowlist",
             )
         if await self._reaches_concurrency_limit(tool_params):
             return self._rejected(
@@ -122,7 +121,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             )
         budget_reason, projected_tokens = await self._check_budget(
             session_id=session_id,
-            workflow=workflow,
+            max_turns=self._resolve_max_turns(request, tool_params),
             tool_params=tool_params,
             request=request,
         )
@@ -134,16 +133,16 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         task_id = str(request.get("task_id") or f"dlg-{uuid.uuid4().hex[:12]}")
         metadata = {
             "kind": "delegation",
-            "workflow_id": workflow.workflow_id,
             "backend": backend_id,
             "objective": objective,
-            "result_format": workflow.result_format,
-            "stages": [stage.model_dump() for stage in workflow.stages if stage.enabled],
-            "stage_outputs": [],
+            "model_id": model_id,
+            "max_turns": self._resolve_max_turns(request, tool_params),
+            "timeout_seconds": self._resolve_timeout_seconds(request, tool_params),
             "requested_by_user_id": user_id,
             "trace_id": trace_id,
             "chat_id": request.get("chat_id") or self._chat_id_from_session(session_id),
             "projected_tokens": projected_tokens,
+            "backend_params": request.get("backend_params", {}),
             "tool_request_metadata": request.get("metadata", {}),
         }
         task = TaskRecord(
@@ -168,7 +167,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         logger.info(
             "subagent.spawn.accepted",
             task_id=task_id,
-            workflow_id=workflow.workflow_id,
+            model_id=model_id,
             backend=backend_id,
             projected_tokens=projected_tokens,
         )
@@ -226,86 +225,57 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "subagent.run.started",
             task_id=task.task_id,
             backend=backend_id,
-            workflow_id=task.metadata.get("workflow_id"),
+            model_id=task.metadata.get("model_id"),
         )
         objective = str(task.metadata.get("objective", ""))
-        stage_outputs: list[dict[str, Any]] = list(task.metadata.get("stage_outputs", []))
-        stages = task.metadata.get("stages", [])
-        if not isinstance(stages, list) or not stages:
-            await self._store.tasks.update_status(
+        latest = await self._store.tasks.get(task.task_id)
+        if latest is not None and latest.status == TaskStatus.CANCELLED:
+            logger.info("subagent.run.cancelled", task_id=task.task_id)
+            return
+        await self._store.tasks.heartbeat(task.task_id)
+        run = DelegationRun(
+            task_id=task.task_id,
+            objective=objective,
+            model_id=str(task.metadata.get("model_id", self._config.model.default_model_id)),
+            timeout_seconds=int(task.metadata.get("timeout_seconds", 300)),
+            max_turns=int(task.metadata.get("max_turns", 8)),
+            backend_params=(
+                dict(task.metadata.get("backend_params", {}))
+                if isinstance(task.metadata.get("backend_params"), dict)
+                else {}
+            ),
+        )
+        logger.info(
+            "subagent.run.progress",
+            task_id=task.task_id,
+            backend=backend_id,
+        )
+        result = await backend.execute(run)
+        if not result.ok:
+            updated = await self._store.tasks.update_status(
                 task.task_id,
                 TaskStatus.FAILED,
-                error="delegation workflow has no enabled stages",
+                error=result.error or "delegation run failed",
+                result={"usage": result.usage, "artifacts": result.artifacts},
             )
-            return
-        for idx, stage in enumerate(stages):
-            latest = await self._store.tasks.get(task.task_id)
-            if latest is not None and latest.status == TaskStatus.CANCELLED:
-                logger.info("subagent.run.cancelled", task_id=task.task_id)
-                return
-            await self._store.tasks.heartbeat(task.task_id)
-            run = DelegationStageRun(
-                task_id=task.task_id,
-                stage_id=str(stage.get("stage_id", f"stage-{idx + 1}")),
-                purpose=str(stage.get("purpose", "")),
-                model_id=str(stage.get("model_id", "")),
-                objective=objective,
-                timeout_seconds=int(stage.get("timeout_seconds", 300)),
-                max_turns=int(stage.get("max_turns", 8)),
-                stage_index=idx,
-                prior_stage_outputs=stage_outputs,
-                backend_params={
-                    **task.metadata.get("backend_params", {}),
-                    **(stage.get("backend_params", {}) if isinstance(stage, dict) else {}),
-                },
-            )
-            logger.info(
-                "subagent.run.progress",
-                task_id=task.task_id,
-                stage_id=run.stage_id,
-                stage_index=idx,
-                backend=backend_id,
-            )
-            result = await backend.execute_stage(run)
-            stage_outputs.append(
-                {
-                    "stage_id": run.stage_id,
-                    "purpose": run.purpose,
-                    "ok": result.ok,
-                    "output_text": result.output_text,
-                    "error": result.error,
-                    "usage": result.usage,
-                }
-            )
-            task.metadata["stage_outputs"] = stage_outputs
-            task = await self._store.tasks.update(task)
-            if not result.ok:
-                updated = await self._store.tasks.update_status(
-                    task.task_id,
-                    TaskStatus.FAILED,
-                    error=result.error or f"stage {run.stage_id} failed",
-                    result={"stage_outputs": stage_outputs},
+            if updated is not None:
+                logger.warning(
+                    "subagent.run.failed",
+                    task_id=task.task_id,
+                    error=updated.error,
                 )
-                if updated is not None:
-                    logger.warning(
-                        "subagent.run.failed",
-                        task_id=task.task_id,
-                        stage_id=run.stage_id,
-                        error=updated.error,
-                    )
-                    await self._notify_completion(updated)
-                return
-        summary = stage_outputs[-1].get("output_text", "") if stage_outputs else ""
+                await self._notify_completion(updated)
+            return
+        summary = result.output_text
         updated = await self._store.tasks.update_status(
             task.task_id,
             TaskStatus.COMPLETED,
-            result={"stage_outputs": stage_outputs, "summary": summary},
+            result={"summary": summary, "usage": result.usage, "artifacts": result.artifacts},
         )
         if updated is not None:
             logger.info(
                 "subagent.run.completed",
                 task_id=task.task_id,
-                stage_count=len(stage_outputs),
             )
             await self._notify_completion(updated)
 
@@ -329,21 +299,21 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             )
             logger.warning("subagent.run.recovered_as_failed", task_id=task.task_id)
 
-    def _resolve_workflow(self, workflow_id: object) -> DelegationWorkflowDefinition | None:
-        enabled_caps = self._enabled_capabilities()
-        for cap_id in enabled_caps:
-            definition = self._capability_definitions.get(cap_id)
-            if definition is None or definition.delegation is None:
-                continue
-            if workflow_id is None:
-                return definition.delegation
-            if definition.delegation.workflow_id == str(workflow_id):
-                return definition.delegation
-        return None
+    def _resolve_backend(self, request: dict[str, Any]) -> str:
+        backend = str(request.get("backend", "")).strip()
+        return backend or _DEFAULT_BACKEND
 
-    def _enabled_capabilities(self) -> list[str]:
-        denied = frozenset(self._config.capabilities.denied_capabilities)
-        return [c for c in self._config.capabilities.enabled_capabilities if c not in denied]
+    def _resolve_model_id(self, request: dict[str, Any], tool_params: object) -> str | None:
+        model_id = self._attempted_model_id(request, tool_params)
+        return model_id if model_id in self._config.model.model_allowlist else None
+
+    def _attempted_model_id(self, request: dict[str, Any], tool_params: object) -> str:
+        model_id = str(request.get("model_id", "")).strip()
+        if not model_id and isinstance(tool_params, dict):
+            model_id = str(tool_params.get("delegation_default_model_id", "")).strip()
+        if not model_id:
+            model_id = self._config.model.default_model_id
+        return model_id
 
     @staticmethod
     def _backend_allowed(backend: str, tool_params: object) -> bool:
@@ -355,17 +325,14 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         return backend in {str(x) for x in allow}
 
     @staticmethod
-    def _models_allowed(workflow: DelegationWorkflowDefinition, tool_params: object) -> bool:
+    def _model_allowed(model_id: str, tool_params: object) -> bool:
         if not isinstance(tool_params, dict):
             return True
         allow = tool_params.get("delegation_model_allowlist")
         if not isinstance(allow, list) or not allow:
             return True
         allowed = {str(x) for x in allow}
-        for stage in workflow.stages:
-            if stage.enabled and stage.model_id not in allowed:
-                return False
-        return True
+        return model_id in allowed
 
     @staticmethod
     def _resolve_ttl_seconds(tool_params: object) -> int:
@@ -405,11 +372,11 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         self,
         *,
         session_id: str,
-        workflow: DelegationWorkflowDefinition,
+        max_turns: int,
         tool_params: object,
         request: dict[str, Any],
     ) -> tuple[str | None, int]:
-        projected_tokens = self._projected_tokens(workflow, tool_params, request)
+        projected_tokens = self._projected_tokens(max_turns, tool_params, request)
         if projected_tokens <= 0:
             return None, projected_tokens
         if not isinstance(tool_params, dict):
@@ -462,7 +429,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
 
     @staticmethod
     def _projected_tokens(
-        workflow: DelegationWorkflowDefinition,
+        max_turns: int,
         tool_params: object,
         request: dict[str, Any],
     ) -> int:
@@ -478,8 +445,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             )
             if parsed:
                 estimate_per_turn = parsed
-        total_turns = sum(stage.max_turns for stage in workflow.stages if stage.enabled)
-        return total_turns * estimate_per_turn
+        return max(max_turns, 1) * estimate_per_turn
 
     @staticmethod
     def _task_token_usage(task: TaskRecord) -> int:
@@ -503,6 +469,16 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         return parsed if parsed > 0 else None
 
     @staticmethod
+    def _parse_positive_int(value: object) -> int | None:
+        try:
+            parsed = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+        if parsed is None:
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
     def _rejected(status: str, reason: str) -> dict[str, Any]:
         logger.info("subagent.spawn.blocked", status=status, reason=reason)
         return DelegationAcceptResult(
@@ -522,6 +498,32 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             if value is not None and value > 0:
                 return value
         return _DEFAULT_MAX_WORKERS
+
+    @staticmethod
+    def _resolve_max_turns(request: dict[str, Any], tool_params: object) -> int:
+        parsed = DelegationCoordinator._parse_positive_int(request.get("max_turns"))
+        if parsed is not None and parsed > 0:
+            return parsed
+        if isinstance(tool_params, dict):
+            parsed_default = DelegationCoordinator._parse_positive_int(
+                tool_params.get("delegation_default_max_turns")
+            )
+            if parsed_default is not None and parsed_default > 0:
+                return parsed_default
+        return 8
+
+    @staticmethod
+    def _resolve_timeout_seconds(request: dict[str, Any], tool_params: object) -> int:
+        parsed = DelegationCoordinator._parse_positive_int(request.get("timeout_seconds"))
+        if parsed is not None and parsed > 0:
+            return parsed
+        if isinstance(tool_params, dict):
+            parsed_default = DelegationCoordinator._parse_positive_int(
+                tool_params.get("delegation_default_timeout_seconds")
+            )
+            if parsed_default is not None and parsed_default > 0:
+                return parsed_default
+        return 300
 
     def _reap_finished_inflight(self) -> None:
         done_ids = [task_id for task_id, worker in self._inflight.items() if worker.done()]

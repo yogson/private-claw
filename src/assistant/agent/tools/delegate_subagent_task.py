@@ -17,7 +17,7 @@ logger = structlog.get_logger(__name__)
 async def delegate_subagent_task(
     ctx: RunContext[TurnDeps],
     objective: str,
-    workflow_id: str | None = None,
+    model_id: str | None = None,
     max_tokens: int | None = None,
     chat_id: int | None = None,
     metadata: dict[str, Any] | None = None,
@@ -32,7 +32,7 @@ async def delegate_subagent_task(
         }
     request: dict[str, Any] = {
         "objective": objective,
-        "workflow_id": workflow_id,
+        "model_id": model_id,
         "max_tokens": max_tokens,
         "chat_id": chat_id,
         "metadata": metadata or {},

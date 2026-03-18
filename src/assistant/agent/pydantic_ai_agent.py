@@ -11,17 +11,13 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 
 from assistant.agent.ask_question_extractor import _extract_pending_ask_question
-from assistant.agent.constants import ASK_QUESTION_TOOL_NAME, MEMORY_AGENT_PROMPT_NAME, MEMORY_TOOL_NAME
 from assistant.agent.memory_intent_processor import _new_messages_to_plans
 from assistant.agent.message_converters import (
     _llm_messages_to_history,
-    _map_block_to_user_content,
-    _message_to_prompt_content,
     _message_to_user_prompt_content,
-    _parse_tool_result_content,
 )
 from assistant.agent.session_record_builder import _new_messages_to_session_records
-from assistant.agent.system_prompt_builder import _compose_system_prompt, _config_dir
+from assistant.agent.system_prompt_builder import _compose_system_prompt
 from assistant.agent.tools import TurnDeps, get_agent_tools
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.first_party.memory import normalize_candidate_for_upsert

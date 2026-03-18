@@ -42,12 +42,12 @@ async def test_delegate_subagent_task_calls_handler() -> None:
     result = await delegate_subagent_task(
         ctx,
         objective="Implement feature",
-        workflow_id="coding",
+        model_id="claude-sonnet-4-5",
         metadata={"ticket": "PC-1"},
     )
     assert result["accepted"] is True
     assert result["task_id"] == "dlg-1"
     payload = result["payload_echo"]
     assert payload["objective"] == "Implement feature"
-    assert payload["workflow_id"] == "coding"
+    assert payload["model_id"] == "claude-sonnet-4-5"
     assert payload["metadata"]["ticket"] == "PC-1"

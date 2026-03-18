@@ -33,7 +33,9 @@ The coordinator is the sole authority for:
 
 Current v1 implementation mapping:
 - Spawn surface is exposed to the model via `delegate_subagent_task`.
-- Request stage sequence is selected from capability-manifest workflow definitions.
+- Request payload contains one `objective` with optional direct `model_id` override.
+- Runtime defaults (for example `delegation_default_model_id`) come from
+  `delegate_subagent_task` tool configuration.
 - Backend-specific parameters are carried through `backend_params` while keeping core contracts backend-agnostic.
 - Claude Code is implemented as the first provider adapter behind a reusable backend interface.
 

@@ -22,6 +22,7 @@ tools:
     default_params:
       delegation_allowed_backends:
         - claude_code
+      delegation_default_model_id: claude-sonnet-4-5
       delegation_model_allowlist: []
       delegation_default_ttl_seconds: 3600
       delegation_max_ttl_seconds: 21600
@@ -31,6 +32,8 @@ tools:
       delegation_global_token_cap: 1000000
       delegation_budget_window_seconds: 86400
       delegation_estimated_tokens_per_turn: 2000
+      delegation_default_max_turns: 8
+      delegation_default_timeout_seconds: 300
 
   - tool_id: shell_execute_readonly
     entrypoint: assistant.agent.tools.shell_execute:shell_execute_readonly

@@ -8,7 +8,13 @@ MemoryIntentPlan objects ready for orchestrator persistence.
 import json
 from typing import Any
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.agent.message_converters import _parse_tool_result_content

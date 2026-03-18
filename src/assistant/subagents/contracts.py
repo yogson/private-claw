@@ -1,7 +1,7 @@
 """
 Component ID: CMP_AGENT_SUBAGENT_COORDINATOR
 
-Provider-agnostic delegation contracts for enqueueing and executing staged tasks.
+Provider-agnostic delegation contracts for single-run delegated tasks.
 """
 
 from enum import StrEnum
@@ -17,23 +17,19 @@ class DelegationTerminalStatus(StrEnum):
     EXPIRED = "expired"
 
 
-class DelegationStageRun(BaseModel):
-    """Resolved stage payload passed to a backend adapter."""
+class DelegationRun(BaseModel):
+    """Resolved payload passed to a backend adapter."""
 
     task_id: str
-    stage_id: str
-    purpose: str
-    model_id: str
     objective: str
+    model_id: str
     timeout_seconds: int = Field(default=300, ge=1)
     max_turns: int = Field(default=8, ge=1)
-    stage_index: int = Field(default=0, ge=0)
-    prior_stage_outputs: list[dict[str, Any]] = Field(default_factory=list)
     backend_params: dict[str, Any] = Field(default_factory=dict)
 
 
-class DelegationStageResult(BaseModel):
-    """Normalized backend stage result."""
+class DelegationResult(BaseModel):
+    """Normalized backend result."""
 
     ok: bool
     output_text: str = ""

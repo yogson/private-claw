@@ -131,7 +131,9 @@ Coordinator enforcement rules:
 ## Current v1 Implementation Notes
 
 - Delegation entrypoint tool: `delegate_subagent_task`.
-- Workflow source of truth: capability manifest `delegation` section (workflow id, backend, ordered stages).
+- Single-run contract: a task is delegated with `objective` and optional `model_id` override.
+- Model, backend, timeout, and budget defaults are configured via tool defaults
+  (for example `delegation_default_model_id`, `delegation_default_timeout_seconds`).
 - Coordinator implementation: `src/assistant/subagents/coordinator.py`.
 - Backend abstraction: `DelegationBackendAdapterInterface` with provider routing in coordinator.
 - First backend implementation: `ClaudeCodeBackendAdapter` (`src/assistant/subagents/backends/claude_code.py`).

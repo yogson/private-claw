@@ -29,7 +29,6 @@ from assistant.channels.telegram.models import ChannelResponse, MessageType, Nor
 from assistant.channels.telegram.polling import run_polling
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.core.bootstrap import bootstrap
-from assistant.core.capabilities.loader import load_capability_definitions
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
@@ -190,7 +189,7 @@ def _build_orchestrator_handler(
                 message_type=MessageType.TEXT,
                 text=message,
             )
-        if adapter.is_task_callback(event):
+        if event.callback_query is not None and adapter.is_task_callback(event):
             parsed = adapter.parse_task_callback(event)
             if parsed is None:
                 return ChannelResponse(
@@ -388,12 +387,10 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
-        capabilities = load_capability_definitions(config_dir=runtime_config.config_dir)
         delegation_notifier = DelegationTelegramNotifier(adapter)
         delegation_coordinator = DelegationCoordinator(
             store=store,
             config=runtime_config,
-            capability_definitions=capabilities,
             backends=[ClaudeCodeBackendAdapter()],
             completion_callback=delegation_notifier.notify_task_terminal,
         )
