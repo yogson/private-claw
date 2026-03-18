@@ -42,7 +42,6 @@ from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.subagents.backends import ClaudeCodeBackendAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
-from assistant.subagents.telegram_notify import DelegationTelegramNotifier
 
 logger = structlog.get_logger(__name__)
 
@@ -387,12 +386,10 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
-        delegation_notifier = DelegationTelegramNotifier(adapter)
         delegation_coordinator = DelegationCoordinator(
             store=store,
             config=runtime_config,
             backends=[ClaudeCodeBackendAdapter()],
-            completion_callback=delegation_notifier.notify_task_terminal,
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator

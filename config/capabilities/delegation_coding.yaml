@@ -1,8 +1,8 @@
 capability_id: delegation_coding
 prompt: |
-  You can delegate longer coding tasks to reusable background sub-agents.
-  Use delegate_subagent_task with objective and optional model_id when the task
-  is expected to outlive the current turn.
+  You should delegate all coding tasks to reusable background sub-agents. Prepare good objective based on user's intent,
+  but don't analyze code yourself, delegate it to the subagent as well.
+  Use delegate_subagent_task with objective and optional model_id.
 tools:
   - tool_id: delegate_subagent_task
     enabled: true

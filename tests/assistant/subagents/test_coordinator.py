@@ -226,6 +226,36 @@ async def test_tool_default_model_used_when_request_missing(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_tool_default_model_used_when_request_model_id_is_none(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(
+            tmp_path,
+            model_allowlist=["claude-sonnet-4-5", "claude-opus-4-5"],
+        ),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={
+            "objective": "Implement",
+            "model_id": None,
+            "tool_params": {"delegation_default_model_id": "claude-opus-4-5"},
+        },
+    )
+    assert accepted["accepted"] is True
+    task = await coordinator.get_task(accepted["task_id"])
+    assert task is not None
+    assert task.metadata.get("model_id") == "claude-opus-4-5"
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_reject_when_concurrency_limit_reached(tmp_path: Path) -> None:
     store = StoreFacade(data_root=tmp_path)
     await store.initialize()
@@ -281,7 +311,7 @@ async def test_reject_when_per_task_budget_exceeded(tmp_path: Path) -> None:
         request={
             "objective": "Implement",
             "model_id": "claude-sonnet-4-5",
-            "max_tokens": 5000,
+            "max_turns": 1,
             "tool_params": {"delegation_per_task_token_cap": 1000},
         },
     )

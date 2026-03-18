@@ -137,5 +137,5 @@ Coordinator enforcement rules:
 - Coordinator implementation: `src/assistant/subagents/coordinator.py`.
 - Backend abstraction: `DelegationBackendAdapterInterface` with provider routing in coordinator.
 - First backend implementation: `ClaudeCodeBackendAdapter` (`src/assistant/subagents/backends/claude_code.py`).
-- Completion notifications: Telegram proactive messages with signed callbacks for task status/summary actions.
+- Completion notifications are currently disabled and will be rebuilt.
 

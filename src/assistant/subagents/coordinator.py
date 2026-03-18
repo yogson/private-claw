@@ -123,7 +123,6 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             session_id=session_id,
             max_turns=self._resolve_max_turns(request, tool_params),
             tool_params=tool_params,
-            request=request,
         )
         if budget_reason is not None:
             return self._rejected("rejected_policy", budget_reason)
@@ -140,10 +139,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "timeout_seconds": self._resolve_timeout_seconds(request, tool_params),
             "requested_by_user_id": user_id,
             "trace_id": trace_id,
-            "chat_id": request.get("chat_id") or self._chat_id_from_session(session_id),
+            "chat_id": self._chat_id_from_session(session_id),
             "projected_tokens": projected_tokens,
             "backend_params": request.get("backend_params", {}),
-            "tool_request_metadata": request.get("metadata", {}),
         }
         task = TaskRecord(
             task_id=task_id,
@@ -300,7 +298,8 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             logger.warning("subagent.run.recovered_as_failed", task_id=task.task_id)
 
     def _resolve_backend(self, request: dict[str, Any]) -> str:
-        backend = str(request.get("backend", "")).strip()
+        raw_backend = request.get("backend")
+        backend = str(raw_backend).strip() if raw_backend is not None else ""
         return backend or _DEFAULT_BACKEND
 
     def _resolve_model_id(self, request: dict[str, Any], tool_params: object) -> str | None:
@@ -308,9 +307,13 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         return model_id if model_id in self._config.model.model_allowlist else None
 
     def _attempted_model_id(self, request: dict[str, Any], tool_params: object) -> str:
-        model_id = str(request.get("model_id", "")).strip()
+        raw_model_id = request.get("model_id")
+        model_id = str(raw_model_id).strip() if raw_model_id is not None else ""
         if not model_id and isinstance(tool_params, dict):
-            model_id = str(tool_params.get("delegation_default_model_id", "")).strip()
+            raw_default_model_id = tool_params.get("delegation_default_model_id")
+            model_id = (
+                str(raw_default_model_id).strip() if raw_default_model_id is not None else ""
+            )
         if not model_id:
             model_id = self._config.model.default_model_id
         return model_id
@@ -374,9 +377,8 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         session_id: str,
         max_turns: int,
         tool_params: object,
-        request: dict[str, Any],
     ) -> tuple[str | None, int]:
-        projected_tokens = self._projected_tokens(max_turns, tool_params, request)
+        projected_tokens = self._projected_tokens(max_turns, tool_params)
         if projected_tokens <= 0:
             return None, projected_tokens
         if not isinstance(tool_params, dict):
@@ -431,13 +433,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
     def _projected_tokens(
         max_turns: int,
         tool_params: object,
-        request: dict[str, Any],
     ) -> int:
-        direct = request.get("max_tokens")
-        if isinstance(direct, int) and direct > 0:
-            return direct
-        if isinstance(direct, str) and direct.isdigit():
-            return int(direct)
         estimate_per_turn = 2000
         if isinstance(tool_params, dict):
             parsed = DelegationCoordinator._coerce_int(

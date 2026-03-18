@@ -43,11 +43,10 @@ async def test_delegate_subagent_task_calls_handler() -> None:
         ctx,
         objective="Implement feature",
         model_id="claude-sonnet-4-5",
-        metadata={"ticket": "PC-1"},
     )
     assert result["accepted"] is True
     assert result["task_id"] == "dlg-1"
     payload = result["payload_echo"]
     assert payload["objective"] == "Implement feature"
     assert payload["model_id"] == "claude-sonnet-4-5"
-    assert payload["metadata"]["ticket"] == "PC-1"
+    assert payload["tool_params"]["delegation_allowed_backends"] == ["claude_code"]
