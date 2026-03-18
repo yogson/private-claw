@@ -15,7 +15,7 @@ from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.memory.retrieval.models import RetrievalResult
-from assistant.store.models import SessionRecord, SessionRecordType
+from assistant.store.models import SessionRecord, SessionRecordType, SystemMessageScope
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +56,7 @@ _TEXT_ATTACHMENT_EXTENSIONS = frozenset(
 )
 _FALLBACK_MIME_TYPE = "application/octet-stream"
 _DEBUG_LOG = Path(__file__).resolve().parents[4] / ".cursor" / "debug-2322a9.log"
+_DELEGATION_UPDATE_PREFIX = "[[DELEGATION_UPDATE]]"
 
 
 def _debug_log_ask_question_args(tool_name: str, args: dict[str, Any]) -> None:
@@ -267,6 +268,18 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
             content = record.payload.get("content", "")
             if content:
                 messages.append(LLMMessage(role=MessageRole.USER, content=content))
+            i += 1
+        elif record.record_type == SessionRecordType.SYSTEM_MESSAGE:
+            content = record.payload.get("content", "")
+            scope = record.payload.get("scope")
+            # Delegation updates are internal runtime events: include intentionally as
+            # assistant context, never as user input.
+            if (
+                isinstance(content, str)
+                and content.startswith(_DELEGATION_UPDATE_PREFIX)
+                and scope == SystemMessageScope.TURN.value
+            ):
+                messages.append(LLMMessage(role=MessageRole.ASSISTANT, content=content))
             i += 1
         elif record.record_type == SessionRecordType.ASSISTANT_MESSAGE:
             content = record.payload.get("content", "")

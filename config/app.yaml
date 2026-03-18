@@ -1,7 +1,9 @@
 # Application runtime configuration
 # Environment override prefix: ASSISTANT_APP_
+# Special case: logfire_token uses ASSISTANT_LOGFIRE_TOKEN
 
 runtime_mode: prod   # prod | dev
 data_root: ./data    # root for all persisted runtime data
 timezone: UTC        # IANA timezone string, e.g. Europe/Kyiv
 log_level: INFO      # DEBUG | INFO | WARNING | ERROR
+logfire_token: ""    # optional; can be set via ASSISTANT_LOGFIRE_TOKEN

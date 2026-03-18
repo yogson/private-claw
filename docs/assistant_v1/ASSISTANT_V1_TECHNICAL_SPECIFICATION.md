@@ -368,7 +368,7 @@ Detailed request/result schemas, lifecycle semantics, and coordinator rules are 
 
 ### Configuration Domains
 
-- `config/app.yaml`: runtime mode, data root, timezone.
+- `config/app.yaml`: runtime mode, data root, timezone, optional log level, optional `logfire_token`.
 - `config/channel.telegram.yaml`: bot token, polling settings, allowlist.
 - `config/model.yaml`: default model, model allowlist, routing/budget policies.
 - `config/capabilities.yaml`: capability/skill/sub-agent capability rules.
@@ -378,15 +378,19 @@ Detailed request/result schemas, lifecycle semantics, and coordinator rules are 
 
 Environment variable naming convention:
 - `ASSISTANT_<DOMAIN>_<KEY>` (uppercase snake case), for example:
+  - `ASSISTANT_LOGFIRE_TOKEN`
   - `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`
   - `ASSISTANT_MODEL_DEFAULT_ID`
   - `ASSISTANT_STORE_LOCK_TTL_SECONDS`
+
+Exception:
+- `app.logfire_token` uses `ASSISTANT_LOGFIRE_TOKEN` (global) instead of `ASSISTANT_APP_LOGFIRE_TOKEN`.
 
 Configuration schema baseline:
 
 | File | Required Fields | Optional Fields | Example Defaults |
 |---|---|---|---|
-| `config/app.yaml` | `runtime_mode`, `data_root`, `timezone` | `log_level` | `runtime_mode=prod`, `timezone=UTC` |
+| `config/app.yaml` | `runtime_mode`, `data_root`, `timezone` | `log_level`, `logfire_token` | `runtime_mode=prod`, `timezone=UTC` |
 | `config/channel.telegram.yaml` | `bot_token`, `allowlist` | `poll_timeout_seconds`, `poll_interval_seconds`, `startup_drop_pending_updates`, `mtproto_api_id`, `mtproto_api_hash`, `transcription_timeout_seconds`, `throttle_max_per_minute` | `poll_timeout_seconds=30`, `poll_interval_seconds=0` |
 | `config/model.yaml` | `default_model_id`, `model_allowlist` | `quality_routing`, `max_tokens_default` | `quality_routing=quality_first` |
 | `config/capabilities.yaml` | `allowed_capabilities` | `denied_capabilities`, `command_allowlist` | `denied_capabilities=[]` |
@@ -398,6 +402,7 @@ Validation policy:
 - Startup must fail when any required field is absent or invalid.
 - Optional fields must receive documented defaults.
 - Environment overrides must be validated using the same schema rules.
+- Effective-config/API/admin responses must redact sensitive values such as `app.logfire_token`.
 
 Retrieval-related configuration keys:
 - `retrieval_llm_threshold_count` (int, optional, default: 20)

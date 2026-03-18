@@ -31,6 +31,7 @@ _SENSITIVE_KEYS = {"bot_token", "api_key", "secret", "token", "password"}
 _SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "api_key")
 _DEFAULT_CONFIG_DIR = "config"
 _CONFIG_DIR_ENV_VAR = "ASSISTANT_CONFIG_DIR"
+_APP_LOGFIRE_TOKEN_ENV_VAR = "ASSISTANT_LOGFIRE_TOKEN"
 
 # Maps domain name → (yaml filename, Pydantic schema class, env prefix)
 _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
@@ -136,6 +137,11 @@ class ConfigLoader:
         if yaml_data is None:
             return None, {}
         merged, env_overridden = apply_env_overrides(yaml_data, env_prefix)
+        # Canonical env var for app.logfire_token is global (ASSISTANT_LOGFIRE_TOKEN),
+        # not domain-prefixed, so apply it explicitly here.
+        if schema_cls is AppConfig and _APP_LOGFIRE_TOKEN_ENV_VAR in os.environ:
+            merged["logfire_token"] = os.environ[_APP_LOGFIRE_TOKEN_ENV_VAR]
+            env_overridden.add("logfire_token")
         try:
             obj = schema_cls(**merged)
         except ValidationError as exc:

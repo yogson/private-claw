@@ -30,6 +30,7 @@ class AppConfig(BaseModel):
     data_root: str
     timezone: str
     log_level: LogLevel = LogLevel.INFO
+    logfire_token: str = ""
 
 
 class TelegramChannelConfig(BaseModel):

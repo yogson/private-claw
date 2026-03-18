@@ -41,7 +41,7 @@ from assistant.core.orchestrator import (
 )
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
-from assistant.store.models import SessionRecord, SessionRecordType
+from assistant.store.models import SessionRecord, SessionRecordType, SystemMessageScope
 
 
 def _runtime_config() -> RuntimeConfig:
@@ -244,6 +244,29 @@ class TestRecordsToMessages:
         ]
         assert _records_to_messages(records) == []
 
+    def test_includes_turn_scoped_delegation_update_as_assistant_message(self) -> None:
+        records = [
+            SessionRecord(
+                session_id="s1",
+                sequence=0,
+                event_id="e1",
+                turn_id="delegation-update-dlg-1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.SYSTEM_MESSAGE,
+                payload={
+                    "message_id": "msg-delegation-update-dlg-1",
+                    "content": (
+                        '[[DELEGATION_UPDATE]]\n{"type":"delegation_update","task_id":"dlg-1"}'
+                    ),
+                    "scope": SystemMessageScope.TURN.value,
+                },
+            ),
+        ]
+        msgs = _records_to_messages(records)
+        assert len(msgs) == 1
+        assert msgs[0].role == MessageRole.ASSISTANT
+        assert msgs[0].content.startswith("[[DELEGATION_UPDATE]]")
+
     def test_tool_call_and_result_included(self) -> None:
         """Replay mapping includes assistant tool-use and user tool-result blocks."""
         records = [
@@ -306,7 +329,7 @@ class TestRecordsToMessages:
         assert any(b.get("type") == "tool_result" for b in msgs[2].content_blocks)
 
     def test_deduplicates_tool_results_for_same_tool_call_id(self) -> None:
-        """Memory confirmation appends a second TOOL_RESULT for same tool_call_id; emit only last."""
+        """Emit only the last TOOL_RESULT for repeated tool_call_id."""
         records = [
             SessionRecord(
                 session_id="s1",

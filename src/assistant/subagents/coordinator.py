@@ -6,6 +6,7 @@ Background delegation coordinator for provider-backed tasks.
 
 import asyncio
 import contextlib
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,14 @@ import structlog
 
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.store.interfaces import StoreFacadeInterface
-from assistant.store.models import TaskRecord, TaskStatus
+from assistant.store.models import (
+    SessionRecord,
+    SessionRecordType,
+    SystemMessagePayload,
+    SystemMessageScope,
+    TaskRecord,
+    TaskStatus,
+)
 from assistant.subagents.contracts import DelegationAcceptResult, DelegationRun
 from assistant.subagents.interfaces import (
     DelegationBackendAdapterInterface,
@@ -28,6 +36,7 @@ _COORDINATOR_SLEEP_SECONDS = 1.0
 _DEFAULT_MAX_WORKERS = 3
 _DEFAULT_BUDGET_WINDOW_SECONDS = 86400
 _DEFAULT_BACKEND = "claude_code"
+_DELEGATION_UPDATE_PREFIX = "[[DELEGATION_UPDATE]]"
 
 
 class DelegationCoordinator(DelegationCoordinatorInterface):
@@ -71,6 +80,12 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
         self._worker_task = None
+
+    def set_completion_callback(
+        self, callback: Callable[[TaskRecord], Awaitable[None]] | None
+    ) -> None:
+        """Update terminal-task completion callback at runtime."""
+        self._completion_callback = callback
 
     async def enqueue_from_tool(
         self,
@@ -278,12 +293,83 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             await self._notify_completion(updated)
 
     async def _notify_completion(self, task: TaskRecord) -> None:
+        try:
+            await self._append_delegation_update_message(task)
+        except Exception:
+            logger.exception("subagent.session_update_failed", task_id=task.task_id)
         if self._completion_callback is None:
             return
         try:
             await self._completion_callback(task)
         except Exception:
             logger.exception("subagent.callback.failed", task_id=task.task_id)
+
+    async def _append_delegation_update_message(self, task: TaskRecord) -> None:
+        session_id = task.parent_session_id
+        if not session_id:
+            return
+        turn_id = f"delegation-update-{task.task_id}"
+        now = datetime.now(UTC)
+        result = task.result if isinstance(task.result, dict) else {}
+        artifacts = result.get("artifacts", {}) if isinstance(result, dict) else {}
+        raw_stdout = artifacts.get("raw_stdout") if isinstance(artifacts, dict) else None
+        stdout_excerpt = self._truncate_excerpt(str(raw_stdout), 2000) if raw_stdout else ""
+        payload: dict[str, Any] = {
+            "type": "delegation_update",
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "backend": task.metadata.get("backend"),
+            "model_id": task.metadata.get("model_id"),
+            "objective": task.metadata.get("objective"),
+            "summary": result.get("summary") if isinstance(result.get("summary"), str) else "",
+            "error": task.error,
+            "usage": result.get("usage") if isinstance(result.get("usage"), dict) else {},
+            "parent_turn_id": task.parent_turn_id,
+        }
+        if stdout_excerpt:
+            payload["stdout_excerpt"] = stdout_excerpt
+        content = _DELEGATION_UPDATE_PREFIX + "\n" + json.dumps(payload, separators=(",", ":"))
+        system_payload = SystemMessagePayload(
+            message_id=f"msg-{turn_id}",
+            content=content,
+            scope=SystemMessageScope.TURN,
+        )
+        records = [
+            SessionRecord(
+                session_id=session_id,
+                sequence=0,
+                event_id=f"event-{turn_id}",
+                turn_id=turn_id,
+                timestamp=now,
+                record_type=SessionRecordType.SYSTEM_MESSAGE,
+                payload=system_payload.model_dump(),
+            ),
+            SessionRecord(
+                session_id=session_id,
+                sequence=0,
+                event_id=f"terminal-{turn_id}",
+                turn_id=turn_id,
+                timestamp=now,
+                record_type=SessionRecordType.TURN_TERMINAL,
+                payload={"status": self._terminal_status_for_task(task.status)},
+            ),
+        ]
+        await self._store.sessions.append(records)
+
+    @staticmethod
+    def _truncate_excerpt(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "... [truncated]"
+
+    @staticmethod
+    def _terminal_status_for_task(status: TaskStatus) -> str:
+        if status == TaskStatus.COMPLETED:
+            return "completed"
+        if status == TaskStatus.CANCELLED:
+            return "cancelled"
+        # TurnTerminalStatus has no "expired"; use failed semantics.
+        return "failed"
 
     async def _recover_inflight_tasks(self) -> None:
         running = await self._store.tasks.list_by_status(TaskStatus.RUNNING)
@@ -311,9 +397,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         model_id = str(raw_model_id).strip() if raw_model_id is not None else ""
         if not model_id and isinstance(tool_params, dict):
             raw_default_model_id = tool_params.get("delegation_default_model_id")
-            model_id = (
-                str(raw_default_model_id).strip() if raw_default_model_id is not None else ""
-            )
+            model_id = str(raw_default_model_id).strip() if raw_default_model_id is not None else ""
         if not model_id:
             model_id = self._config.model.default_model_id
         return model_id

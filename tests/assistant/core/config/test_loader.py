@@ -90,6 +90,22 @@ class TestEffectiveConfig:
         result = ConfigLoader(config_dir).effective_config()
         assert result["config"]["scheduler"]["retry_policy"]["max_attempts"] == 7
 
+    def test_logfire_token_env_override_and_redaction(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ASSISTANT_LOGFIRE_TOKEN", "secret-token")
+        result = ConfigLoader(config_dir).effective_config()
+        assert result["config"]["app"]["logfire_token"] == "***REDACTED***"
+        assert result["provenance"]["app.logfire_token"] == "env_override"
+
+    def test_logfire_global_env_var_overrides_prefixed_env_var(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ASSISTANT_APP_LOGFIRE_TOKEN", "legacy-token")
+        monkeypatch.setenv("ASSISTANT_LOGFIRE_TOKEN", "canonical-token")
+        cfg = ConfigLoader(config_dir).load()
+        assert cfg.app.logfire_token == "canonical-token"
+
 
 class TestReloadDomain:
     def test_reload_returns_updated_value(self, config_dir: Path) -> None:

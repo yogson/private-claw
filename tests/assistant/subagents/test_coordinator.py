@@ -1,7 +1,10 @@
 """Tests for delegation coordinator."""
 
 import asyncio
+import json
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -18,7 +21,7 @@ from assistant.core.config.schemas import (
     ToolsConfig,
 )
 from assistant.store.facade import StoreFacade
-from assistant.store.models import TaskStatus
+from assistant.store.models import SessionRecordType, TaskRecord, TaskStatus
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.coordinator import DelegationCoordinator
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
@@ -99,6 +102,29 @@ async def test_enqueue_and_execute_task(tmp_path: Path) -> None:
         assert task.status == TaskStatus.COMPLETED
         assert isinstance(task.result, dict)
         assert task.result.get("summary") == "Implement it-ok"
+        records = await store.sessions.read_session("tg:123")
+        updates = [
+            r
+            for r in records
+            if r.turn_id == f"delegation-update-{task_id}"
+            and r.record_type == SessionRecordType.SYSTEM_MESSAGE
+        ]
+        assert len(updates) == 1
+        content = str(updates[0].payload.get("content", ""))
+        assert content.startswith("[[DELEGATION_UPDATE]]\n")
+        data = json.loads(content.split("\n", 1)[1])
+        assert data["type"] == "delegation_update"
+        assert data["task_id"] == task_id
+        assert data["status"] == "completed"
+        assert data["summary"] == "Implement it-ok"
+        terminals = [
+            r
+            for r in records
+            if r.turn_id == f"delegation-update-{task_id}"
+            and r.record_type == SessionRecordType.TURN_TERMINAL
+        ]
+        assert len(terminals) == 1
+        assert terminals[0].payload.get("status") == "completed"
     finally:
         await coordinator.stop()
         await store.shutdown()
@@ -349,6 +375,62 @@ async def test_stage_failure_marks_task_failed(tmp_path: Path) -> None:
         assert task is not None
         assert task.status == TaskStatus.FAILED
         assert "failed" in (task.error or "")
+        records = await store.sessions.read_session("tg:123")
+        updates = [
+            r
+            for r in records
+            if r.turn_id == f"delegation-update-{task_id}"
+            and r.record_type == SessionRecordType.SYSTEM_MESSAGE
+        ]
+        assert len(updates) == 1
+        content = str(updates[0].payload.get("content", ""))
+        assert content.startswith("[[DELEGATION_UPDATE]]\n")
+        data = json.loads(content.split("\n", 1)[1])
+        assert data["status"] == "failed"
+        assert "failed" in (data.get("error") or "")
+        terminals = [
+            r
+            for r in records
+            if r.turn_id == f"delegation-update-{task_id}"
+            and r.record_type == SessionRecordType.TURN_TERMINAL
+        ]
+        assert len(terminals) == 1
+        assert terminals[0].payload.get("status") == "failed"
     finally:
         await coordinator.stop()
         await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_notify_completion_continues_when_session_update_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    completion_callback = AsyncMock()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+        completion_callback=completion_callback,
+    )
+
+    async def _raise_append(_task: TaskRecord) -> None:
+        raise RuntimeError("append failed")
+
+    monkeypatch.setattr(coordinator, "_append_delegation_update_message", _raise_append)
+    task = TaskRecord(
+        task_id="dlg-1",
+        parent_session_id="tg:123",
+        parent_turn_id="turn-1",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        result={"summary": "ok"},
+        metadata={"backend": "claude_code", "model_id": "claude-sonnet-4-5"},
+    )
+
+    await coordinator._notify_completion(task)
+    completion_callback.assert_awaited_once_with(task)
+    await store.shutdown()

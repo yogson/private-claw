@@ -56,7 +56,7 @@ Admin UI must cover operational configuration domains defined in `docs/assistant
 
 | Config Domain | Primary File | Admin Surface | Editable in v1 | Notes |
 |---|---|---|---|---|
-| App runtime | `config/app.yaml` | Runtime mode, data root, timezone, log level | Partial | `data_root` edits require confirmation and restart warning |
+| App runtime | `config/app.yaml` | Runtime mode, data root, timezone, log level, `logfire_token` (redacted) | Partial | `data_root` edits require confirmation and restart warning |
 | Telegram channel | `config/channel.telegram.yaml` | Allowlist, polling settings (token redacted) | Partial | Secrets never displayed in cleartext |
 | Model routing | `config/model.yaml` | Default model, allowlist, routing mode | Partial | Must validate against provider/model allowlist |
 | Capability policy | `config/capabilities.yaml` | Allowed/denied capability sets, command allowlist view | Yes | High-risk changes require explicit confirmation |
@@ -67,6 +67,7 @@ Admin UI must cover operational configuration domains defined in `docs/assistant
 Effective-config view rules:
 - Show source provenance per value: `file`, `env_override`, or `default`.
 - Display secrets as redacted placeholders while preserving whether a value is set.
+- Treat `app.logfire_token` / `ASSISTANT_LOGFIRE_TOKEN` as sensitive and never render cleartext.
 - Show schema-validation errors inline before apply.
 
 ## Admin Configuration Workflow (Normative)

@@ -4,6 +4,7 @@
 
 capability_id: macos_personal
 prompt: |
+  ### When to use macOS personal integration
   When the user asks to read or create Notes or Reminders, use the macOS tools.
   For Notes: macos_notes_read lists recent notes; macos_notes_write creates a note with title and body.
   For Reminders: macos_reminders_read lists reminders; macos_reminders_write creates a reminder with title, optional body, list_name, and optional due_year, due_month, due_day, due_hour, due_minute.

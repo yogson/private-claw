@@ -1,9 +1,12 @@
 capability_id: delegation_coding
 prompt: |
-  You should delegate all coding tasks to reusable background sub-agents. Prepare good objective based on user's intent,
-  but don't analyze code yourself, delegate it to the subagent as well.
-  Use delegate_subagent_task with objective and optional model_id.
+  ### When to use delegation coding
+  You should delegate all coding tasks to reusable background sub-agents:
+  - User asks to develop something
+  - User asks to review code
+  - User asks to test code
+  - User asks to debug code
+
 tools:
   - tool_id: delegate_subagent_task
     enabled: true
-

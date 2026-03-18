@@ -2,6 +2,7 @@
 Tests for Telegram polling lifecycle wiring in FastAPI startup/shutdown.
 """
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +22,8 @@ from assistant.core.config.schemas import (
     TelegramChannelConfig,
     ToolsConfig,
 )
+from assistant.core.events.models import EventSource, EventType
+from assistant.store.models import TaskRecord, TaskStatus
 
 
 def _runtime_config(allowlist: list[int]) -> RuntimeConfig:
@@ -514,3 +517,70 @@ async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
     assert response.text == "Invalid or expired model selection."
     mock_adapter.handle_model_callback.assert_called_once_with(event)
     mock_orchestrator.execute_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delegation_feedback_handler_triggers_internal_orchestrator_turn() -> None:
+    from assistant.api.main import _build_delegation_feedback_handler
+    from assistant.core.orchestrator.models import OrchestratorResult
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(return_value=OrchestratorResult(text=""))
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock()
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-1",
+        parent_session_id="tg:123:abc",
+        parent_turn_id="turn-1",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        metadata={"trace_id": "trace-1", "requested_by_user_id": "123"},
+    )
+
+    await handler(task)
+
+    orchestrator.execute_turn.assert_awaited_once()
+    event = orchestrator.execute_turn.call_args.args[0]
+    assert event.source == EventSource.SYSTEM
+    assert event.event_type == EventType.SYSTEM_CONTROL_EVENT
+    assert event.session_id == "tg:123:abc"
+    assert event.user_id == "123"
+    assert event.text is not None and event.text.startswith("[[DELEGATION_COMPLETED]]")
+    payload = json.loads(event.text.split("\n", 1)[1])
+    assert payload["task_id"] == "dlg-1"
+    assert payload["status"] == "completed"
+    assert payload["summary"] == ""
+    adapter.send_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram() -> None:
+    from assistant.api.main import _build_delegation_feedback_handler
+    from assistant.core.orchestrator.models import OrchestratorResult
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(return_value=OrchestratorResult(text="delegate done"))
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock(return_value=True)
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-2",
+        parent_session_id="tg:239146894:f3acc154e4fd",
+        parent_turn_id="turn-2",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        result={"summary": "Subagent done", "usage": {"input_tokens": 1, "output_tokens": 2}},
+        metadata={"trace_id": "trace-2", "requested_by_user_id": "239146894"},
+    )
+
+    await handler(task)
+
+    adapter.send_response.assert_awaited_once()
+    response, = adapter.send_response.await_args.args
+    assert response.text == "delegate done"
+    assert adapter.send_response.await_args.kwargs["chat_id"] == 239146894

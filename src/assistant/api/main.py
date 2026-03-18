@@ -5,9 +5,11 @@ FastAPI application entry point: bootstraps config and mounts routers.
 """
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,6 +32,7 @@ from assistant.channels.telegram.polling import run_polling
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
+from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session_context import (
@@ -37,9 +40,11 @@ from assistant.core.session_context import (
     SessionModelContextService,
 )
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
+from assistant.observability.logfire import configure_logfire
 from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
+from assistant.store.models import TaskRecord
 from assistant.subagents.backends import ClaudeCodeBackendAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
 
@@ -314,12 +319,78 @@ def _build_orchestrator_handler(
     return _handler
 
 
+def _build_delegation_feedback_handler(
+    orchestrator: Orchestrator,
+    adapter: TelegramAdapter,
+) -> Callable[[TaskRecord], Awaitable[None]]:
+    async def _handler(task: TaskRecord) -> None:
+        session_id = task.parent_session_id
+        if not session_id:
+            return
+        trace_id = str(task.metadata.get("trace_id") or task.task_id)
+        result = task.result if isinstance(task.result, dict) else {}
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), dict) else {}
+        raw_stdout = artifacts.get("raw_stdout") if isinstance(artifacts, dict) else ""
+        stdout_excerpt = (
+            raw_stdout[:2000] + "... [truncated]"
+            if isinstance(raw_stdout, str) and len(raw_stdout) > 2000
+            else raw_stdout
+            if isinstance(raw_stdout, str)
+            else ""
+        )
+        payload = {
+            "type": "delegation_completion",
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "objective": task.metadata.get("objective"),
+            "summary": result.get("summary") if isinstance(result.get("summary"), str) else "",
+            "error": task.error,
+            "usage": usage,
+            "backend": task.metadata.get("backend"),
+            "model_id": task.metadata.get("model_id"),
+            "parent_turn_id": task.parent_turn_id,
+        }
+        if stdout_excerpt:
+            payload["stdout_excerpt"] = stdout_excerpt
+        event = OrchestratorEvent(
+            event_id=f"delegation-feedback-{task.task_id}-{task.status.value}",
+            event_type=EventType.SYSTEM_CONTROL_EVENT,
+            source=EventSource.SYSTEM,
+            session_id=session_id,
+            user_id=str(task.metadata.get("requested_by_user_id") or "system"),
+            created_at=datetime.now(UTC),
+            trace_id=trace_id,
+            text="[[DELEGATION_COMPLETED]]\n" + json.dumps(payload, separators=(",", ":")),
+            metadata={"delegation_feedback": True, "task_id": task.task_id},
+        )
+        result_msg = await orchestrator.execute_turn(event)
+        if result_msg is None or not result_msg.text.strip():
+            return
+        chat_id = DelegationCoordinator._chat_id_from_session(session_id)
+        if chat_id is None:
+            return
+        response = ChannelResponse(
+            response_id=event.event_id,
+            channel="telegram",
+            session_id=session_id,
+            trace_id=trace_id,
+            message_type=MessageType.TEXT,
+            text=result_msg.text,
+        )
+        await adapter.send_response(response, chat_id=chat_id)
+
+    return _handler
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime_config = bootstrap()
     set_runtime_config(runtime_config)
     log_path = configure_logging(runtime_config.app)
     logger.info("logging.started", log_file=str(log_path))
+    logfire_configured = configure_logfire(runtime_config.app)
+    logger.info("logfire.status", configured=logfire_configured)
     app.state.runtime_config = runtime_config
     app.state.telegram_adapter = None
     app.state.attachment_downloader = None
@@ -402,6 +473,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             memory_retrieval=memory_retrieval,
             pydantic_ai_adapter=pydantic_ai_adapter,
             delegation_coordinator=delegation_coordinator,
+        )
+        delegation_coordinator.set_completion_callback(
+            _build_delegation_feedback_handler(orchestrator, adapter)
         )
 
         usage_service = UsageStatsService(
