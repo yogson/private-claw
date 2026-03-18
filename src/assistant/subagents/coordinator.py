@@ -149,6 +149,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "projected_tokens": projected_tokens,
             "backend_params": request.get("backend_params", {}),
         }
+        logfire_ctx = request.get("logfire_context")
+        if isinstance(logfire_ctx, dict) and logfire_ctx:
+            metadata["logfire_context"] = logfire_ctx
         task = TaskRecord(
             task_id=task_id,
             parent_session_id=session_id,

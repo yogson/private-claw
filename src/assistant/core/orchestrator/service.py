@@ -41,7 +41,11 @@ from assistant.core.orchestrator.persistence import (
 from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
 from assistant.memory.retrieval.models import RetrievalQuery
 from assistant.memory.store.models import MemoryType
-from assistant.observability.correlation import reset_trace_id, set_trace_id
+from assistant.observability.correlation import (
+    SessionTraceManager,
+    reset_trace_id,
+    set_trace_id,
+)
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterface
 from assistant.store.models import (
@@ -53,6 +57,12 @@ from assistant.subagents.interfaces import DelegationCoordinatorInterface
 logger = structlog.get_logger(__name__)
 
 _REPLAY_BUDGET = 50
+_LONG_HISTORY_THRESHOLD = 20
+_SYSTEM_REMINDER = (
+    "[System reminder: Follow your delegation instructions. "
+    "Delegate all coding tasks (develop, review, test, debug) to sub-agents. "
+    "If delegation fails, ask the user what to do next—do not complete the task yourself.]"
+)
 _LOCK_KEY_PREFIX = "session:"
 _LOCK_OWNER_PREFIX = "orchestrator:"
 
@@ -84,6 +94,7 @@ class Orchestrator:
         self._memory_retrieval = memory_retrieval
         self._pydantic_ai_adapter = pydantic_ai_adapter
         self._delegation_coordinator = delegation_coordinator
+        self._session_traces = SessionTraceManager()
 
     async def execute_turn(self, event: OrchestratorEvent) -> OrchestratorResult | None:
         """
@@ -156,6 +167,14 @@ class Orchestrator:
             coordinator = self._delegation_coordinator
 
             async def delegation_handler(payload: dict[str, Any]) -> dict[str, Any]:
+                try:
+                    import logfire
+
+                    ctx = logfire.get_context()
+                    if ctx:
+                        payload["logfire_context"] = dict(ctx)
+                except Exception:
+                    pass
                 return await coordinator.enqueue_from_tool(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -290,21 +309,35 @@ class Orchestrator:
 
         token = set_trace_id(trace_id)
         try:
-            records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
-            messages = records_to_messages(records)
-            messages.append(user_message)
+            with self._session_traces.session_trace(session_id, turn_id):
+                records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
+                messages = records_to_messages(records)
+                if len(messages) > _LONG_HISTORY_THRESHOLD:
+                    reminder = _SYSTEM_REMINDER + "\n\n"
+                    if content_blocks is not None:
+                        user_message = LLMMessage(
+                            role=MessageRole.USER,
+                            content="",
+                            content_blocks=[{"type": "text", "text": reminder}]
+                            + list(content_blocks),
+                        )
+                    else:
+                        user_message = LLMMessage(
+                            role=MessageRole.USER, content=reminder + user_content
+                        )
+                messages.append(user_message)
 
-            return await self._run_turn_pydantic_ai(
-                messages=messages,
-                current_user_message=user_message,
-                user_content=user_content,
-                attachments=attachments,
-                session_id=session_id,
-                turn_id=turn_id,
-                trace_id=trace_id,
-                user_id=event.user_id,
-                model_id_override=event.model_id_override,
-            )
+                return await self._run_turn_pydantic_ai(
+                    messages=messages,
+                    current_user_message=user_message,
+                    user_content=user_content,
+                    attachments=attachments,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    user_id=event.user_id,
+                    model_id_override=event.model_id_override,
+                )
         finally:
             reset_trace_id(token)
 

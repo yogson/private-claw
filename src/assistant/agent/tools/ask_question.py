@@ -6,7 +6,6 @@ Platform-agnostic: returns structured data; channel layer maps options to UI (e.
 """
 
 import json
-from pathlib import Path
 from typing import Annotated, Any
 
 import structlog
@@ -22,7 +21,6 @@ _USER_ANSWER_MESSAGE = (
     "Question was asked. The user's answer will be provided in their next message."
 )
 _MAX_OPTIONS = 10
-_DEBUG_LOG = Path(__file__).resolve().parents[4] / ".cursor" / "debug-2322a9.log"
 
 
 def _coerce_options_list(v: list[str] | str) -> list[str]:
@@ -33,22 +31,6 @@ def _coerce_options_list(v: list[str] | str) -> list[str]:
         try:
             parsed = json.loads(v)
             if isinstance(parsed, list):
-                # #region agent log
-                with open(_DEBUG_LOG, "a") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "2322a9",
-                                "hypothesisId": "H1",
-                                "location": "ask_question.py:_coerce_options_list",
-                                "message": "options coerced from string to list",
-                                "data": {"original_type": "str", "parsed_len": len(parsed)},
-                                "timestamp": __import__("time").time_ns() // 1_000_000,
-                            }
-                        )
-                        + "\n"
-                    )
-                # #endregion
                 return [str(x) for x in parsed]
             return []
         except (json.JSONDecodeError, TypeError):

@@ -364,20 +364,43 @@ def _build_delegation_feedback_handler(
             text="[[DELEGATION_COMPLETED]]\n" + json.dumps(payload, separators=(",", ":")),
             metadata={"delegation_feedback": True, "task_id": task.task_id},
         )
-        result_msg = await orchestrator.execute_turn(event)
-        if result_msg is None or not result_msg.text.strip():
+        logfire_ctx = task.metadata.get("logfire_context")
+        if isinstance(logfire_ctx, dict) and logfire_ctx:
+            try:
+                import logfire
+
+                with logfire.attach_context(logfire_ctx):
+                    result_msg = await orchestrator.execute_turn(event)
+            except Exception:
+                result_msg = await orchestrator.execute_turn(event)
+        else:
+            result_msg = await orchestrator.execute_turn(event)
+        if result_msg is None:
+            return
+        if not result_msg.text.strip() and result_msg.pending_ask is None:
             return
         chat_id = DelegationCoordinator._chat_id_from_session(session_id)
         if chat_id is None:
             return
-        response = ChannelResponse(
-            response_id=event.event_id,
-            channel="telegram",
-            session_id=session_id,
-            trace_id=trace_id,
-            message_type=MessageType.TEXT,
-            text=result_msg.text,
-        )
+        if result_msg.pending_ask is not None:
+            prompt_text = result_msg.pending_ask.question
+            if result_msg.text.strip():
+                prompt_text = f"{result_msg.text}\n\n{prompt_text}"
+            response = adapter.build_ask_question_response(
+                session_id=session_id,
+                trace_id=trace_id,
+                question=prompt_text,
+                options=result_msg.pending_ask.options,
+            )
+        else:
+            response = ChannelResponse(
+                response_id=event.event_id,
+                channel="telegram",
+                session_id=session_id,
+                trace_id=trace_id,
+                message_type=MessageType.TEXT,
+                text=result_msg.text,
+            )
         await adapter.send_response(response, chat_id=chat_id)
 
     return _handler

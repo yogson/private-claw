@@ -581,6 +581,56 @@ async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram
     await handler(task)
 
     adapter.send_response.assert_awaited_once()
-    response, = adapter.send_response.await_args.args
+    (response,) = adapter.send_response.await_args.args
     assert response.text == "delegate done"
     assert adapter.send_response.await_args.kwargs["chat_id"] == 239146894
+
+
+@pytest.mark.asyncio
+async def test_delegation_feedback_handler_sends_ask_question_when_pending_ask() -> None:
+    from assistant.api.main import _build_delegation_feedback_handler
+    from assistant.core.orchestrator.models import OrchestratorResult, PendingAskData
+
+    pending = PendingAskData(
+        question_id="toolu_01",
+        question="Which project?",
+        options=[{"id": "0", "label": "kitsune"}, {"id": "1", "label": "private-claw"}],
+        session_id="tg:239146894:abc",
+        turn_id="turn-1",
+        tool_call_id="toolu_01",
+    )
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(
+        return_value=OrchestratorResult(
+            text="The sub-agent needs clarification.",
+            pending_ask=pending,
+        )
+    )
+    mock_response = MagicMock()
+    adapter = MagicMock()
+    adapter.build_ask_question_response = MagicMock(return_value=mock_response)
+    adapter.send_response = AsyncMock(return_value=True)
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-3",
+        parent_session_id="tg:239146894:abc",
+        parent_turn_id="turn-1",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        result={"summary": "Needs clarification"},
+        metadata={"trace_id": "trace-3", "requested_by_user_id": "239146894"},
+    )
+
+    await handler(task)
+
+    adapter.build_ask_question_response.assert_called_once()
+    call_kwargs = adapter.build_ask_question_response.call_args[1]
+    assert "The sub-agent needs clarification." in call_kwargs["question"]
+    assert "Which project?" in call_kwargs["question"]
+    assert call_kwargs["options"] == [
+        {"id": "0", "label": "kitsune"},
+        {"id": "1", "label": "private-claw"},
+    ]
+    adapter.send_response.assert_awaited_once_with(mock_response, chat_id=239146894)
