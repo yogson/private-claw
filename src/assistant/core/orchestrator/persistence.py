@@ -151,11 +151,12 @@ async def persist_turn_failed(
     user_text: str,
     user_id: str | None = None,
     status: TurnTerminalStatus = TurnTerminalStatus.FAILED,
+    assistant_content: str | None = None,
 ) -> None:
     """Persist minimal turn records when execution fails before normal completion.
 
-    Writes user message, placeholder assistant message, and TURN_TERMINAL with failed
-    status so the turn is complete and replay invariants hold.
+    Writes user message, placeholder assistant message, and TURN_TERMINAL with the
+    given status so the turn is complete and replay invariants hold.
     """
     now = datetime.now(UTC)
     next_seq = await sessions.get_next_sequence(session_id)
@@ -168,6 +169,7 @@ async def persist_turn_failed(
         source_event_id=turn_id,
         user_id=user_id,
     )
+    content = assistant_content if assistant_content is not None else "[Request failed]"
     records: list[SessionRecord] = [
         SessionRecord(
             session_id=session_id,
@@ -187,7 +189,7 @@ async def persist_turn_failed(
             record_type=SessionRecordType.ASSISTANT_MESSAGE,
             payload={
                 "message_id": assistant_msg_id,
-                "content": "[Request failed]",
+                "content": content,
                 "model_id": config.model.default_model_id,
             },
         ),

@@ -4,6 +4,7 @@ Component ID: CMP_CORE_AGENT_ORCHESTRATOR
 Orchestrator service executing turn lifecycle with persistence and idempotency.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -52,6 +53,7 @@ from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterfac
 from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
+    TurnTerminalStatus,
 )
 from assistant.subagents.interfaces import DelegationCoordinatorInterface
 
@@ -197,12 +199,38 @@ class Orchestrator:
             tool_runtime_params=tool_params,
             tool_call_notifier=tool_call_notifier,
         )
-        response_text, new_msgs, usage = await adapter.run_turn(
-            messages=msg_dicts,
-            deps=deps,
-            trace_id=trace_id,
-            model_id=model_id,
-        )
+        try:
+            response_text, new_msgs, usage = await adapter.run_turn(
+                messages=msg_dicts,
+                deps=deps,
+                trace_id=trace_id,
+                model_id=model_id,
+            )
+        except asyncio.CancelledError:
+            # User cancelled via /stop. Persist a minimal cancelled record so the
+            # turn appears in history and session context stays intact for the next
+            # message. asyncio.shield ensures the persist completes even if another
+            # cancellation arrives during shutdown.
+            try:
+                await asyncio.shield(
+                    persist_turn_failed(
+                        self._store.sessions,
+                        self._config,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        user_text=user_content,
+                        user_id=user_id,
+                        status=TurnTerminalStatus.CANCELLED,
+                        assistant_content="[Turn cancelled by user]",
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "orchestrator.cancel_persist_failed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
+            raise
         prompt_trace: dict[str, Any] | None = None
         if self._config.model.prompt_trace_enabled:
             prompt_trace = {
