@@ -25,11 +25,13 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
     async def execute(self, request: DelegationRun) -> DelegationResult:
         prompt = self._build_prompt(request)
         cmd = self._build_command(request, prompt)
+        cwd = request.backend_params.get("directory") or None
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
             )
             stdout_b, stderr_b = await asyncio.wait_for(
                 process.communicate(),
@@ -76,4 +78,3 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
     @staticmethod
     def _build_prompt(request: DelegationRun) -> str:
         return f"Task objective:\n{request.objective}"
-

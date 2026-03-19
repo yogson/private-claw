@@ -18,6 +18,7 @@ async def delegate_subagent_task(
     ctx: RunContext[TurnDeps],
     objective: str,
     model_id: str | None = None,
+    directory: str | None = None,
 ) -> dict[str, Any]:
     """Create a delegated background task and return immediate acknowledgement."""
     handler = ctx.deps.delegation_enqueue_handler
@@ -27,10 +28,14 @@ async def delegate_subagent_task(
             "status": "unavailable",
             "rejection_reason": "delegation disabled",
         }
+    backend_params: dict[str, Any] = {}
+    if directory:
+        backend_params["directory"] = directory
     request: dict[str, Any] = {
         "objective": objective,
         "model_id": model_id,
         "tool_params": ctx.deps.tool_runtime_params.get("delegate_subagent_task", {}),
+        "backend_params": backend_params,
     }
     result = await handler(request)
     logger.info(
