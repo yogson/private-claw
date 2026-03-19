@@ -29,6 +29,7 @@ from assistant.channels.telegram.ingestion.factory import build_transcription_se
 from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDownloader
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.channels.telegram.polling import CancellationRegistry, run_polling
+from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
@@ -55,6 +56,42 @@ logger = structlog.get_logger(__name__)
 load_dotenv()
 
 
+def _build_tool_call_notifier(
+    adapter: TelegramAdapter,
+    chat_id: int,
+    session_id: str,
+    trace_id: str,
+) -> "Callable[[str, str], Awaitable[None]]":
+    """Build an async notifier that sends a verbose tool-call message to Telegram."""
+    import json as _json
+
+    async def _notifier(tool_name: str, args_json: str) -> None:
+        try:
+            args = _json.loads(args_json) if args_json and args_json != "{}" else {}
+        except Exception:
+            args = {}
+        if args:
+            pretty = _json.dumps(args, ensure_ascii=False, indent=None)
+            text = f"⚙️ `{tool_name}`\n```\n{pretty}\n```"
+        else:
+            text = f"⚙️ `{tool_name}`"
+        response = ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id=session_id,
+            trace_id=trace_id,
+            message_type=MessageType.TEXT,
+            text=text,
+            parse_mode="Markdown",
+        )
+        try:
+            await adapter.send_response(response, chat_id=chat_id)
+        except Exception:
+            pass
+
+    return _notifier
+
+
 def _build_orchestrator_handler(
     adapter: TelegramAdapter,
     orchestrator: Orchestrator,
@@ -62,6 +99,7 @@ def _build_orchestrator_handler(
     memory_confirmations: MemoryConfirmationService | None = None,
     usage_service: Any = None,
     cancellation_registry: CancellationRegistry | None = None,
+    verbose_state: VerboseStateService | None = None,
 ) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
     mapper = NormalizedEventMapper()
 
@@ -79,6 +117,18 @@ def _build_orchestrator_handler(
                 trace_id=event.trace_id,
                 message_type=MessageType.TEXT,
                 text="Stopped." if cancelled else "Nothing is currently running.",
+            )
+        if adapter.is_verbose_request(event):
+            chat_id = int(event.metadata.get("chat_id", 0))
+            now_on = verbose_state.toggle(chat_id) if verbose_state is not None and chat_id else False
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Verbose mode *on* — tool calls will be shown." if now_on else "Verbose mode *off*.",
+                parse_mode="Markdown",
             )
         if adapter.is_session_new_request(event):
             session_id = adapter.start_new_session(event)
@@ -273,7 +323,12 @@ def _build_orchestrator_handler(
         model_override = adapter.get_model_override(chat_id) if chat_id else None
         if model_override:
             orch_event = orch_event.model_copy(update={"model_id_override": model_override})
-        orch_result = await orchestrator.execute_turn(orch_event)
+        notifier = None
+        if chat_id and verbose_state is not None and verbose_state.is_enabled(chat_id):
+            notifier = _build_tool_call_notifier(
+                adapter, chat_id, orch_event.session_id, event.trace_id
+            )
+        orch_result = await orchestrator.execute_turn(orch_event, tool_call_notifier=notifier)
         if orch_result is None:
             return None
         session_id = orch_event.session_id
@@ -522,6 +577,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             default_model_id=runtime_config.model.default_model_id,
         )
         cancellation_registry = CancellationRegistry()
+        verbose_state = VerboseStateService()
         handler = _build_orchestrator_handler(
             adapter,
             orchestrator,
@@ -529,6 +585,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             memory_confirmations,
             usage_service=usage_service,
             cancellation_registry=cancellation_registry,
+            verbose_state=verbose_state,
         )
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:

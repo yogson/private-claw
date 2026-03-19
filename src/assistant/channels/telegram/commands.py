@@ -19,6 +19,7 @@ class TelegramCommand(StrEnum):
     MODEL = "/model", "Select LLM model for the current session."
     USAGE = "/usage", "Show token and cost usage statistics."
     STOP = "/stop", "Stop the current agent activity."
+    VERBOSE = "/verbose", "Toggle verbose mode (show tool calls)."
 
     def __new__(cls, value: str, description: str) -> "TelegramCommand":
         obj = str.__new__(cls, value)

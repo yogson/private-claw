@@ -4,6 +4,7 @@ Component ID: CMP_CORE_AGENT_ORCHESTRATOR
 Orchestrator service executing turn lifecycle with persistence and idempotency.
 """
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -96,7 +97,11 @@ class Orchestrator:
         self._delegation_coordinator = delegation_coordinator
         self._session_traces = SessionTraceManager()
 
-    async def execute_turn(self, event: OrchestratorEvent) -> OrchestratorResult | None:
+    async def execute_turn(
+        self,
+        event: OrchestratorEvent,
+        tool_call_notifier: "Callable[[str, str], Awaitable[None]] | None" = None,
+    ) -> OrchestratorResult | None:
         """
         Execute one turn for the given event.
 
@@ -118,7 +123,7 @@ class Orchestrator:
             async with self._store.locks.lock(
                 lock_key, owner, ttl_seconds=self._config.store.lock_ttl_seconds
             ):
-                return await self._run_turn(event)
+                return await self._run_turn(event, tool_call_notifier=tool_call_notifier)
         except LockAcquisitionError as exc:
             logger.warning(
                 "orchestrator.lock_timeout",
@@ -140,6 +145,7 @@ class Orchestrator:
         trace_id: str,
         user_id: str | None = None,
         model_id_override: str | None = None,
+        tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
         adapter = self._pydantic_ai_adapter
@@ -189,6 +195,7 @@ class Orchestrator:
             memory_search_handler=memory_handler,
             delegation_enqueue_handler=delegation_handler,
             tool_runtime_params=tool_params,
+            tool_call_notifier=tool_call_notifier,
         )
         response_text, new_msgs, usage = await adapter.run_turn(
             messages=msg_dicts,
@@ -286,7 +293,11 @@ class Orchestrator:
                 )
             raise
 
-    async def _run_turn(self, event: OrchestratorEvent) -> OrchestratorResult:
+    async def _run_turn(
+        self,
+        event: OrchestratorEvent,
+        tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
+    ) -> OrchestratorResult:
         user_text = extract_user_text(event)
         attachments = gather_attachments(event)
         attachment_context = format_attachment_context(attachments)
@@ -337,6 +348,7 @@ class Orchestrator:
                     trace_id=trace_id,
                     user_id=event.user_id,
                     model_id_override=event.model_id_override,
+                    tool_call_notifier=tool_call_notifier,
                 )
         finally:
             reset_trace_id(token)

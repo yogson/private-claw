@@ -23,3 +23,5 @@ class TurnDeps:
     tool_runtime_params: dict[str, dict[str, Any]] = field(
         default_factory=dict
     )  # per-tool merged params from tools.yaml + capability overrides
+    tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None
+    """Optional async callback fired before each tool call: (tool_name, args_json) -> None."""

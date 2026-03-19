@@ -83,6 +83,9 @@ class PydanticAITurnAdapter:
         Returns (response_text, new_messages, usage).
         When model_id is provided, uses it for this turn; otherwise uses default.
         """
+        from pydantic_ai._agent_graph import CallToolsNode  # type: ignore[import]
+        from pydantic_ai.messages import ToolCallPart
+
         if not messages:
             return "", [], None
         effective_model = model_id if model_id else self._model_id
@@ -92,13 +95,26 @@ class PydanticAITurnAdapter:
         history_msgs = messages[:-1] if len(messages) > 1 else []
         history = _llm_messages_to_history(history_msgs)
         model_settings = {"max_tokens": self._max_tokens}
-        result = await self._agent.run(  # type: ignore[call-overload]
+        async with self._agent.iter(  # type: ignore[call-overload]
             user_prompt,
             message_history=history,
             deps=deps,
             model=effective_model or self._model_id,
             model_settings=model_settings,
-        )
+        ) as agent_run:
+            async for node in agent_run:
+                if isinstance(node, CallToolsNode) and deps.tool_call_notifier is not None:
+                    for part in node.model_response.parts:
+                        if isinstance(part, ToolCallPart):
+                            try:
+                                await deps.tool_call_notifier(
+                                    part.tool_name, part.args_as_json_str()
+                                )
+                            except Exception:
+                                pass
+        result = agent_run.result
+        if result is None:
+            return "", [], None
         response_text = result.output
         new_msgs = result.new_messages()
         usage = None

@@ -57,8 +57,7 @@ class CancellationRegistry:
             return False
         cancelled = False
         for task in list(tasks):
-            if not task.done():
-                cancelled |= task.cancel()
+            cancelled |= task.cancel()
         return cancelled
 
 
@@ -146,8 +145,7 @@ async def run_polling(
         for task in pending:
             task.cancel()
         if pending:
-            with suppress(Exception):
-                await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(*pending, return_exceptions=True)
         await bot.session.close()
         logger.info("telegram.polling.stopped")
 
@@ -191,10 +189,14 @@ async def _process_update(
 
     # Register this task in the cancellation registry so /stop can cancel it.
     # Skip registration for /stop itself so it never appears as a cancellable turn.
-    is_stop = adapter.is_stop_request(event)
     current_task = asyncio.current_task()
-    if not is_stop and cancellation_registry is not None and current_task is not None:
-        cancellation_registry.register(event.session_id, current_task)
+    should_track = (
+        not adapter.is_stop_request(event)
+        and cancellation_registry is not None
+        and current_task is not None
+    )
+    if should_track:
+        cancellation_registry.register(event.session_id, current_task)  # type: ignore[union-attr]
 
     try:
         response = await event_handler(event)
@@ -215,8 +217,8 @@ async def _process_update(
         )
         return
     finally:
-        if not is_stop and cancellation_registry is not None and current_task is not None:
-            cancellation_registry.unregister(event.session_id, current_task)
+        if should_track:
+            cancellation_registry.unregister(event.session_id, current_task)  # type: ignore[union-attr]
 
     if response is None:
         return
