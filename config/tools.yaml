@@ -27,9 +27,9 @@ tools:
       delegation_default_ttl_seconds: 3600
       delegation_max_ttl_seconds: 21600
       delegation_max_concurrent_tasks: 3
-      delegation_per_task_token_cap: 120000
-      delegation_per_session_token_cap: 300000
-      delegation_global_token_cap: 1000000
+      delegation_per_task_token_cap: 240000
+      delegation_per_session_token_cap: 600000
+      delegation_global_token_cap: 2000000
       delegation_budget_window_seconds: 86400
       delegation_estimated_tokens_per_turn: 2000
       delegation_default_max_turns: 8

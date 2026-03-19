@@ -29,8 +29,8 @@ from assistant.channels.telegram.ingestion.factory import build_transcription_se
 from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDownloader
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.channels.telegram.polling import CancellationRegistry, run_polling
-from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.channels.telegram.usage import UsageStatsService
+from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
@@ -120,14 +120,18 @@ def _build_orchestrator_handler(
             )
         if adapter.is_verbose_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
-            now_on = verbose_state.toggle(chat_id) if verbose_state is not None and chat_id else False
+            now_on = (
+                verbose_state.toggle(chat_id) if verbose_state is not None and chat_id else False
+            )
             return ChannelResponse(
                 response_id=str(uuid.uuid4()),
                 channel="telegram",
                 session_id=event.session_id,
                 trace_id=event.trace_id,
                 message_type=MessageType.TEXT,
-                text="Verbose mode *on* — tool calls will be shown." if now_on else "Verbose mode *off*.",
+                text="Verbose mode *on* — tool calls will be shown."
+                if now_on
+                else "Verbose mode *off*.",
                 parse_mode="Markdown",
             )
         if adapter.is_session_new_request(event):

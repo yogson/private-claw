@@ -9,7 +9,13 @@ import asyncio
 from typing import Any
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from assistant.agent.ask_question_extractor import _extract_pending_ask_question
 from assistant.agent.memory_intent_processor import _new_messages_to_plans

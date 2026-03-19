@@ -103,6 +103,5 @@ claude_code_settings:
       - "Bash(sudo rm:*)"
       - "Bash(mkfs:*)"
       - "Bash(dd if=:*)"
-      - "Bash(:(){ :|:& };:)"
       - "Bash(chmod -R 777 /)"
       - "Bash(chown -R:*)"
