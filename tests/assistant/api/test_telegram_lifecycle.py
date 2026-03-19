@@ -133,6 +133,8 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_reset_available.return_value = True
@@ -176,6 +178,8 @@ async def test_handler_handles_reset_without_orchestrator_call() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = True
@@ -213,6 +217,8 @@ async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> 
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = False
@@ -233,6 +239,125 @@ async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> 
 
 
 @pytest.mark.asyncio
+async def test_handler_token_limit_resets_session_and_notifies() -> None:
+    """When ModelHTTPError indicates token limit exceeded, reset session and notify user."""
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-token-limit",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-token-limit",
+        text="hello",
+        metadata={"chat_id": 123},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
+    mock_adapter.is_usage_request.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.get_model_override.return_value = None
+    mock_adapter.is_session_reset_available.return_value = True
+    mock_adapter.reset_session_context = AsyncMock(return_value=True)
+
+    mock_orchestrator = MagicMock()
+    token_limit_error = ModelHTTPError(
+        status_code=400,
+        model_name="claude-opus-4-5",
+        body={
+            "error": {
+                "message": "prompt is too long: 202847 tokens > 200000 maximum",
+            }
+        },
+    )
+    mock_orchestrator.execute_turn = AsyncMock(side_effect=token_limit_error)
+
+    mock_usage = MagicMock()
+    mock_usage.archive_session_usage = AsyncMock()
+
+    handler = _build_orchestrator_handler(
+        mock_adapter, mock_orchestrator, None, usage_service=mock_usage
+    )
+    response = await handler(event)
+
+    assert response is not None
+    assert "exceeded the model limit" in response.text
+    assert "Session has been reset" in response.text
+    mock_adapter.reset_session_context.assert_awaited_once_with(event)
+    mock_usage.archive_session_usage.assert_awaited_once_with("tg:123", "123")
+
+
+@pytest.mark.asyncio
+async def test_handler_token_limit_notifies_when_reset_unavailable() -> None:
+    """When token limit exceeded and reset unavailable, notify user with /reset guidance."""
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-token-limit-no-reset",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:456",
+        user_id="456",
+        created_at=datetime.now(UTC),
+        trace_id="trace-token-limit-no-reset",
+        text="hello",
+        metadata={"chat_id": 456},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
+    mock_adapter.is_usage_request.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.get_model_override.return_value = None
+    mock_adapter.is_session_reset_available.return_value = False
+
+    mock_orchestrator = MagicMock()
+    token_limit_error = ModelHTTPError(
+        status_code=400,
+        model_name="claude-opus-4-5",
+        body={"error": {"message": "prompt is too long: 202847 tokens > 200000 maximum"}},
+    )
+    mock_orchestrator.execute_turn = AsyncMock(side_effect=token_limit_error)
+
+    mock_usage = MagicMock()
+    mock_usage.archive_session_usage = AsyncMock()
+
+    handler = _build_orchestrator_handler(
+        mock_adapter, mock_orchestrator, None, usage_service=mock_usage
+    )
+    response = await handler(event)
+
+    assert response is not None
+    assert "exceeded the model limit" in response.text
+    assert "Session reset is not available" in response.text
+    assert "/reset" in response.text
+    mock_adapter.reset_session_context.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_handler_handles_new_session_without_orchestrator_call() -> None:
     from assistant.api.main import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
@@ -250,6 +375,8 @@ async def test_handler_handles_new_session_without_orchestrator_call() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
@@ -292,6 +419,8 @@ async def test_handler_returns_interactive_reply_keyboard_when_pending_ask() -> 
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False
@@ -360,6 +489,8 @@ async def test_handler_handles_new_session_failure_without_orchestrator_call() -
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
@@ -397,6 +528,8 @@ async def test_handler_handles_usage_without_orchestrator_call() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False
@@ -451,6 +584,8 @@ async def test_handler_handles_usage_unavailable_when_no_service() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False
@@ -497,6 +632,8 @@ async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False
     mock_adapter.is_session_reset_request.return_value = False
     mock_adapter.is_session_resume_request.return_value = False

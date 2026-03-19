@@ -17,6 +17,7 @@ import structlog
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from pydantic_ai.exceptions import ModelHTTPError
 
 from assistant.admin.router import router as admin_router
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
@@ -54,6 +55,20 @@ logger = structlog.get_logger(__name__)
 # Load .env before the lifespan starts so env overrides and ASSISTANT_ADMIN_TOKEN
 # are available to bootstrap() and the auth layer.
 load_dotenv()
+
+
+def _is_token_limit_error(exc: ModelHTTPError) -> bool:
+    """Return True if the error indicates the prompt exceeded the model's token limit.
+
+    Detection is tuned for Anthropic-style error bodies (dict with error.message).
+    Assumes exc.body is a dict or None; other types are treated as empty.
+    """
+    if exc.status_code != 400:
+        return False
+    body = exc.body if isinstance(exc.body, dict) else {}
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    msg = str(error.get("message", "")).lower()
+    return "prompt is too long" in msg or "token" in msg and "maximum" in msg
 
 
 def _build_tool_call_notifier(
@@ -332,7 +347,34 @@ def _build_orchestrator_handler(
             notifier = _build_tool_call_notifier(
                 adapter, chat_id, orch_event.session_id, event.trace_id
             )
-        orch_result = await orchestrator.execute_turn(orch_event, tool_call_notifier=notifier)
+        try:
+            orch_result = await orchestrator.execute_turn(orch_event, tool_call_notifier=notifier)
+        except ModelHTTPError as exc:
+            if _is_token_limit_error(exc):
+                logger.warning(
+                    "orchestrator.token_limit_exceeded",
+                    session_id=orch_event.session_id,
+                    trace_id=event.trace_id,
+                    status_code=exc.status_code,
+                )
+                if usage_service is not None:
+                    await usage_service.archive_session_usage(orch_event.session_id, event.user_id)
+                if adapter.is_session_reset_available():
+                    await adapter.reset_session_context(event)
+                    reset_msg = "Session has been reset. Please try your message again."
+                else:
+                    reset_msg = (
+                        "Session reset is not available. Please use /reset or start a new session."
+                    )
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text=f"Conversation history exceeded the model limit. {reset_msg}",
+                )
+            raise
         if orch_result is None:
             return None
         session_id = orch_event.session_id
