@@ -5,8 +5,6 @@ Claude Code backend adapter for delegated staged execution.
 """
 
 import asyncio
-import json
-from typing import Any
 
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
@@ -50,19 +48,13 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             msg = stderr or stdout or f"claude exited with code {process.returncode}"
             return DelegationResult(ok=False, error=msg)
 
-        parsed = self._parse_json_output(stdout)
-        usage = parsed.get("usage", {}) if isinstance(parsed, dict) else {}
-        text = self._extract_text(parsed, stdout)
-        artifacts: dict[str, Any] = {"raw_stdout": stdout}
-        return DelegationResult(ok=True, output_text=text, artifacts=artifacts, usage=usage)
+        return DelegationResult(ok=True, output_text=stdout)
 
     def _build_command(self, request: DelegationRun, prompt: str) -> list[str]:
         cmd = [
             self._binary,
             "-p",
             prompt,
-            "--output-format",
-            "json",
             "--model",
             request.model_id,
             "--max-turns",
@@ -85,26 +77,3 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
     def _build_prompt(request: DelegationRun) -> str:
         return f"Task objective:\n{request.objective}"
 
-    @staticmethod
-    def _parse_json_output(output: str) -> dict[str, Any]:
-        if not output:
-            return {}
-        try:
-            parsed = json.loads(output)
-            if isinstance(parsed, dict):
-                return parsed
-            return {}
-        except json.JSONDecodeError:
-            return {}
-
-    @staticmethod
-    def _extract_text(parsed: dict[str, Any], fallback: str) -> str:
-        if not parsed:
-            return fallback
-        text = parsed.get("result")
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-        message = parsed.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-        return fallback
