@@ -275,8 +275,8 @@ class TestRecordsToMessages:
                 payload={
                     "message_id": "m3",
                     "tool_call_id": "call-1",
-                    "tool_name": "memory_propose_update",
-                    "arguments_json": '{"intent_id":"i1","action":"upsert"}',
+                    "tool_name": "memory_search",
+                    "arguments_json": '{"query":"deadlift notes","limit":3}',
                 },
             ),
             SessionRecord(
@@ -289,8 +289,8 @@ class TestRecordsToMessages:
                 payload={
                     "message_id": "m4",
                     "tool_call_id": "call-1",
-                    "tool_name": "memory_propose_update",
-                    "result": {"status": "applied", "memory_id": "mem-1"},
+                    "tool_name": "memory_search",
+                    "result": {"status": "ok", "matches": [{"body": "deadlift"}]},
                     "error": None,
                 },
             ),
@@ -327,8 +327,8 @@ class TestRecordsToMessages:
                 payload={
                     "message_id": "m2",
                     "tool_call_id": "call-1",
-                    "tool_name": "memory_propose_update",
-                    "arguments_json": '{"intent_id":"i1","action":"create"}',
+                    "tool_name": "memory_search",
+                    "arguments_json": '{"query":"name","limit":1}',
                 },
             ),
             SessionRecord(
@@ -341,10 +341,10 @@ class TestRecordsToMessages:
                 payload={
                     "message_id": "m3",
                     "tool_call_id": "call-1",
-                    "tool_name": "memory_propose_update",
+                    "tool_name": "memory_search",
                     "result": {
-                        "status": "pending_confirmation",
-                        "requires_user_confirmation": True,
+                        "status": "ok",
+                        "matches": [{"body": "Egor"}],
                     },
                     "error": None,
                 },
@@ -359,8 +359,8 @@ class TestRecordsToMessages:
                 payload={
                     "message_id": "m4",
                     "tool_call_id": "call-1",
-                    "tool_name": "memory_propose_update",
-                    "result": {"status": "written", "memory_id": "mem-1"},
+                    "tool_name": "memory_search",
+                    "result": {"status": "ok", "matches": [{"body": "Egor M."}]},
                     "error": None,
                 },
             ),
@@ -372,8 +372,64 @@ class TestRecordsToMessages:
         ]
         assert len(tool_result_blocks) == 1
         content = json.loads(tool_result_blocks[0]["content"])
-        assert content["status"] == "written"
-        assert content.get("memory_id") == "mem-1"
+        assert content["status"] == "ok"
+        assert content.get("matches") == [{"body": "Egor M."}]
+
+    def test_skips_memory_propose_update_blocks_from_replay(self) -> None:
+        records = [
+            SessionRecord(
+                session_id="s1",
+                sequence=0,
+                event_id="e1",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": "m1", "content": "Remember this"},
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=1,
+                event_id="e2",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.ASSISTANT_MESSAGE,
+                payload={"message_id": "m2", "content": "Saved."},
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=2,
+                event_id="e3",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+                payload={
+                    "message_id": "m3",
+                    "tool_call_id": "call-mem-1",
+                    "tool_name": "memory_propose_update",
+                    "arguments_json": '{"intent_id":"x","action":"create"}',
+                },
+            ),
+            SessionRecord(
+                session_id="s1",
+                sequence=3,
+                event_id="e4",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.TOOL_RESULT,
+                payload={
+                    "message_id": "m4",
+                    "tool_call_id": "call-mem-1",
+                    "tool_name": "memory_propose_update",
+                    "result": {"status": "written", "memory_id": "mem-1"},
+                    "error": None,
+                },
+            ),
+        ]
+        msgs = _records_to_messages(records)
+        assert len(msgs) == 2
+        assert msgs[0].role == MessageRole.USER
+        assert msgs[1].role == MessageRole.ASSISTANT
+        assert msgs[1].content == "Saved."
 
 
 @pytest.fixture

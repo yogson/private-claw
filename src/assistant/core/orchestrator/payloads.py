@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -82,7 +83,7 @@ def _debug_log_ask_question_args(tool_name: str, args: dict[str, Any]) -> None:
             pass
 
 
-def extract_user_text(event: OrchestratorEvent) -> str:
+def _extract_text_from_event(event: OrchestratorEvent, fallback: str | None) -> str | None:
     if event.text and event.text.strip():
         return event.text.strip()
     if event.voice and event.voice.transcript_text:
@@ -95,23 +96,15 @@ def extract_user_text(event: OrchestratorEvent) -> str:
                 return att.caption.strip()
     if event.callback_query:
         return f"[Callback: {event.callback_query.callback_data[:100]}]"
-    return _PLACEHOLDER_EMPTY
+    return fallback
+
+
+def extract_user_text(event: OrchestratorEvent) -> str:
+    return _extract_text_from_event(event, _PLACEHOLDER_EMPTY) or _PLACEHOLDER_EMPTY
 
 
 def extract_raw_text_for_multimodal(event: OrchestratorEvent) -> str | None:
-    if event.text and event.text.strip():
-        return event.text.strip()
-    if event.voice and event.voice.transcript_text:
-        return event.voice.transcript_text.strip()
-    if event.attachment and event.attachment.caption:
-        return event.attachment.caption.strip()
-    if event.attachments:
-        for att in event.attachments:
-            if att.caption:
-                return att.caption.strip()
-    if event.callback_query:
-        return f"[Callback: {event.callback_query.callback_data[:100]}]"
-    return None
+    return _extract_text_from_event(event, None)
 
 
 def gather_attachments(event: OrchestratorEvent) -> list[AttachmentMeta]:
@@ -257,6 +250,30 @@ async def build_user_content_blocks(
     return blocks
 
 
+def _record_to_tool_use_block(record: SessionRecord) -> dict[str, Any] | None:
+    """Convert ASSISTANT_TOOL_CALL record to tool_use block, or None if memory tool."""
+    tool_name = record.payload.get("tool_name", "")
+    if tool_name == MEMORY_TOOL_NAME:
+        return None
+    args_json = record.payload.get("arguments_json", "{}")
+    try:
+        args = json.loads(args_json)
+    except json.JSONDecodeError:
+        args = {}
+    _debug_log_ask_question_args(tool_name, args)
+    return {
+        "type": "tool_use",
+        "id": record.payload.get("tool_call_id", ""),
+        "name": tool_name,
+        "input": args,
+    }
+
+
+def _should_skip_memory_tool(record: SessionRecord) -> bool:
+    tool_name: str = record.payload.get("tool_name", "")
+    return tool_name == MEMORY_TOOL_NAME
+
+
 def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
     """Convert session records to LLM messages including tool-use and tool-result blocks."""
     messages: list[LLMMessage] = []
@@ -278,20 +295,9 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                 j < len(records) and records[j].record_type == SessionRecordType.ASSISTANT_TOOL_CALL
             ):
                 tc = records[j]
-                args_json = tc.payload.get("arguments_json", "{}")
-                try:
-                    args = json.loads(args_json)
-                except json.JSONDecodeError:
-                    args = {}
-                _debug_log_ask_question_args(tc.payload.get("tool_name", ""), args)
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": tc.payload.get("tool_call_id", ""),
-                        "name": tc.payload.get("tool_name", ""),
-                        "input": args,
-                    }
-                )
+                block = _record_to_tool_use_block(tc)
+                if block is not None:
+                    blocks.append(block)
                 j += 1
             if blocks:
                 if len(blocks) == 1 and blocks[0].get("type") == "text":
@@ -314,20 +320,9 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                 j < len(records) and records[j].record_type == SessionRecordType.ASSISTANT_TOOL_CALL
             ):
                 tc = records[j]
-                args_json = tc.payload.get("arguments_json", "{}")
-                try:
-                    args = json.loads(args_json)
-                except json.JSONDecodeError:
-                    args = {}
-                _debug_log_ask_question_args(tc.payload.get("tool_name", ""), args)
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": tc.payload.get("tool_call_id", ""),
-                        "name": tc.payload.get("tool_name", ""),
-                        "input": args,
-                    }
-                )
+                block = _record_to_tool_use_block(tc)
+                if block is not None:
+                    blocks.append(block)
                 j += 1
             if blocks:
                 messages.append(
@@ -347,6 +342,10 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
             j = i
             while j < len(records) and records[j].record_type == SessionRecordType.TOOL_RESULT:
                 tr = records[j]
+                if _should_skip_memory_tool(tr):
+                    j += 1
+                    continue
+                tool_name = tr.payload.get("tool_name", "")
                 tid = tr.payload.get("tool_call_id", "")
                 result = tr.payload.get("result")
                 error = tr.payload.get("error")
@@ -356,7 +355,7 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                 seen[tid] = {
                     "type": "tool_result",
                     "tool_use_id": tid,
-                    "tool_name": tr.payload.get("tool_name", ""),
+                    "tool_name": tool_name,
                     "content": content_str,
                     "is_error": error is not None,
                 }

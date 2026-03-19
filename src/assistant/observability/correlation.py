@@ -120,9 +120,12 @@ class SessionTraceManager:
         session_id: str,
         turn_id: str,
     ) -> Generator[None, None, None]:
-        with logfire.attach_context(stored_ctx), logfire.span(
-            "orchestrator turn {turn_id}",
-            turn_id=turn_id,
-            session_id=session_id,
+        with (
+            logfire.attach_context(stored_ctx),
+            logfire.span(
+                "orchestrator turn {turn_id}",
+                turn_id=turn_id,
+                session_id=session_id,
+            ),
         ):
             yield
