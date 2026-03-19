@@ -4,6 +4,7 @@ Component ID: CMP_AGENT_SUBAGENT_COORDINATOR
 Tool for enqueueing reusable delegated background tasks.
 """
 
+import os
 from typing import Any
 
 import structlog
@@ -30,6 +31,12 @@ async def delegate_subagent_task(
         }
     backend_params: dict[str, Any] = {}
     if directory:
+        if not os.path.isdir(directory):
+            return {
+                "accepted": False,
+                "status": "error",
+                "rejection_reason": f"directory does not exist: {directory}",
+            }
         backend_params["directory"] = directory
     request: dict[str, Any] = {
         "objective": objective,

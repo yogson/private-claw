@@ -25,7 +25,7 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
     async def execute(self, request: DelegationRun) -> DelegationResult:
         prompt = self._build_prompt(request)
         cmd = self._build_command(request, prompt)
-        cwd = request.backend_params.get("directory") or None
+        cwd = request.backend_params.get("directory")
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -40,6 +40,7 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         except TimeoutError:
             return DelegationResult(ok=False, error="claude run timed out")
         except FileNotFoundError:
+            # cwd is validated before execution, so this means the binary is missing
             return DelegationResult(ok=False, error="claude CLI binary not found")
         except Exception as exc:  # pragma: no cover - defensive runtime branch
             return DelegationResult(ok=False, error=f"claude execution failed: {exc}")
