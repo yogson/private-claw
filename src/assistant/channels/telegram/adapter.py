@@ -393,6 +393,10 @@ class TelegramAdapter:
         """Return True when the event text is the /usage command."""
         return extract_supported_command(event.text) == TelegramCommand.USAGE
 
+    def is_stop_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /stop command."""
+        return extract_supported_command(event.text) == TelegramCommand.STOP
+
     async def build_model_menu_response(
         self, chat_id: int, session_id: str, trace_id: str
     ) -> ChannelResponse:

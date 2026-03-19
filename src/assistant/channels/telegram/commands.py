@@ -18,6 +18,7 @@ class TelegramCommand(StrEnum):
     SESSIONS = "/sessions", "List recent sessions and resume one."
     MODEL = "/model", "Select LLM model for the current session."
     USAGE = "/usage", "Show token and cost usage statistics."
+    STOP = "/stop", "Stop the current agent activity."
 
     def __new__(cls, value: str, description: str) -> "TelegramCommand":
         obj = str.__new__(cls, value)

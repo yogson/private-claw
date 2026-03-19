@@ -28,7 +28,7 @@ from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.ingestion.factory import build_transcription_service
 from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDownloader
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
-from assistant.channels.telegram.polling import run_polling
+from assistant.channels.telegram.polling import CancellationRegistry, run_polling
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.core.bootstrap import bootstrap
 from assistant.core.events.mapper import NormalizedEventMapper
@@ -61,10 +61,25 @@ def _build_orchestrator_handler(
     delegation_coordinator: DelegationCoordinator | None = None,
     memory_confirmations: MemoryConfirmationService | None = None,
     usage_service: Any = None,
+    cancellation_registry: CancellationRegistry | None = None,
 ) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
     mapper = NormalizedEventMapper()
 
     async def _handler(event: NormalizedEvent) -> ChannelResponse | None:
+        if adapter.is_stop_request(event):
+            cancelled = (
+                cancellation_registry.cancel(event.session_id)
+                if cancellation_registry is not None
+                else False
+            )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Stopped." if cancelled else "Nothing is currently running.",
+            )
         if adapter.is_session_new_request(event):
             session_id = adapter.start_new_session(event)
             if session_id is None:
@@ -506,12 +521,14 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             archive_dir=data_root / "runtime" / "usage_archive",
             default_model_id=runtime_config.model.default_model_id,
         )
+        cancellation_registry = CancellationRegistry()
         handler = _build_orchestrator_handler(
             adapter,
             orchestrator,
             delegation_coordinator,
             memory_confirmations,
             usage_service=usage_service,
+            cancellation_registry=cancellation_registry,
         )
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
@@ -523,6 +540,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 runtime_config.telegram,
                 _dispatch,
                 stop_event=polling_stop,
+                cancellation_registry=cancellation_registry,
             )
         )
 
