@@ -7,8 +7,8 @@ sync:
 	uv sync --group dev
 
 start:
-	uv run uvicorn assistant.api.main:app --host 0.0.0.0 --port 8000 --reload
-
+	uv run uvicorn assistant.api.main:app --host 0.0.0.0 --port 8000
+	# --reload
 format:
 	uv run ruff format src/ tests/
 	uv run ruff check --fix src/ tests/

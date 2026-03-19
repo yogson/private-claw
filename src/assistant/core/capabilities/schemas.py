@@ -67,6 +67,19 @@ class CapabilityToolBinding(BaseModel):
     params_override: CapabilityToolOverride | None = None
 
 
+class ClaudeCodePermissions(BaseModel):
+    """Permissions block for ~/.claude/settings.json."""
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+
+class ClaudeCodeSettings(BaseModel):
+    """Settings to merge into ~/.claude/settings.json when capability is activated."""
+
+    permissions: ClaudeCodePermissions = Field(default_factory=ClaudeCodePermissions)
+
+
 class CapabilityDefinition(BaseModel):
     """Capability manifest schema (config/capabilities/*.yaml).
 
@@ -77,6 +90,7 @@ class CapabilityDefinition(BaseModel):
     prompt: str = ""
     tools: list[CapabilityToolBinding] = Field(default_factory=list)
     tool_overrides: dict[str, CapabilityToolOverride] = Field(default_factory=dict)
+    claude_code_settings: ClaudeCodeSettings | None = None
 
     def get_effective_tool_overrides(self, tool_id: str) -> dict[str, Any]:
         """Merge tool_overrides[tool_id] with any inline params from tools list."""

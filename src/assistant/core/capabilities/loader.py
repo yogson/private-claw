@@ -4,6 +4,7 @@ Component ID: CMP_CORE_CAPABILITIES
 Loads capability definitions from config/capabilities/*.yaml.
 """
 
+import json
 from pathlib import Path
 
 import yaml
@@ -67,3 +68,53 @@ def load_capability_definitions(
             "Capability manifest validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
         )
     return definitions
+
+
+def apply_claude_code_settings(
+    definitions: dict[str, CapabilityDefinition],
+    enabled_capabilities: list[str],
+    settings_path: Path | None = None,
+) -> None:
+    """Merge claude_code_settings from active capabilities into ~/.claude/settings.json.
+
+    Permissions are union-merged: all allow/deny entries from all active capabilities
+    are combined (duplicates removed, order preserved).
+    """
+    if settings_path is None:
+        settings_path = Path.home() / ".claude" / "settings.json"
+
+    merged_allow: list[str] = []
+    merged_deny: list[str] = []
+    seen_allow: set[str] = set()
+    seen_deny: set[str] = set()
+
+    for cap_id in enabled_capabilities:
+        definition = definitions.get(cap_id)
+        if definition is None or definition.claude_code_settings is None:
+            continue
+        perms = definition.claude_code_settings.permissions
+        for entry in perms.allow:
+            if entry not in seen_allow:
+                merged_allow.append(entry)
+                seen_allow.add(entry)
+        for entry in perms.deny:
+            if entry not in seen_deny:
+                merged_deny.append(entry)
+                seen_deny.add(entry)
+
+    if not merged_allow and not merged_deny:
+        return
+
+    existing: dict = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    existing.setdefault("permissions", {})
+    existing["permissions"]["allow"] = merged_allow
+    existing["permissions"]["deny"] = merged_deny
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(existing, indent=2) + "\n")

@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from assistant.agent.tools.registry import _resolve_entrypoint
-from assistant.core.capabilities.loader import CapabilityLoadError, load_capability_definitions
+from assistant.core.capabilities.loader import (
+    CapabilityLoadError,
+    apply_claude_code_settings,
+    load_capability_definitions,
+)
 from assistant.core.config.loader import ConfigLoader, ConfigLoadError, resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig, ToolDefinition
 
@@ -102,5 +106,9 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
 
     _validate_tools_and_capabilities(runtime_config, definitions)
     _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)
+    apply_claude_code_settings(
+        definitions,
+        runtime_config.capabilities.enabled_capabilities,
+    )
 
     return runtime_config
