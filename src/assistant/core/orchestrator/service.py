@@ -14,6 +14,7 @@ import structlog
 from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.agent.pydantic_ai_agent import (
     PydanticAITurnAdapter,
+    TurnCancelledWithPartial,
     TurnDeps,
     _extract_pending_ask_question,
     _new_messages_to_plans,
@@ -206,24 +207,83 @@ class Orchestrator:
                 trace_id=trace_id,
                 model_id=model_id,
             )
-        except asyncio.CancelledError:
-            # User cancelled via /stop. Persist a minimal cancelled record so the
-            # turn appears in history and session context stays intact for the next
-            # message. asyncio.shield ensures the persist completes even if another
-            # cancellation arrives during shutdown.
+        except asyncio.CancelledError as _cancel_exc:
+            # User cancelled via /stop. Persist whatever was captured so the turn
+            # appears in history with real tool call records (if any), preserving
+            # context for the next message. asyncio.shield ensures persistence
+            # completes even if another cancellation arrives (e.g. app shutdown).
+            partial_msgs = (
+                _cancel_exc.partial_messages
+                if isinstance(_cancel_exc, TurnCancelledWithPartial)
+                else []
+            )
             try:
-                await asyncio.shield(
-                    persist_turn_failed(
-                        self._store.sessions,
-                        self._config,
+                if partial_msgs:
+                    now = datetime.now(UTC)
+                    assistant_msg_id = f"msg-{turn_id}-assistant"
+                    assistant_records = _new_messages_to_session_records(
+                        partial_msgs,
                         session_id=session_id,
                         turn_id=turn_id,
-                        user_text=user_content,
+                        timestamp=now,
+                        assistant_msg_id=assistant_msg_id,
+                        model_id=model_id,
                         user_id=user_id,
-                        status=TurnTerminalStatus.CANCELLED,
-                        assistant_content="[Turn cancelled by user]",
+                        skip_memory_tool_results=True,
                     )
-                )
+                    # Ensure at least one ASSISTANT_MESSAGE record exists.
+                    if not any(
+                        r.record_type == SessionRecordType.ASSISTANT_MESSAGE
+                        for r in assistant_records
+                    ):
+                        assistant_records.append(
+                            SessionRecord(
+                                session_id=session_id,
+                                sequence=0,
+                                event_id=assistant_msg_id,
+                                turn_id=turn_id,
+                                timestamp=now,
+                                record_type=SessionRecordType.ASSISTANT_MESSAGE,
+                                payload={
+                                    "message_id": assistant_msg_id,
+                                    "content": "[Turn cancelled by user]",
+                                    "model_id": model_id,
+                                },
+                            )
+                        )
+                    await asyncio.shield(
+                        persist_turn_initial(
+                            self._store.sessions,
+                            self._config,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            user_text=user_content,
+                            assistant_records=assistant_records,
+                            user_id=user_id,
+                        )
+                    )
+                    await asyncio.shield(
+                        persist_turn_outcomes(
+                            self._store.sessions,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            outcomes=[],
+                            terminal_status=TurnTerminalStatus.CANCELLED,
+                        )
+                    )
+                else:
+                    await asyncio.shield(
+                        persist_turn_failed(
+                            self._store.sessions,
+                            self._config,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            user_text=user_content,
+                            user_id=user_id,
+                            status=TurnTerminalStatus.CANCELLED,
+                            assistant_content="[Turn cancelled by user]",
+                        )
+                    )
             except Exception:
                 logger.warning(
                     "orchestrator.cancel_persist_failed",

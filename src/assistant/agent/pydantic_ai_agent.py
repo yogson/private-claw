@@ -5,10 +5,11 @@ Pydantic AI Agent runtime for turn execution with typed memory_propose_update to
 Replaces manual provider tool protocol handling with Agent-managed tool loop.
 """
 
+import asyncio
 from typing import Any
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
 from assistant.agent.ask_question_extractor import _extract_pending_ask_question
 from assistant.agent.memory_intent_processor import _new_messages_to_plans
@@ -24,6 +25,7 @@ from assistant.extensions.first_party.memory import normalize_candidate_for_upse
 
 __all__ = [
     "PydanticAITurnAdapter",
+    "TurnCancelledWithPartial",
     "TurnDeps",
     "_extract_pending_ask_question",
     "_new_messages_to_plans",
@@ -31,6 +33,54 @@ __all__ = [
     "_llm_messages_to_history",
     "_normalize_candidate_for_upsert",
 ]
+
+
+class TurnCancelledWithPartial(asyncio.CancelledError):
+    """Raised when a turn is cancelled; carries partial messages captured so far.
+
+    Subclasses CancelledError so existing ``except asyncio.CancelledError`` handlers
+    still work.  Callers that want the partial context check for this subclass first.
+    """
+
+    def __init__(self, partial_messages: list[ModelMessage]) -> None:
+        super().__init__()
+        self.partial_messages = partial_messages
+
+
+def _inject_cancellation_results(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Return messages with synthetic 'user_cancelled' ToolReturnParts injected.
+
+    Any ToolCallPart without a corresponding ToolReturnPart in the same message list
+    gets a synthetic cancelled result appended as a new ModelRequest.  This ensures
+    the persisted history satisfies the replay invariant (every tool call has a result).
+    """
+    completed_ids: set[str] = set()
+    for msg in messages:
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    completed_ids.add(part.tool_call_id)
+
+    pending: list[ToolCallPart] = []
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart) and part.tool_call_id not in completed_ids:
+                    pending.append(part)
+
+    if not pending:
+        return messages
+
+    cancelled_parts: list[ToolReturnPart] = [
+        ToolReturnPart(
+            tool_name=call.tool_name,
+            content='{"status": "cancelled", "reason": "user_cancelled"}',
+            tool_call_id=call.tool_call_id,
+            outcome="denied",
+        )
+        for call in pending
+    ]
+    return list(messages) + [ModelRequest(parts=cancelled_parts)]
 
 
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
@@ -82,9 +132,10 @@ class PydanticAITurnAdapter:
         Execute one turn. messages includes history + current user message (last).
         Returns (response_text, new_messages, usage).
         When model_id is provided, uses it for this turn; otherwise uses default.
+        Raises TurnCancelledWithPartial (subclass of CancelledError) if cancelled,
+        carrying whatever messages were captured before the cancellation.
         """
         from pydantic_ai._agent_graph import CallToolsNode  # type: ignore[import]
-        from pydantic_ai.messages import ToolCallPart
 
         if not messages:
             return "", [], None
@@ -102,16 +153,27 @@ class PydanticAITurnAdapter:
             model=effective_model or self._model_id,
             model_settings=model_settings,
         ) as agent_run:
-            async for node in agent_run:
-                if isinstance(node, CallToolsNode) and deps.tool_call_notifier is not None:
-                    for part in node.model_response.parts:
-                        if isinstance(part, ToolCallPart):
-                            try:
-                                await deps.tool_call_notifier(
-                                    part.tool_name, part.args_as_json_str()
-                                )
-                            except Exception:
-                                pass
+            try:
+                async for node in agent_run:
+                    if isinstance(node, CallToolsNode) and deps.tool_call_notifier is not None:
+                        for part in node.model_response.parts:
+                            if isinstance(part, ToolCallPart):
+                                try:
+                                    await deps.tool_call_notifier(
+                                        part.tool_name, part.args_as_json_str()
+                                    )
+                                except Exception:
+                                    pass
+            except asyncio.CancelledError:
+                # Capture whatever messages were processed before cancellation so the
+                # caller can persist them and keep session history intact.
+                partial: list[ModelMessage] = []
+                try:
+                    partial = list(agent_run.new_messages())
+                except Exception:
+                    pass
+                raise TurnCancelledWithPartial(_inject_cancellation_results(partial)) from None
+
         result = agent_run.result
         if result is None:
             return "", [], None
