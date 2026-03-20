@@ -33,10 +33,12 @@ from assistant.channels.telegram.polling import CancellationRegistry, run_pollin
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap
+from assistant.core.capabilities.loader import load_capability_definitions
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
+from assistant.store.models import SessionRecordType
 from assistant.core.session_context import (
     ActiveSessionContextService,
     SessionModelContextService,
@@ -107,6 +109,12 @@ def _build_tool_call_notifier(
     return _notifier
 
 
+async def _session_has_user_messages(store: Any, session_id: str) -> bool:
+    """Return True if the session already contains at least one USER_MESSAGE record."""
+    records = await store.sessions.read_window(session_id, max_records=50)
+    return any(r.record_type == SessionRecordType.USER_MESSAGE for r in records)
+
+
 def _build_orchestrator_handler(
     adapter: TelegramAdapter,
     orchestrator: Orchestrator,
@@ -115,6 +123,7 @@ def _build_orchestrator_handler(
     usage_service: Any = None,
     cancellation_registry: CancellationRegistry | None = None,
     verbose_state: VerboseStateService | None = None,
+    store: Any = None,
 ) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
     mapper = NormalizedEventMapper()
 
@@ -242,6 +251,50 @@ def _build_orchestrator_handler(
                 message_type=MessageType.TEXT,
                 text="Invalid or expired model selection.",
             )
+        if adapter.is_capabilities_request(event):
+            chat_id = int(event.metadata.get("chat_id", 0))
+            if store is not None and await _session_has_user_messages(store, event.session_id):
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text=(
+                        "Capabilities can only be changed in a fresh session. "
+                        "Use /new to start a new session first."
+                    ),
+                )
+            return await adapter.build_capabilities_menu_response(
+                chat_id, event.session_id, event.trace_id
+            )
+        if adapter.is_capabilities_callback_request(event):
+            chat_id = int(event.metadata.get("chat_id", 0))
+            if store is not None and await _session_has_user_messages(store, event.session_id):
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text=(
+                        "Capabilities can only be changed in a fresh session. "
+                        "Use /new to start a new session first."
+                    ),
+                )
+            capability_id = adapter.handle_capabilities_callback(event)
+            if capability_id is None:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Invalid or expired capability selection.",
+                )
+            return await adapter.build_capabilities_menu_response(
+                chat_id, event.session_id, event.trace_id
+            )
         if adapter.is_memory_confirmation_callback(event):
             if memory_confirmations is None:
                 return ChannelResponse(
@@ -342,6 +395,11 @@ def _build_orchestrator_handler(
         model_override = adapter.get_model_override(chat_id) if chat_id else None
         if model_override:
             orch_event = orch_event.model_copy(update={"model_id_override": model_override})
+        capabilities_override = adapter.get_capabilities_override(chat_id) if chat_id else None
+        if capabilities_override is not None:
+            orch_event = orch_event.model_copy(
+                update={"capabilities_override": capabilities_override}
+            )
         notifier = None
         if chat_id and verbose_state is not None and verbose_state.is_enabled(chat_id):
             notifier = _build_tool_call_notifier(
@@ -585,6 +643,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_context = SessionModelContextService(
             data_root / "runtime" / "active_model_context.json"
         )
+        capability_definitions = load_capability_definitions(
+            config_dir=runtime_config.config_dir
+        )
         adapter = TelegramAdapter(
             runtime_config.telegram,
             transcription_service=transcription_service,
@@ -593,6 +654,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             model_context=model_context,
             model_allowlist=runtime_config.model.model_allowlist,
             default_model_id=runtime_config.model.default_model_id,
+            capability_definitions=capability_definitions,
+            default_capabilities=runtime_config.capabilities.enabled_capabilities,
         )
         app.state.telegram_adapter = adapter
 
@@ -632,6 +695,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             usage_service=usage_service,
             cancellation_registry=cancellation_registry,
             verbose_state=verbose_state,
+            store=store,
         )
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:

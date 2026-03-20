@@ -17,6 +17,7 @@ class TelegramCommand(StrEnum):
     RESET = "/reset", "Clear context for the active session."
     SESSIONS = "/sessions", "List recent sessions and resume one."
     MODEL = "/model", "Select LLM model for the current session."
+    CAPABILITIES = "/capabilities", "Toggle capabilities for the current session."
     USAGE = "/usage", "Show token and cost usage statistics."
     STOP = "/stop", "Stop the current agent activity."
     VERBOSE = "/verbose", "Toggle verbose mode (show tool calls)."

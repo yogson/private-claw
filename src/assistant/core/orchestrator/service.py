@@ -152,21 +152,30 @@ class Orchestrator:
         user_id: str | None = None,
         model_id_override: str | None = None,
         tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
+        effective_config: "RuntimeConfig | None" = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
+        cfg = effective_config if effective_config is not None else self._config
         adapter = self._pydantic_ai_adapter
         if adapter is None:
             raise RuntimeError("Pydantic AI adapter not configured")
 
-        model_id = model_id_override or self._config.model.default_model_id
-        if model_id not in self._config.model.model_allowlist:
-            model_id = self._config.model.default_model_id
+        if effective_config is not None and effective_config is not self._config:
+            adapter = PydanticAITurnAdapter(
+                model_id=f"anthropic:{cfg.model.default_model_id}",
+                max_tokens=self._config.model.max_tokens_default,
+                config=effective_config,
+            )
+
+        model_id = model_id_override or cfg.model.default_model_id
+        if model_id not in cfg.model.model_allowlist:
+            model_id = cfg.model.default_model_id
 
         msg_dicts = [
             {"role": m.role.value, "content": m.content, "content_blocks": m.content_blocks}
             for m in messages
         ]
-        tool_params = build_tool_runtime_params(self._config)
+        tool_params = build_tool_runtime_params(cfg)
         memory_handler = None
         if self._memory_retrieval:
 
@@ -409,6 +418,18 @@ class Orchestrator:
         else:
             user_message = LLMMessage(role=MessageRole.USER, content=user_content)
 
+        effective_config: RuntimeConfig | None = None
+        if event.capabilities_override is not None:
+            from assistant.core.config.schemas import CapabilitiesPolicyConfig
+
+            modified_caps = CapabilitiesPolicyConfig(
+                enabled_capabilities=event.capabilities_override,
+                denied_capabilities=self._config.capabilities.denied_capabilities,
+            )
+            effective_config = self._config.model_copy(
+                update={"capabilities": modified_caps}
+            )
+
         token = set_trace_id(trace_id)
         try:
             with self._session_traces.session_trace(session_id, turn_id):
@@ -440,6 +461,7 @@ class Orchestrator:
                     user_id=event.user_id,
                     model_id_override=event.model_id_override,
                     tool_call_notifier=tool_call_notifier,
+                    effective_config=effective_config,
                 )
         finally:
             reset_trace_id(token)

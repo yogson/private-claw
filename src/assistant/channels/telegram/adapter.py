@@ -24,6 +24,7 @@ from assistant.channels.telegram.memory_confirmation_callbacks import (
     sign_memory_confirmation_callback,
     verify_memory_confirmation_callback,
 )
+from assistant.channels.telegram.capability_select_service import CapabilitySelectService
 from assistant.channels.telegram.model_select import ModelSelectService
 from assistant.channels.telegram.models import (
     ActionButton,
@@ -35,6 +36,7 @@ from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard
 from assistant.channels.telegram.session_resume import SessionResumeService
 from assistant.channels.telegram.task_callbacks import sign_task_callback, verify_task_callback
+from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
@@ -84,6 +86,8 @@ class TelegramAdapter:
         model_context: SessionModelContextInterface | None = None,
         model_allowlist: list[str] | None = None,
         default_model_id: str | None = None,
+        capability_definitions: dict[str, CapabilityDefinition] | None = None,
+        default_capabilities: list[str] | None = None,
     ) -> None:
         self._config = config
         self._session_store = session_store
@@ -91,11 +95,19 @@ class TelegramAdapter:
         self._model_context = model_context or SessionModelContextService()
         self._model_allowlist = model_allowlist or []
         self._default_model_id = default_model_id or ""
+        self._default_capabilities: list[str] = list(default_capabilities or [])
+        self._capability_overrides: dict[str, list[str]] = {}
         secret = config.session_resume_hmac_secret or config.bot_token
         self._model_select: ModelSelectService | None = None
         if self._model_allowlist and secret:
             self._model_select = ModelSelectService(
                 model_allowlist=self._model_allowlist,
+                hmac_secret=secret,
+            )
+        self._capability_select: CapabilitySelectService | None = None
+        if capability_definitions and secret:
+            self._capability_select = CapabilitySelectService(
+                capability_definitions=capability_definitions,
                 hmac_secret=secret,
             )
         guard = AllowlistGuard(config.allowlist)
@@ -389,6 +401,19 @@ class TelegramAdapter:
         data = event.callback_query.callback_data or ""
         return data.startswith("ms:")
 
+    def is_capabilities_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /capabilities command."""
+        if self._capability_select is None:
+            return False
+        return extract_supported_command(event.text) == TelegramCommand.CAPABILITIES
+
+    def is_capabilities_callback_request(self, event: NormalizedEvent) -> bool:
+        """Return True if the event looks like a capability-select callback (by prefix)."""
+        if self._capability_select is None or event.callback_query is None:
+            return False
+        data = event.callback_query.callback_data or ""
+        return data.startswith("cs:")
+
     def is_usage_request(self, event: NormalizedEvent) -> bool:
         """Return True when the event text is the /usage command."""
         return extract_supported_command(event.text) == TelegramCommand.USAGE
@@ -424,6 +449,79 @@ class TelegramAdapter:
             trace_id=trace_id,
             current_model_id=current_model,
         )
+
+    async def build_capabilities_menu_response(
+        self, chat_id: int, session_id: str, trace_id: str
+    ) -> ChannelResponse:
+        """Build and return an interactive ChannelResponse listing available capabilities."""
+        if self._capability_select is None:
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=session_id,
+                trace_id=trace_id,
+                message_type=MessageType.TEXT,
+                text="Capability selection is not available.",
+            )
+        enabled = self._capability_overrides.get(
+            self._build_session_context_id(chat_id), self._default_capabilities
+        )
+        return self._capability_select.build_capabilities_menu(
+            current_session_id=session_id,
+            chat_id=chat_id,
+            trace_id=trace_id,
+            enabled_capabilities=enabled,
+        )
+
+    def handle_capabilities_callback(self, event: NormalizedEvent) -> str | None:
+        """
+        Process a signed capability-select callback and toggle the capability for the chat.
+
+        Returns the toggled capability_id on success, None if invalid.
+        """
+        if self._capability_select is None or event.callback_query is None:
+            return None
+        chat_id = int(event.metadata.get("chat_id", 0))
+        capability_id = self._capability_select.verify_callback(
+            event.callback_query.callback_data, expected_chat_id=chat_id
+        )
+        if capability_id is None:
+            logger.warning(
+                "telegram.adapter.capability_select.invalid_callback",
+                trace_id=event.trace_id,
+            )
+            return None
+        if chat_id != 0:
+            context_id = self._build_session_context_id(chat_id)
+            current = list(
+                self._capability_overrides.get(context_id, self._default_capabilities)
+            )
+            if capability_id in current:
+                current.remove(capability_id)
+            else:
+                current.append(capability_id)
+            self._capability_overrides[context_id] = current
+            logger.info(
+                "telegram.adapter.capability_select.toggled",
+                chat_id=chat_id,
+                capability_id=capability_id,
+                enabled_capabilities=current,
+                trace_id=event.trace_id,
+            )
+        return capability_id
+
+    def get_capabilities_override(self, chat_id: int) -> list[str] | None:
+        """Return capability overrides for the given chat, or None if not customized."""
+        if chat_id == 0:
+            return None
+        context_id = self._build_session_context_id(chat_id)
+        return self._capability_overrides.get(context_id)
+
+    def clear_capabilities_override(self, chat_id: int) -> None:
+        """Remove any capability override for the given chat."""
+        if chat_id <= 0:
+            return
+        self._capability_overrides.pop(self._build_session_context_id(chat_id), None)
 
     def handle_model_callback(self, event: NormalizedEvent) -> str | None:
         """
@@ -473,6 +571,7 @@ class TelegramAdapter:
         self._active_session_context.set_active_session(
             self._build_session_context_id(chat_id), session_id
         )
+        self.clear_capabilities_override(chat_id)
         logger.info(
             "telegram.adapter.session_new.activated",
             chat_id=chat_id,
