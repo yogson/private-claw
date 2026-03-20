@@ -5,6 +5,7 @@ Builds the agent's system prompt by combining the base memory agent prompt
 with any enabled capability prompts from the runtime config.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from assistant.agent.constants import MEMORY_AGENT_PROMPT_NAME
@@ -26,7 +27,8 @@ def _compose_system_prompt(config: RuntimeConfig) -> str:
     denied = frozenset(policy.denied_capabilities)
     enabled = frozenset(policy.enabled_capabilities)
     definitions = load_capability_definitions(config_dir=_config_dir(config))
-    parts = [base]
+    current_date = datetime.now(UTC).strftime("%B %d, %Y")
+    parts = [base, f"Today's date is {current_date}."]
     for cap_id in sorted(enabled):
         if cap_id in denied:
             continue

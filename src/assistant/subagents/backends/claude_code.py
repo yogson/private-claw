@@ -5,6 +5,7 @@ Claude Code backend adapter for delegated staged execution.
 """
 
 import asyncio
+import json
 
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
@@ -50,6 +51,17 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         if process.returncode != 0:
             msg = stderr or stdout or f"claude exited with code {process.returncode}"
             return DelegationResult(ok=False, error=msg)
+
+        try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict) and "result" in parsed:
+                return DelegationResult(
+                    ok=True,
+                    output_text=str(parsed["result"]),
+                    usage=parsed.get("usage") or {},
+                )
+        except (json.JSONDecodeError, ValueError):
+            pass
 
         return DelegationResult(ok=True, output_text=stdout)
 
