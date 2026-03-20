@@ -162,7 +162,7 @@ class Orchestrator:
 
         if effective_config is not None and effective_config is not self._config:
             adapter = PydanticAITurnAdapter(
-                model_id=f"anthropic:{self._config.model.default_model_id}",
+                model_id=f"anthropic:{cfg.model.default_model_id}",
                 max_tokens=self._config.model.max_tokens_default,
                 config=effective_config,
             )

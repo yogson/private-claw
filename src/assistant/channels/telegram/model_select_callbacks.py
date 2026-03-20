@@ -8,7 +8,7 @@ import hashlib
 import hmac
 from datetime import UTC, datetime
 
-_COMPACT_HMAC_SIG_LENGTH = 12
+from assistant.channels.telegram._callback_constants import _COMPACT_HMAC_SIG_LENGTH
 CALLBACK_TTL_SECONDS = 3600
 COMPACT_CALLBACK_ACTION = "ms"
 
