@@ -161,7 +161,10 @@ async def test_configure_bot_commands_menu_registers_expected_commands() -> None
         "/reset",
         "/sessions",
         "/model",
+        "/capabilities",
         "/usage",
+        "/stop",
+        "/verbose",
     ]
     bot.set_chat_menu_button.assert_called_once()
 

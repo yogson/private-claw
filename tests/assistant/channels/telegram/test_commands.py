@@ -18,7 +18,10 @@ def test_build_bot_commands_contains_supported_command_set() -> None:
         "/reset",
         "/sessions",
         "/model",
+        "/capabilities",
         "/usage",
+        "/stop",
+        "/verbose",
     ]
 
 
