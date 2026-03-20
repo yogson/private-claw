@@ -78,6 +78,8 @@ class ClaudeCodeSettings(BaseModel):
     """Settings to merge into ~/.claude/settings.json when capability is activated."""
 
     permissions: ClaudeCodePermissions = Field(default_factory=ClaudeCodePermissions)
+    # Merged into settings.json as top-level "mcpServers" (Claude Code key).
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class CapabilityDefinition(BaseModel):

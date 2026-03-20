@@ -4,8 +4,10 @@ Component ID: CMP_CORE_CAPABILITIES
 Loads capability definitions from config/capabilities/*.yaml.
 """
 
+import copy
 import json
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import ValidationError
@@ -79,6 +81,10 @@ def apply_claude_code_settings(
 
     Permissions are union-merged: all allow/deny entries from all active capabilities
     are combined (duplicates removed, order preserved).
+
+    MCP servers from capabilities are merged in enabled_capabilities order; duplicate
+    server ids are overwritten by later capabilities. Written as top-level ``mcpServers``.
+    If no capability defines ``mcp_servers``, the existing ``mcpServers`` key is left unchanged.
     """
     if settings_path is None:
         settings_path = Path.home() / ".claude" / "settings.json"
@@ -87,6 +93,7 @@ def apply_claude_code_settings(
     merged_deny: list[str] = []
     seen_allow: set[str] = set()
     seen_deny: set[str] = set()
+    merged_mcp: dict[str, dict[str, Any]] = {}
 
     for cap_id in enabled_capabilities:
         definition = definitions.get(cap_id)
@@ -101,8 +108,10 @@ def apply_claude_code_settings(
             if entry not in seen_deny:
                 merged_deny.append(entry)
                 seen_deny.add(entry)
+        for name, spec in definition.claude_code_settings.mcp_servers.items():
+            merged_mcp[name] = copy.deepcopy(spec)
 
-    if not merged_allow and not merged_deny:
+    if not merged_allow and not merged_deny and not merged_mcp:
         return
 
     existing: dict = {}
@@ -112,9 +121,13 @@ def apply_claude_code_settings(
         except (json.JSONDecodeError, OSError):
             existing = {}
 
-    existing.setdefault("permissions", {})
-    existing["permissions"]["allow"] = merged_allow
-    existing["permissions"]["deny"] = merged_deny
+    if merged_allow or merged_deny:
+        existing.setdefault("permissions", {})
+        existing["permissions"]["allow"] = merged_allow
+        existing["permissions"]["deny"] = merged_deny
+
+    if merged_mcp:
+        existing["mcpServers"] = merged_mcp
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
