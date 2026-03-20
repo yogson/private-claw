@@ -39,6 +39,7 @@ from assistant.core.orchestrator import (
     _gather_attachments,
     _records_to_messages,
 )
+from assistant.core.orchestrator.service import MEMORY_SEARCH_MATCH_BODY_MAX_CHARS
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
 from assistant.store.models import SessionRecord, SessionRecordType
@@ -577,6 +578,52 @@ class TestOrchestratorExecuteTurn:
         assert tool_result["matches"]
         assert tool_result["matches"][0]["body"] == "- name: Egor"
         retrieval_service.retrieve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_memory_search_truncates_very_long_match_bodies(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        long_body = "x" * (MEMORY_SEARCH_MATCH_BODY_MAX_CHARS + 50)
+        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
+        retrieval_service = MagicMock()
+        retrieval_service.retrieve.return_value = RetrievalResult(
+            scored_artifacts=[
+                ScoredArtifact(
+                    artifact=MemoryArtifact(
+                        frontmatter=MemoryFrontmatter(
+                            memory_id="m-1",
+                            type=MemoryType.PROJECTS,
+                            tags=[],
+                            entities=[],
+                            priority=1,
+                            confidence=1.0,
+                            updated_at=datetime.now(UTC),
+                            last_used_at=None,
+                            created_at=datetime.now(UTC),
+                        ),
+                        body=long_body,
+                    ),
+                    score=0.9,
+                )
+            ],
+            audit=RetrievalAudit(),
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            memory_retrieval=retrieval_service,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+        await orch.execute_turn(_minimal_event(text="q"))
+        deps = mock_pydantic_adapter.run_turn.call_args.kwargs["deps"]
+        tool_result = deps.memory_search_handler("q", 3, None)
+        got = tool_result["matches"][0]["body"]
+        assert got.endswith("... [truncated]")
+        assert len(got) == MEMORY_SEARCH_MATCH_BODY_MAX_CHARS + len("... [truncated]")
 
     @pytest.mark.asyncio
     async def test_prompt_trace_is_persisted_when_enabled(

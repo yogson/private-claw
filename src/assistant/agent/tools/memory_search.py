@@ -20,7 +20,10 @@ def memory_search(
     limit: int = 3,
     memory_types: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Retrieve compact memory context on demand."""
+    """Retrieve compact memory context on demand.
+
+    The orchestrator caps each match body length; logs here keep a short preview only.
+    """
     bounded_limit = max(1, min(limit, 5))
     logger.info(
         "provider.tool_call.memory_search",

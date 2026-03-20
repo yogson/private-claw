@@ -58,6 +58,9 @@ from assistant.store.models import (
 )
 from assistant.subagents.interfaces import DelegationCoordinatorInterface
 
+# Max chars per memory-search match body returned to the agent (limits prompt/tool bloat).
+MEMORY_SEARCH_MATCH_BODY_MAX_CHARS = 12_000
+
 logger = structlog.get_logger(__name__)
 
 _REPLAY_BUDGET = 50
@@ -471,8 +474,8 @@ class Orchestrator:
         for scored in retrieval_result.scored_artifacts[:bounded_limit]:
             artifact = scored.artifact
             body = artifact.body.strip()
-            if len(body) > 500:
-                body = body[:500] + "... [truncated]"
+            if len(body) > MEMORY_SEARCH_MATCH_BODY_MAX_CHARS:
+                body = body[:MEMORY_SEARCH_MATCH_BODY_MAX_CHARS] + "... [truncated]"
             matches.append({"body": body})
         return {
             "status": "ok",
