@@ -6,6 +6,7 @@ prompt: |
   - User asks to review code
   - User asks to test code
   - User asks to debug code
+  - User ask to analyze code or repo
   If delegate failed, do not complete the task on your own. Provide a feedback to the user instead.
 
 tools:
@@ -54,6 +55,8 @@ claude_code_settings:
       - "Bash(flask:*)"
       - "Bash(uvicorn:*)"
       - "Bash(gunicorn:*)"
+      - "Bash(make start:*)"
+      - "Bash(make stop:*)"
       - "Bash(django-admin:*)"
       - "Bash(alembic:*)"
 
