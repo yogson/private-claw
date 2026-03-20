@@ -13,6 +13,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -185,6 +186,20 @@ class PydanticAITurnAdapter:
             return "", [], None
         response_text = result.output
         new_msgs = result.new_messages()
+
+        # Fallback: if the final output is empty, the model may have returned explanatory
+        # text in a mixed ModelResponse (TextPart + ToolCallPart) that pydantic_ai treats
+        # as an intermediate step and therefore excludes from result.output.  Scan the new
+        # messages in reverse and use the last such intermediate text so the user receives
+        # a response rather than silence.
+        if not response_text:
+            for msg in reversed(list(new_msgs)):
+                if isinstance(msg, ModelResponse):
+                    text_parts = [p for p in msg.parts if isinstance(p, TextPart) and p.content]
+                    tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
+                    if text_parts and tool_parts:
+                        response_text = " ".join(p.content for p in text_parts).strip()
+                        break
         usage = None
         usage_obj = result.usage()
         if usage_obj is not None:
