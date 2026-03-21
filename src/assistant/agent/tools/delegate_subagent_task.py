@@ -20,6 +20,7 @@ async def delegate_subagent_task(
     objective: str,
     model_id: str | None = None,
     directory: str | None = None,
+    backend: str | None = None,
 ) -> dict[str, Any]:
     """Create a delegated background task and return immediate acknowledgement.
     Use this when you need to delegate coding work to a background sub-agent (e.g. Claude Code).
@@ -29,6 +30,9 @@ async def delegate_subagent_task(
         model_id: Optional model override (e.g. "claude-sonnet-4"). Omit to use the default model.
         directory: Optional workspace path for the sub-agent. Must be an existing
             directory; if invalid, the task is rejected. MUST be specified for Claude Code.
+        backend: Optional backend selector. Use "claude_code" for the standard Claude Code
+            backend or "claude_code_streaming" for the streaming backend. Omit to use the
+            default backend.
     """
     handler = ctx.deps.delegation_enqueue_handler
     if handler is None:
@@ -51,6 +55,7 @@ async def delegate_subagent_task(
         "model_id": model_id,
         "tool_params": ctx.deps.tool_runtime_params.get("delegate_subagent_task", {}),
         "backend_params": backend_params,
+        "backend": backend,
     }
     result = await handler(request)
     logger.info(
