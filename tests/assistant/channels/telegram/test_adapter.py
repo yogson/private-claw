@@ -3,7 +3,7 @@ Unit tests for TelegramAdapter.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -14,6 +14,7 @@ from assistant.channels.telegram.allowlist import UnauthorizedUserError
 from assistant.channels.telegram.ingestion.interfaces import TranscriptionWorkerInterface
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.models import (
+    CallbackQueryMeta,
     ChannelResponse,
     EventType,
     MessageType,
@@ -192,3 +193,190 @@ class TestTelegramAdapterEgress:
             result = await adapter.send_response(_make_response(), chat_id=123456)
         assert result is True
         mock_send.assert_called_once()
+
+
+class TestDelegationQuestionCallbacks:
+    _CHAT_ID = 123456
+
+    def _make_aq_event(self, callback_data: str) -> NormalizedEvent:
+        return NormalizedEvent(
+            event_id="ev-aq",
+            event_type=EventType.USER_CALLBACK_QUERY,
+            source=EventSource.TELEGRAM,
+            session_id="tg:123456",
+            user_id=str(self._CHAT_ID),
+            created_at=datetime.now(UTC),
+            trace_id="trace-aq",
+            text=None,
+            callback_query=CallbackQueryMeta(
+                callback_id="cq-aq",
+                callback_data=callback_data,
+                origin_message_id=1,
+                ui_version="1",
+            ),
+            metadata={"chat_id": self._CHAT_ID},
+        )
+
+    def _make_text_event(self) -> NormalizedEvent:
+        return NormalizedEvent(
+            event_id="ev-text",
+            event_type=EventType.USER_TEXT_MESSAGE,
+            source=EventSource.TELEGRAM,
+            session_id="tg:123456",
+            user_id=str(self._CHAT_ID),
+            created_at=datetime.now(UTC),
+            trace_id="trace-text",
+            text="hello",
+            metadata={"chat_id": self._CHAT_ID},
+        )
+
+    # --- build_delegation_question_response ---
+
+    def test_build_with_options_returns_inline_keyboard(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-1",
+            question="Which option?",
+            options=["Option A", "Option B"],
+        )
+        assert response.message_type == MessageType.INTERACTIVE
+        assert response.ui_kind == "inline_keyboard"
+        assert response.text == "Which option?"
+        assert len(response.actions) == 2
+        assert response.actions[0].label == "Option A"
+        assert response.actions[1].label == "Option B"
+        assert response.actions[0].callback_data.startswith("aq:")
+        assert response.actions[1].callback_data.startswith("aq:")
+
+    def test_build_without_options_returns_plain_text(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-2",
+            question="Please respond",
+            options=[],
+        )
+        assert response.message_type == MessageType.TEXT
+        assert response.ui_kind != "inline_keyboard"
+        assert response.text == "Please respond"
+        assert not response.actions
+
+    def test_build_with_options_tokens_are_unique(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-3",
+            question="Pick one",
+            options=["A", "B", "C"],
+        )
+        cb_data = [a.callback_data for a in response.actions]
+        assert len(set(cb_data)) == 3
+
+    # --- is_delegation_question_callback ---
+
+    def test_is_delegation_question_callback_true_for_valid_aq(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-4",
+            question="Pick",
+            options=["Yes", "No"],
+        )
+        event = self._make_aq_event(response.actions[0].callback_data)
+        assert adapter.is_delegation_question_callback(event) is True
+
+    def test_is_delegation_question_callback_false_for_mc_prefix(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        mc_response = adapter.build_memory_confirmation_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-5",
+            tool_call_id="tc-1",
+            prompt_text="Confirm?",
+        )
+        event = self._make_aq_event(mc_response.actions[0].callback_data)
+        assert adapter.is_delegation_question_callback(event) is False
+
+    def test_is_delegation_question_callback_false_for_no_callback_query(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        assert adapter.is_delegation_question_callback(self._make_text_event()) is False
+
+    def test_is_delegation_question_callback_false_for_other_prefix(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        event = self._make_aq_event("ms:some:callback:data:here")
+        assert adapter.is_delegation_question_callback(event) is False
+
+    # --- consume_delegation_question_callback ---
+
+    def test_consume_returns_session_id_and_answer_for_valid_token(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456:abc",
+            trace_id="trace-6",
+            question="Which?",
+            options=["Alpha"],
+        )
+        event = self._make_aq_event(response.actions[0].callback_data)
+        result = adapter.consume_delegation_question_callback(event)
+        assert result == ("tg:123456:abc", "Alpha")
+
+    def test_consume_returns_none_for_tampered_token(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-7",
+            question="Choice?",
+            options=["Beta"],
+        )
+        cb_data = response.actions[0].callback_data
+        tampered = cb_data[:-1] + ("x" if cb_data[-1] != "x" else "y")
+        event = self._make_aq_event(tampered)
+        assert adapter.consume_delegation_question_callback(event) is None
+
+    def test_consume_returns_none_for_expired_token(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        past_ts = int((datetime.now(UTC) - timedelta(hours=2)).timestamp())
+        past_dt = datetime.fromtimestamp(past_ts, tz=UTC)
+        with patch("assistant.channels.telegram.ask_question_callbacks.datetime") as mock_dt:
+            mock_dt.now.return_value = past_dt
+            response = adapter.build_delegation_question_response(
+                chat_id=self._CHAT_ID,
+                session_id="tg:123456",
+                trace_id="trace-8",
+                question="Old question?",
+                options=["Gamma"],
+            )
+        event = self._make_aq_event(response.actions[0].callback_data)
+        assert adapter.consume_delegation_question_callback(event) is None
+
+    def test_consume_returns_none_on_second_call_replay_prevention(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_delegation_question_response(
+            chat_id=self._CHAT_ID,
+            session_id="tg:123456",
+            trace_id="trace-9",
+            question="Once only",
+            options=["Delta"],
+        )
+        event = self._make_aq_event(response.actions[0].callback_data)
+        first = adapter.consume_delegation_question_callback(event)
+        assert first == ("tg:123456", "Delta")
+        second = adapter.consume_delegation_question_callback(event)
+        assert second is None
+
+    def test_consume_returns_none_for_unknown_token(self) -> None:
+        from assistant.channels.telegram.ask_question_callbacks import sign_ask_question_callback
+
+        adapter = TelegramAdapter(_make_config())
+        # Sign a valid callback without registering it in the adapter's token registry
+        secret = b"12345:test-token"
+        cb_data = sign_ask_question_callback(token="deadbeef01", chat_id=self._CHAT_ID, secret=secret)
+        event = self._make_aq_event(cb_data)
+        assert adapter.consume_delegation_question_callback(event) is None
