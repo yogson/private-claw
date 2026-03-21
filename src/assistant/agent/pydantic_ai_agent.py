@@ -152,7 +152,11 @@ class PydanticAITurnAdapter:
         user_prompt = _message_to_user_prompt_content(messages[-1])
         history_msgs = messages[:-1] if len(messages) > 1 else []
         history = _llm_messages_to_history(history_msgs)
-        model_settings = {"max_tokens": self._max_tokens}
+        model_settings: dict[str, Any] = {
+            "max_tokens": self._max_tokens,
+            "anthropic_cache_instructions": True,
+            "anthropic_cache_tool_definitions": True,
+        }
         async with self._agent.iter(  # type: ignore[call-overload]
             user_prompt,
             message_history=history,
