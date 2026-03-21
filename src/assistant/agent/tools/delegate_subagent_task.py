@@ -30,9 +30,9 @@ async def delegate_subagent_task(
         model_id: Optional model override (e.g. "claude-sonnet-4"). Omit to use the default model.
         directory: Optional workspace path for the sub-agent. Must be an existing
             directory; if invalid, the task is rejected. MUST be specified for Claude Code.
-        backend: Optional backend selector. Use "claude_code" for the standard Claude Code
-            backend or "claude_code_streaming" for the streaming backend. Omit to use the
-            default backend.
+        backend: Optional backend selector. Use "claude_code" for fire-and-forget one shot simple task
+            or "claude_code_streaming" for complex tasks with feedback loop. Omit to use the
+            default backend - "claude_code".
     """
     handler = ctx.deps.delegation_enqueue_handler
     if handler is None:

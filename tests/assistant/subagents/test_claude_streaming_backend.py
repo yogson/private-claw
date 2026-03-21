@@ -293,3 +293,92 @@ async def test_execute_times_out_after_timeout_seconds() -> None:
 
     assert result.ok is False
     assert "timed out" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_timeout_via_shield_cancel_path() -> None:
+    """execute() handles timeout via the shield/cancel pattern (real asyncio.wait_for path)."""
+
+    async def _slow_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        await asyncio.sleep(10)
+        yield _make_result_msg()
+
+    with _patch_query_side_effect(_slow_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request(timeout_seconds=1))
+
+    assert result.ok is False
+    assert "timed out" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_returns_ok_when_no_result_message() -> None:
+    """When query yields no ResultMessage, execute() returns a failure."""
+
+    async def _no_result_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        return
+        yield  # make it a generator
+
+    with _patch_query_side_effect(_no_result_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request())
+
+    assert result.ok is False
+    assert "ResultMessage" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_returns_ok_with_empty_output() -> None:
+    """An agent that produces no text output (e.g. only edits files) still succeeds."""
+    result_msg = _make_result_msg(result="")
+
+    with _patch_query(_async_iter(result_msg)):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request())
+
+    assert result.ok is True
+    assert result.output_text == ""
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_no_relay_injects_empty_answer() -> None:
+    """When no relay is registered, AskUserQuestion receives an empty-string answer."""
+    from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
+
+    captured_can_use_tool: list[Any] = []
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        captured_can_use_tool.append(options.can_use_tool)
+        yield _make_result_msg(result="done")
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        # No relay registered
+        await adapter.execute(_make_request(task_id="t-no-relay"))
+
+    can_use_tool_fn = captured_can_use_tool[0]
+    context = ToolPermissionContext(signal=None, suggestions=[])
+    result = await can_use_tool_fn(
+        "AskUserQuestion",
+        {"question": "What now?", "options": ["yes", "no"]},
+        context,
+    )
+
+    assert isinstance(result, PermissionResultAllow)
+    assert result.updated_input is not None
+    assert result.updated_input.get("answer") == ""

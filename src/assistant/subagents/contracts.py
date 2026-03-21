@@ -24,7 +24,7 @@ class DelegationRun(BaseModel):
     objective: str
     model_id: str
     timeout_seconds: int = Field(default=300, ge=1)
-    max_turns: int = Field(default=8, ge=1)
+    max_turns: int = Field(default=25, ge=1)
     backend_params: dict[str, Any] = Field(default_factory=dict)
 
 
