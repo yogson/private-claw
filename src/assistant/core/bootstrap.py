@@ -12,6 +12,7 @@ from assistant.agent.tools.registry import _resolve_entrypoint
 from assistant.core.capabilities.loader import (
     CapabilityLoadError,
     apply_claude_code_settings,
+    expand_nested_capabilities,
     load_capability_definitions,
 )
 from assistant.core.config.loader import ConfigLoader, ConfigLoadError, resolve_config_dir
@@ -25,7 +26,11 @@ def _validate_tools_and_capabilities(
     """Validate capability bindings and tool entrypoints. Raises SystemExit on failure."""
     policy = runtime_config.capabilities
     denied = frozenset(policy.denied_capabilities)
-    enabled_caps = [c for c in policy.enabled_capabilities if c not in denied]
+    enabled_caps = [
+        c
+        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
+        if c not in denied
+    ]
     catalog = {t.tool_id: t for t in runtime_config.tools.tools}
     enabled_tools = {t.tool_id for t in runtime_config.tools.tools if t.enabled}
 
@@ -98,7 +103,10 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
     except CapabilityLoadError as exc:
         raise SystemExit(str(exc)) from exc
 
-    for cap_id in runtime_config.capabilities.enabled_capabilities:
+    all_enabled = expand_nested_capabilities(
+        runtime_config.capabilities.enabled_capabilities, definitions
+    )
+    for cap_id in all_enabled:
         if cap_id not in definitions:
             raise SystemExit(
                 f"Enabled capability '{cap_id}' has no manifest in config/capabilities/*.yaml"
@@ -108,7 +116,7 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
     _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)
     apply_claude_code_settings(
         definitions,
-        runtime_config.capabilities.enabled_capabilities,
+        all_enabled,
     )
 
     return runtime_config

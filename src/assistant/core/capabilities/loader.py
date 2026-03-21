@@ -72,6 +72,35 @@ def load_capability_definitions(
     return definitions
 
 
+def expand_nested_capabilities(
+    enabled: list[str],
+    definitions: dict[str, "CapabilityDefinition"],
+) -> list[str]:
+    """Return enabled capabilities expanded with all nested capabilities (cycle-safe).
+
+    Performs a depth-first traversal starting from each explicitly enabled capability.
+    Nested capabilities declared via ``nested_capabilities`` are added immediately after
+    the parent, preserving a deterministic order while avoiding duplicates and cycles.
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+
+    def _expand(cap_id: str) -> None:
+        if cap_id in seen:
+            return
+        seen.add(cap_id)
+        result.append(cap_id)
+        definition = definitions.get(cap_id)
+        if definition:
+            for nested_id in definition.nested_capabilities:
+                _expand(nested_id)
+
+    for cap_id in enabled:
+        _expand(cap_id)
+
+    return result
+
+
 def apply_claude_code_settings(
     definitions: dict[str, CapabilityDefinition],
     enabled_capabilities: list[str],
@@ -95,7 +124,7 @@ def apply_claude_code_settings(
     seen_deny: set[str] = set()
     merged_mcp: dict[str, dict[str, Any]] = {}
 
-    for cap_id in enabled_capabilities:
+    for cap_id in expand_nested_capabilities(enabled_capabilities, definitions):
         definition = definitions.get(cap_id)
         if definition is None or definition.claude_code_settings is None:
             continue

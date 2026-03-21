@@ -22,7 +22,7 @@ from pydantic_ai import Tool
 from pydantic_ai.tools import ToolFuncEither
 
 from assistant.agent.deps import TurnDeps
-from assistant.core.capabilities.loader import load_capability_definitions
+from assistant.core.capabilities.loader import expand_nested_capabilities, load_capability_definitions
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.mcp.bridge import McpBridge
@@ -45,7 +45,11 @@ def build_tool_runtime_params(config: RuntimeConfig) -> dict[str, dict[str, Any]
     definitions = load_capability_definitions(config_dir=_config_dir(config))
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
-    enabled = [c for c in policy.enabled_capabilities if c not in denied]
+    enabled = [
+        c
+        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
+        if c not in denied
+    ]
 
     result: dict[str, dict[str, Any]] = {}
     for tool_id in tool_ids:
@@ -95,8 +99,8 @@ def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
     """
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
-    enabled = frozenset(policy.enabled_capabilities)
     definitions = load_capability_definitions(config_dir=_config_dir(config))
+    enabled = frozenset(expand_nested_capabilities(policy.enabled_capabilities, definitions))
 
     tool_ids: set[str] = set()
     for cap_id in enabled:

@@ -8,8 +8,10 @@ import yaml
 from assistant.core.capabilities.loader import (
     CapabilityLoadError,
     discover_capability_manifests,
+    expand_nested_capabilities,
     load_capability_definitions,
 )
+from assistant.core.capabilities.schemas import CapabilityDefinition
 
 
 def test_discover_empty_dir(tmp_path: Path) -> None:
@@ -130,3 +132,118 @@ def test_load_delegate_tool_overrides(tmp_path: Path) -> None:
     assert "delegation_coding" in result
     overrides = result["delegation_coding"].get_effective_tool_overrides("delegate_subagent_task")
     assert overrides["delegation_model_allowlist"] == ["claude-sonnet-4-5"]
+
+
+# ── nested_capabilities field ───────────────────────────────────────────────
+
+
+def test_nested_capabilities_field_defaults_to_empty() -> None:
+    cap = CapabilityDefinition(capability_id="test")
+    assert cap.nested_capabilities == []
+
+
+def test_nested_capabilities_field_loaded_from_yaml(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities"
+    cap_dir.mkdir()
+    (cap_dir / "parent.yaml").write_text(
+        yaml.dump(
+            {
+                "capability_id": "parent",
+                "prompt": "",
+                "tools": [],
+                "nested_capabilities": ["child"],
+            }
+        )
+    )
+    (cap_dir / "child.yaml").write_text(
+        yaml.dump({"capability_id": "child", "prompt": "child prompt", "tools": []})
+    )
+    result = load_capability_definitions(config_dir=tmp_path)
+    assert result["parent"].nested_capabilities == ["child"]
+
+
+# ── expand_nested_capabilities ───────────────────────────────────────────────
+
+
+def _make_def(cap_id: str, nested: list[str] | None = None) -> CapabilityDefinition:
+    return CapabilityDefinition(
+        capability_id=cap_id,
+        nested_capabilities=nested or [],
+    )
+
+
+def test_expand_no_nesting() -> None:
+    defs = {"a": _make_def("a"), "b": _make_def("b")}
+    assert expand_nested_capabilities(["a", "b"], defs) == ["a", "b"]
+
+
+def test_expand_single_level_nesting() -> None:
+    defs = {
+        "parent": _make_def("parent", ["child"]),
+        "child": _make_def("child"),
+    }
+    result = expand_nested_capabilities(["parent"], defs)
+    assert result == ["parent", "child"]
+
+
+def test_expand_multi_level_nesting() -> None:
+    defs = {
+        "a": _make_def("a", ["b"]),
+        "b": _make_def("b", ["c"]),
+        "c": _make_def("c"),
+    }
+    result = expand_nested_capabilities(["a"], defs)
+    assert result == ["a", "b", "c"]
+
+
+def test_expand_multiple_nested_caps() -> None:
+    defs = {
+        "a": _make_def("a", ["b", "c"]),
+        "b": _make_def("b"),
+        "c": _make_def("c"),
+    }
+    result = expand_nested_capabilities(["a"], defs)
+    assert result == ["a", "b", "c"]
+
+
+def test_expand_deduplicates_shared_nested() -> None:
+    """Two parent caps that both nest the same child should include child once."""
+    defs = {
+        "p1": _make_def("p1", ["shared"]),
+        "p2": _make_def("p2", ["shared"]),
+        "shared": _make_def("shared"),
+    }
+    result = expand_nested_capabilities(["p1", "p2"], defs)
+    assert result.count("shared") == 1
+    assert set(result) == {"p1", "p2", "shared"}
+
+
+def test_expand_cycle_safe() -> None:
+    """Circular nested_capabilities references must not cause infinite recursion."""
+    defs = {
+        "a": _make_def("a", ["b"]),
+        "b": _make_def("b", ["a"]),
+    }
+    result = expand_nested_capabilities(["a"], defs)
+    assert set(result) == {"a", "b"}
+
+
+def test_expand_missing_nested_cap_not_added() -> None:
+    """If a nested capability has no manifest, it is still included in the expansion."""
+    defs = {
+        "parent": _make_def("parent", ["ghost"]),
+    }
+    result = expand_nested_capabilities(["parent"], defs)
+    # ghost is referenced but has no manifest — still expanded (validation is bootstrap's job)
+    assert "ghost" in result
+
+
+def test_expand_preserves_order() -> None:
+    defs = {
+        "a": _make_def("a", ["b", "c"]),
+        "b": _make_def("b"),
+        "c": _make_def("c"),
+        "d": _make_def("d"),
+    }
+    result = expand_nested_capabilities(["a", "d"], defs)
+    assert result == ["a", "b", "c", "d"]

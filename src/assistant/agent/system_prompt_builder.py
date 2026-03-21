@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from assistant.agent.constants import MEMORY_AGENT_PROMPT_NAME
-from assistant.core.capabilities.loader import load_capability_definitions
+from assistant.core.capabilities.loader import expand_nested_capabilities, load_capability_definitions
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.prompts import load_prompt
@@ -25,8 +25,8 @@ def _compose_system_prompt(config: RuntimeConfig) -> str:
     base = load_prompt(MEMORY_AGENT_PROMPT_NAME)
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
-    enabled = frozenset(policy.enabled_capabilities)
     definitions = load_capability_definitions(config_dir=_config_dir(config))
+    enabled = frozenset(expand_nested_capabilities(policy.enabled_capabilities, definitions))
     current_date = datetime.now(UTC).strftime("%B %d, %Y")
     parts = [base, f"Today's date is {current_date}."]
     for cap_id in sorted(enabled):
