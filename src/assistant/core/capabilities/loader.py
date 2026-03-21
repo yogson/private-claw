@@ -72,12 +72,45 @@ def load_capability_definitions(
     return definitions
 
 
+def expand_nested_capabilities(
+    enabled: list[str],
+    definitions: dict[str, "CapabilityDefinition"],
+) -> list[str]:
+    """Return enabled capabilities expanded with all nested capabilities (cycle-safe).
+
+    Performs a depth-first traversal starting from each explicitly enabled capability.
+    Nested capabilities declared via ``nested_capabilities`` are added immediately after
+    the parent, preserving a deterministic order while avoiding duplicates and cycles.
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+
+    def _expand(cap_id: str) -> None:
+        if cap_id in seen:
+            return
+        seen.add(cap_id)
+        result.append(cap_id)
+        definition = definitions.get(cap_id)
+        if definition:
+            for nested_id in definition.nested_capabilities:
+                _expand(nested_id)
+
+    for cap_id in enabled:
+        _expand(cap_id)
+
+    return result
+
+
 def apply_claude_code_settings(
     definitions: dict[str, CapabilityDefinition],
     enabled_capabilities: list[str],
     settings_path: Path | None = None,
 ) -> None:
     """Merge claude_code_settings from active capabilities into ~/.claude/settings.json.
+
+    ``enabled_capabilities`` must be the caller's already-expanded, already-denied-filtered
+    list of capability IDs.  This function does not expand nested capabilities or filter
+    denied ones — that is the caller's responsibility (consistent with all other use sites).
 
     Permissions are union-merged: all allow/deny entries from all active capabilities
     are combined (duplicates removed, order preserved).
