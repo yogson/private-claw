@@ -49,7 +49,7 @@ from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
 from assistant.store.models import TaskRecord
-from assistant.subagents.backends import ClaudeCodeBackendAdapter
+from assistant.subagents.backends import ClaudeCodeBackendAdapter, ClaudeCodeStreamingBackendAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
 
 logger = structlog.get_logger(__name__)
@@ -128,6 +128,26 @@ def _build_orchestrator_handler(
     mapper = NormalizedEventMapper()
 
     async def _handler(event: NormalizedEvent) -> ChannelResponse | None:
+        # If a streaming delegation task is waiting for user input on this session,
+        # treat the incoming message as the answer rather than a normal turn.
+        if (
+            event.callback_query is None
+            and event.text
+            and delegation_coordinator is not None
+            and delegation_coordinator.has_pending_question(event.session_id)
+        ):
+            submitted = delegation_coordinator.submit_delegation_answer(
+                event.session_id, event.text
+            )
+            if submitted:
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Answer received. The task will continue.",
+                )
         if adapter.is_stop_request(event):
             cancelled = (
                 cancellation_registry.cancel(event.session_id)
@@ -580,6 +600,46 @@ def _build_delegation_feedback_handler(
     return _handler
 
 
+def _build_question_relay_handler(
+    adapter: TelegramAdapter,
+) -> "Callable[[str, str, str, list[str]], Awaitable[None]]":
+    """Build a question-relay callback that sends AskUserQuestion to Telegram.
+
+    The callback sends the question as a Telegram message.  The coordinator
+    manages the asyncio.Future lifecycle and waits for the answer via
+    :meth:`DelegationCoordinator.submit_delegation_answer`.
+    """
+
+    async def _relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> None:
+        chat_id = DelegationCoordinator._chat_id_from_session(session_id)
+        if chat_id is None:
+            logger.warning(
+                "subagent.question_relay.no_chat_id",
+                task_id=task_id,
+                session_id=session_id,
+            )
+            return
+
+        options_dicts = [{"id": str(i), "label": o} for i, o in enumerate(options)]
+        response = adapter.build_ask_question_response(
+            session_id=session_id,
+            trace_id=task_id,
+            question=f"[Delegation task] {question}",
+            options=options_dicts,
+        )
+        try:
+            await adapter.send_response(response, chat_id=chat_id)
+        except Exception:
+            logger.exception(
+                "subagent.question_relay.send_failed",
+                task_id=task_id,
+            )
+
+    return _relay
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime_config = bootstrap()
@@ -659,10 +719,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
+        streaming_backend = ClaudeCodeStreamingBackendAdapter()
         delegation_coordinator = DelegationCoordinator(
             store=store,
             config=runtime_config,
-            backends=[ClaudeCodeBackendAdapter()],
+            backends=[ClaudeCodeBackendAdapter(), streaming_backend],
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
@@ -678,6 +739,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter)
+        )
+        delegation_coordinator.set_question_relay_callback(
+            _build_question_relay_handler(adapter)
         )
 
         usage_service = UsageStatsService(
