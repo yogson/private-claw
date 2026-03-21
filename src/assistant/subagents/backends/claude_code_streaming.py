@@ -87,7 +87,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             input_data: dict[str, Any],
             context: "ToolPermissionContext",
         ) -> "PermissionResultAllow":
-            if tool_name == "AskUserQuestion" and relay is not None:
+            if tool_name == "AskUserQuestion":
                 question = str(input_data.get("question", ""))
                 raw_options = input_data.get("options")
                 options: list[str] = (
@@ -95,9 +95,14 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     if isinstance(raw_options, list)
                     else []
                 )
-                # Relay owns the timeout; the coordinator's _relay wraps the
-                # future wait with asyncio.wait_for.
-                answer = await relay(question, options)
+                if relay is not None:
+                    # Relay owns the timeout; the coordinator's _relay wraps the
+                    # future wait with asyncio.wait_for.
+                    answer = await relay(question, options)
+                else:
+                    # No relay registered; inject empty answer so the agent
+                    # receives a well-formed response instead of a missing field.
+                    answer = ""
                 return PermissionResultAllow(
                     updated_input={**input_data, "answer": answer}
                 )
@@ -115,7 +120,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             async def _prompt_iter() -> AsyncGenerator[dict[str, Any], None]:
                 yield {
                     "type": "user",
-                    "session_id": "",
+                    "session_id": request.task_id,
                     "message": {"role": "user", "content": f"Task objective:\n{prompt}"},
                     "parent_tool_use_id": None,
                 }
@@ -128,14 +133,27 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                         if msg.result:
                             output_parts.append(msg.result)
 
-            await asyncio.wait_for(_run_query(), timeout=request.timeout_seconds)
+            task = asyncio.ensure_future(_run_query())
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=request.timeout_seconds)
+            except TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
 
-        except TimeoutError:
-            return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
         except Exception as exc:
             return DelegationResult(ok=False, error=f"claude-agent-sdk execution failed: {exc}")
 
-        if result_msg is not None and result_msg.is_error:
+        if result_msg is None:
+            return DelegationResult(
+                ok=False,
+                error="Sub-agent stream ended without a ResultMessage (max_turns exhaustion or SDK error)",
+            )
+
+        if result_msg.is_error:
             return DelegationResult(
                 ok=False,
                 error=result_msg.result or "claude-agent-sdk returned an error",
@@ -143,9 +161,14 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             )
 
         output_text = "\n".join(output_parts).strip()
-        usage: dict[str, Any] = {}
-        if result_msg is not None and result_msg.usage:
-            usage = result_msg.usage
+        usage: dict[str, Any] = result_msg.usage or {}
+
+        if not output_text:
+            return DelegationResult(
+                ok=False,
+                error="Sub-agent produced no output (possible max_turns exhaustion)",
+                usage=usage,
+            )
 
         return DelegationResult(ok=True, output_text=output_text, usage=usage)
 
@@ -164,7 +187,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         permission_mode = (
             raw_permission_mode  # type: ignore[assignment]
             if raw_permission_mode in ("default", "acceptEdits", "plan", "bypassPermissions")
-            else None
+            else "bypassPermissions"  # safe default: no TTY to route approval requests to
         )
 
         add_dirs_raw = params.get("add_dirs")
