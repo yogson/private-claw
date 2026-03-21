@@ -5,6 +5,7 @@ Interfaces for delegation coordinator and backend adapters.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from assistant.store.models import TaskRecord
@@ -22,6 +23,21 @@ class DelegationBackendAdapterInterface(ABC):
     @abstractmethod
     async def execute(self, request: DelegationRun) -> DelegationResult:
         """Execute delegated task and return normalized output."""
+
+    @property
+    def supports_relay(self) -> bool:
+        """Whether this backend supports per-task AskUserQuestion relay registration."""
+        return False
+
+    def register_relay(
+        self,
+        task_id: str,
+        relay: Callable[[str, list[str]], Awaitable[str]],
+    ) -> None:
+        """Register a per-task question relay. No-op unless overridden."""
+
+    def unregister_relay(self, task_id: str) -> None:
+        """Remove the per-task question relay. No-op unless overridden."""
 
 
 class DelegationCoordinatorInterface(ABC):

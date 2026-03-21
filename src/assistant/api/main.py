@@ -622,11 +622,12 @@ def _build_question_relay_handler(
             )
             return
 
+        options_dicts = [{"id": str(i), "label": o} for i, o in enumerate(options)]
         response = adapter.build_ask_question_response(
             session_id=session_id,
             trace_id=task_id,
             question=f"[Delegation task] {question}",
-            options=options,
+            options=options_dicts,
         )
         try:
             await adapter.send_response(response, chat_id=chat_id)

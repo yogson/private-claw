@@ -194,8 +194,12 @@ async def test_relay_lifecycle_register_unregister() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relay_timeout_returns_empty_string() -> None:
-    """If the relay times out waiting for user input, the answer defaults to empty."""
+async def test_relay_answer_is_forwarded_to_updated_input() -> None:
+    """The relay's return value is injected into updated_input['answer'].
+
+    Timeout handling is the coordinator's responsibility — the backend simply
+    awaits whatever the relay callable returns.
+    """
     from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
 
     captured_can_use_tool: list[Any] = []
@@ -209,32 +213,26 @@ async def test_relay_timeout_returns_empty_string() -> None:
         captured_can_use_tool.append(options.can_use_tool)
         yield _make_result_msg(result="done")
 
-    async def _slow_relay(question: str, options: list[str]) -> str:
-        await asyncio.sleep(1000)
-        return "never"
+    async def _instant_relay(question: str, options: list[str]) -> str:
+        return "relay_answer"
 
-    # Keep patch active when calling can_use_tool_fn so the timeout value is in scope
     with _patch_query_side_effect(_fake_query):
-        with patch(
-            "assistant.subagents.backends.claude_code_streaming._DEFAULT_RELAY_TIMEOUT_SECONDS",
-            0.01,
-        ):
-            adapter = ClaudeCodeStreamingBackendAdapter()
-            adapter.register_relay("t1", _slow_relay)
-            await adapter.execute(_make_request(task_id="t1"))
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        adapter.register_relay("t1", _instant_relay)
+        await adapter.execute(_make_request(task_id="t1"))
 
-            assert len(captured_can_use_tool) == 1
-            can_use_tool_fn = captured_can_use_tool[0]
-            context = ToolPermissionContext(signal=None, suggestions=[])
+    assert len(captured_can_use_tool) == 1
+    can_use_tool_fn = captured_can_use_tool[0]
+    context = ToolPermissionContext(signal=None, suggestions=[])
 
-            result = await can_use_tool_fn(
-                "AskUserQuestion",
-                {"question": "Hello?", "options": []},
-                context,
-            )
+    result = await can_use_tool_fn(
+        "AskUserQuestion",
+        {"question": "Hello?", "options": []},
+        context,
+    )
     assert isinstance(result, PermissionResultAllow)
     assert result.updated_input is not None
-    assert result.updated_input.get("answer") == ""
+    assert result.updated_input.get("answer") == "relay_answer"
 
 
 @pytest.mark.asyncio
@@ -274,3 +272,24 @@ async def test_backend_params_passed_to_options() -> None:
 def test_backend_id() -> None:
     adapter = ClaudeCodeStreamingBackendAdapter()
     assert adapter.backend_id == "claude_code_streaming"
+
+
+def test_supports_relay() -> None:
+    adapter = ClaudeCodeStreamingBackendAdapter()
+    assert adapter.supports_relay is True
+
+
+@pytest.mark.asyncio
+async def test_execute_times_out_after_timeout_seconds() -> None:
+    """execute() should return an error result when the query exceeds timeout_seconds."""
+
+    async def _raise_timeout(**kwargs: Any) -> AsyncGenerator[Any, None]:
+        raise asyncio.TimeoutError
+        yield  # make it a generator
+
+    with _patch_query_side_effect(_raise_timeout):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request())
+
+    assert result.ok is False
+    assert "timed out" in (result.error or "")

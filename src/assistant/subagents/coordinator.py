@@ -16,7 +16,6 @@ import structlog
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.store.interfaces import StoreFacadeInterface
 from assistant.store.models import TaskRecord, TaskStatus
-from assistant.subagents.backends.claude_code_streaming import ClaudeCodeStreamingBackendAdapter
 from assistant.subagents.contracts import DelegationAcceptResult, DelegationRun
 from assistant.subagents.interfaces import (
     DelegationBackendAdapterInterface,
@@ -54,7 +53,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             Callable[[str, str, str, list[str]], Awaitable[None]] | None
         ) = None
         # Pending asyncio Futures for in-flight AskUserQuestion relays.
-        # Keyed by session_id (one pending question per session at a time).
+        # Keyed by session_id — v1 constraint: only one pending question per
+        # session at a time.  A second question while one is in-flight will
+        # overwrite the first future, causing the earlier question to be lost.
         self._pending_questions: dict[str, asyncio.Future[str]] = {}
         self._stop = asyncio.Event()
         self._worker_task: asyncio.Task[None] | None = None
@@ -295,14 +296,14 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             task_id=task.task_id,
             backend=backend_id,
         )
-        # For streaming backends that support AskUserQuestion relay, register
+        # For backends that support AskUserQuestion relay, register
         # a per-task relay closure before executing and clean it up afterwards.
-        if isinstance(backend, ClaudeCodeStreamingBackendAdapter):
+        if backend.supports_relay:
             self._register_streaming_relay(backend, task)
         try:
             result = await backend.execute(run)
         finally:
-            if isinstance(backend, ClaudeCodeStreamingBackendAdapter):
+            if backend.supports_relay:
                 backend.unregister_relay(task.task_id)
         if not result.ok:
             updated = await self._store.tasks.update_status(
@@ -334,7 +335,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
 
     def _register_streaming_relay(
         self,
-        backend: ClaudeCodeStreamingBackendAdapter,
+        backend: DelegationBackendAdapterInterface,
         task: TaskRecord,
     ) -> None:
         """Build and register a per-task question relay on a streaming backend.
@@ -351,8 +352,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         relay_callback = self._question_relay_callback
 
         async def _relay(question: str, options: list[str]) -> str:
-            loop = asyncio.get_event_loop()
-            future: asyncio.Future[str] = loop.create_future()
+            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
             self._pending_questions[session_id] = future
             try:
                 # Notify the channel layer; errors are logged inside relay_callback

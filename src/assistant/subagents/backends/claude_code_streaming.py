@@ -19,12 +19,6 @@ from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 
 logger = structlog.get_logger(__name__)
 
-# Sentinel used when a relay times out waiting for user input
-_RELAY_TIMEOUT_ANSWER = ""
-
-# How long (seconds) to wait for a user answer before giving up
-_DEFAULT_RELAY_TIMEOUT_SECONDS = 300
-
 # Import SDK at module level so it can be patched in tests.
 # Import failures are caught at execution time in execute().
 try:
@@ -66,6 +60,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
     def backend_id(self) -> str:
         return "claude_code_streaming"
 
+    @property
+    def supports_relay(self) -> bool:
+        return True
+
     def register_relay(
         self,
         task_id: str,
@@ -97,18 +95,9 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     if isinstance(raw_options, list)
                     else []
                 )
-                try:
-                    answer = await asyncio.wait_for(
-                        relay(question, options),
-                        timeout=_DEFAULT_RELAY_TIMEOUT_SECONDS,
-                    )
-                except TimeoutError:
-                    logger.warning(
-                        "subagent.streaming.relay_timeout",
-                        task_id=request.task_id,
-                        question=question[:120],
-                    )
-                    answer = _RELAY_TIMEOUT_ANSWER
+                # Relay owns the timeout; the coordinator's _relay wraps the
+                # future wait with asyncio.wait_for.
+                answer = await relay(question, options)
                 return PermissionResultAllow(
                     updated_input={**input_data, "answer": answer}
                 )
@@ -131,11 +120,15 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     "parent_tool_use_id": None,
                 }
 
-            async for msg in query(prompt=_prompt_iter(), options=sdk_options):
-                if isinstance(msg, ResultMessage):
-                    result_msg = msg
-                    if msg.result:
-                        output_parts.append(msg.result)
+            async def _run_query() -> None:
+                nonlocal result_msg
+                async for msg in query(prompt=_prompt_iter(), options=sdk_options):
+                    if isinstance(msg, ResultMessage):
+                        result_msg = msg
+                        if msg.result:
+                            output_parts.append(msg.result)
+
+            await asyncio.wait_for(_run_query(), timeout=request.timeout_seconds)
 
         except TimeoutError:
             return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
