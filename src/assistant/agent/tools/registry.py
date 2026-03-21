@@ -100,12 +100,14 @@ def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
     definitions = load_capability_definitions(config_dir=_config_dir(config))
-    enabled = frozenset(expand_nested_capabilities(policy.enabled_capabilities, definitions))
+    enabled = [
+        c
+        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
+        if c not in denied
+    ]
 
     tool_ids: set[str] = set()
     for cap_id in enabled:
-        if cap_id in denied:
-            continue
         if cap_id.startswith("cap.mcp."):
             tool_ids.add(cap_id)
             continue

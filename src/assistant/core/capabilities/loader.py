@@ -108,6 +108,10 @@ def apply_claude_code_settings(
 ) -> None:
     """Merge claude_code_settings from active capabilities into ~/.claude/settings.json.
 
+    ``enabled_capabilities`` must be the caller's already-expanded, already-denied-filtered
+    list of capability IDs.  This function does not expand nested capabilities or filter
+    denied ones — that is the caller's responsibility (consistent with all other use sites).
+
     Permissions are union-merged: all allow/deny entries from all active capabilities
     are combined (duplicates removed, order preserved).
 
@@ -124,7 +128,7 @@ def apply_claude_code_settings(
     seen_deny: set[str] = set()
     merged_mcp: dict[str, dict[str, Any]] = {}
 
-    for cap_id in expand_nested_capabilities(enabled_capabilities, definitions):
+    for cap_id in enabled_capabilities:
         definition = definitions.get(cap_id)
         if definition is None or definition.claude_code_settings is None:
             continue

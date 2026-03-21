@@ -228,7 +228,7 @@ def test_expand_cycle_safe() -> None:
     assert set(result) == {"a", "b"}
 
 
-def test_expand_missing_nested_cap_not_added() -> None:
+def test_expand_missing_manifest_cap_is_passthrough() -> None:
     """If a nested capability has no manifest, it is still included in the expansion."""
     defs = {
         "parent": _make_def("parent", ["ghost"]),

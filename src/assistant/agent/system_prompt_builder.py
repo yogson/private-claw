@@ -26,12 +26,14 @@ def _compose_system_prompt(config: RuntimeConfig) -> str:
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
     definitions = load_capability_definitions(config_dir=_config_dir(config))
-    enabled = frozenset(expand_nested_capabilities(policy.enabled_capabilities, definitions))
+    enabled = [
+        c
+        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
+        if c not in denied
+    ]
     current_date = datetime.now(UTC).strftime("%B %d, %Y")
     parts = [base, f"Today's date is {current_date}."]
     for cap_id in sorted(enabled):
-        if cap_id in denied:
-            continue
         definition = definitions.get(cap_id)
         if definition and definition.prompt.strip():
             parts.append(definition.prompt.strip())

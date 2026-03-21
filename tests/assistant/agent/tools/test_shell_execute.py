@@ -590,3 +590,76 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
             }
         ]
     }
+
+
+@patch("assistant.agent.tools.registry.load_capability_definitions")
+def test_get_agent_tools_excludes_transitively_denied_nested_capability(
+    mock_load_caps: MagicMock,
+) -> None:
+    """Tools from a nested capability that appears in denied_capabilities must not be registered.
+
+    Even when 'parent' is enabled and nests 'deploy', if 'deploy' is denied its tools
+    should be excluded — denied filtering must apply after nested expansion.
+    """
+    from assistant.agent.tools.registry import get_agent_tools
+    from assistant.core.capabilities.schemas import (
+        CapabilityDefinition,
+        CapabilityToolBinding,
+    )
+    from assistant.core.config.schemas import (
+        AppConfig,
+        CapabilitiesPolicyConfig,
+        McpServersConfig,
+        MemoryConfig,
+        ModelConfig,
+        RuntimeConfig,
+        SchedulerConfig,
+        StoreConfig,
+        TelegramChannelConfig,
+        ToolDefinition,
+        ToolsConfig,
+    )
+
+    mock_load_caps.return_value = {
+        "parent": CapabilityDefinition(
+            capability_id="parent",
+            prompt="",
+            tools=[CapabilityToolBinding(tool_id="shell_execute_readonly", enabled=True)],
+            nested_capabilities=["deploy"],
+        ),
+        "deploy": CapabilityDefinition(
+            capability_id="deploy",
+            prompt="",
+            tools=[CapabilityToolBinding(tool_id="shell_execute_allowlisted", enabled=True)],
+        ),
+    }
+    tools_config = ToolsConfig(
+        tools=[
+            ToolDefinition(
+                tool_id="shell_execute_readonly",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_readonly",
+            ),
+            ToolDefinition(
+                tool_id="shell_execute_allowlisted",
+                entrypoint="assistant.agent.tools.shell_execute:shell_execute_allowlisted",
+            ),
+        ]
+    )
+    config = RuntimeConfig(
+        app=AppConfig(data_root="/tmp", timezone="UTC"),
+        telegram=TelegramChannelConfig(),
+        model=ModelConfig(default_model_id="x", model_allowlist=["x"]),
+        capabilities=CapabilitiesPolicyConfig(
+            enabled_capabilities=["parent"],
+            denied_capabilities=["deploy"],
+        ),
+        tools=tools_config,
+        mcp_servers=McpServersConfig(),
+        scheduler=SchedulerConfig(),
+        store=StoreConfig(),
+        memory=MemoryConfig(api_key="test"),
+    )
+    tools = get_agent_tools(config)
+    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    assert "shell_execute_allowlisted" not in tool_names
+    assert "shell_execute_readonly" in tool_names

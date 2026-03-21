@@ -89,3 +89,39 @@ def test_apply_claude_code_settings_leaves_mcp_when_none_defined(tmp_path: Path)
     apply_claude_code_settings(definitions, ["x"], settings_path=settings_path)
     data = json.loads(settings_path.read_text())
     assert data["mcpServers"]["other"]["command"] == "npx"
+
+
+def test_apply_claude_code_settings_denied_cap_excluded_when_caller_filters(
+    tmp_path: Path,
+) -> None:
+    """Denied capabilities' settings must not appear when caller passes a filtered list.
+
+    apply_claude_code_settings does not expand or filter denied caps itself — callers
+    are responsible for passing an already-denied-filtered list (consistent contract).
+    """
+    settings_path = tmp_path / "settings.json"
+    definitions = {
+        "parent": CapabilityDefinition(
+            capability_id="parent",
+            prompt="",
+            tools=[],
+            nested_capabilities=["child"],
+            claude_code_settings=ClaudeCodeSettings(
+                permissions=ClaudeCodePermissions(allow=["Read(*)"]),
+            ),
+        ),
+        "child": CapabilityDefinition(
+            capability_id="child",
+            prompt="",
+            tools=[],
+            claude_code_settings=ClaudeCodeSettings(
+                permissions=ClaudeCodePermissions(allow=["Bash(rm:*)"]),
+                mcp_servers={"secret": {"type": "http", "url": "https://secret/mcp"}},
+            ),
+        ),
+    }
+    # Caller pre-filters "child" (denied) before calling apply_claude_code_settings
+    apply_claude_code_settings(definitions, ["parent"], settings_path=settings_path)
+    data = json.loads(settings_path.read_text())
+    assert "Bash(rm:*)" not in data["permissions"]["allow"]
+    assert "secret" not in data.get("mcpServers", {})

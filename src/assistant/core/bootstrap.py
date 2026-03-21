@@ -114,9 +114,10 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
 
     _validate_tools_and_capabilities(runtime_config, definitions)
     _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)
+    denied = frozenset(runtime_config.capabilities.denied_capabilities)
     apply_claude_code_settings(
         definitions,
-        all_enabled,
+        [c for c in all_enabled if c not in denied],
     )
 
     return runtime_config
