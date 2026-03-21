@@ -31,7 +31,7 @@ async def delegate_subagent_task(
         directory: Optional workspace path for the sub-agent. Must be an existing
             directory; if invalid, the task is rejected. MUST be specified for Claude Code.
         backend: Optional backend selector. Use "claude_code" for fire-and-forget one shot simple task
-         or "claude_code_streaming" for complex tasks with feedback loop. Omit to use the
+            or "claude_code_streaming" for complex tasks with feedback loop. Omit to use the
             default backend - "claude_code".
     """
     handler = ctx.deps.delegation_enqueue_handler

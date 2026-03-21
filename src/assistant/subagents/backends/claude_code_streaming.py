@@ -102,6 +102,11 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 else:
                     # No relay registered; inject empty answer so the agent
                     # receives a well-formed response instead of a missing field.
+                    logger.warning(
+                        "ask_user_question_no_relay",
+                        task_id=request.task_id,
+                        question=question,
+                    )
                     answer = ""
                 return PermissionResultAllow(
                     updated_input={**input_data, "answer": answer}
@@ -140,8 +145,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 task.cancel()
                 try:
                     await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                except (asyncio.CancelledError, Exception) as cleanup_exc:
+                    logger.debug("sdk_task_cleanup", exc=str(cleanup_exc))
                 return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
 
         except Exception as exc:
@@ -164,10 +169,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         usage: dict[str, Any] = result_msg.usage or {}
 
         if not output_text:
-            return DelegationResult(
-                ok=False,
-                error="Sub-agent produced no output (possible max_turns exhaustion)",
-                usage=usage,
+            logger.warning(
+                "subagent_empty_output",
+                task_id=request.task_id,
+                note="Agent produced no text output; may have only edited files.",
             )
 
         return DelegationResult(ok=True, output_text=output_text, usage=usage)
