@@ -16,6 +16,10 @@ import structlog
 from aiogram.types import Update
 
 from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
+from assistant.channels.telegram.ask_question_callbacks import (
+    sign_ask_question_callback,
+    verify_ask_question_callback,
+)
 from assistant.channels.telegram.commands import TelegramCommand, extract_supported_command
 from assistant.channels.telegram.egress import TelegramEgress
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
@@ -55,6 +59,13 @@ class _MemoryConfirmationToken:
     session_id: str
     tool_call_id: str
     approve: bool
+    expires_at: datetime
+
+
+@dataclass(slots=True)
+class _DelegationQuestionToken:
+    session_id: str
+    answer_text: str
     expires_at: datetime
 
 
@@ -132,6 +143,7 @@ class TelegramAdapter:
                 max_sessions=config.session_resume_max_sessions,
             )
         self._memory_confirmation_tokens: dict[str, _MemoryConfirmationToken] = {}
+        self._delegation_question_tokens: dict[str, _DelegationQuestionToken] = {}
 
     def process_update(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
         """
@@ -289,6 +301,80 @@ class TelegramAdapter:
             ui_kind="reply_keyboard",
             actions=actions,
         )
+
+    def build_delegation_question_response(
+        self,
+        *,
+        chat_id: int,
+        session_id: str,
+        trace_id: str,
+        question: str,
+        options: list[str],
+    ) -> ChannelResponse:
+        """Build a delegation question message.
+
+        Sends an inline keyboard with one button per option when options are
+        provided, or a plain text message when no options are given.
+        The button callback data is a signed token stored in the adapter so
+        that incoming callback queries can be resolved back to an answer string.
+        """
+        if not options:
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=session_id,
+                trace_id=trace_id,
+                message_type=MessageType.TEXT,
+                text=question,
+            )
+        actions: list[ActionButton] = []
+        for option_text in options:
+            token = self._register_delegation_question_token(
+                session_id=session_id, answer_text=option_text
+            )
+            cb = self._sign_delegation_question_callback(token, chat_id)
+            actions.append(
+                ActionButton(
+                    label=option_text,
+                    callback_id=f"aq-{token}",
+                    callback_data=cb,
+                )
+            )
+        return ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id=session_id,
+            trace_id=trace_id,
+            message_type=MessageType.INTERACTIVE,
+            text=question,
+            ui_kind="inline_keyboard",
+            actions=actions,
+        )
+
+    def is_delegation_question_callback(self, event: NormalizedEvent) -> bool:
+        """Return True if the event is a valid signed delegation question callback."""
+        if event.callback_query is None:
+            return False
+        token = self._verify_delegation_question_callback_token(event)
+        if token is None:
+            return False
+        self._cleanup_expired_delegation_question_tokens()
+        return token in self._delegation_question_tokens
+
+    def consume_delegation_question_callback(
+        self, event: NormalizedEvent
+    ) -> tuple[str, str] | None:
+        """Consume a signed delegation question callback and return (session_id, answer_text)."""
+        if event.callback_query is None:
+            return None
+        token = self._verify_delegation_question_callback_token(event)
+        if token is None:
+            return None
+        self._cleanup_expired_delegation_question_tokens()
+        item = self._delegation_question_tokens.pop(token, None)
+        if item is None:
+            return None
+        return item.session_id, item.answer_text
 
     def build_memory_confirmation_response(
         self,
@@ -716,6 +802,41 @@ class TelegramAdapter:
 
     def _build_session_context_id(self, chat_id: int) -> str:
         return f"telegram:{chat_id}"
+
+    def _register_delegation_question_token(
+        self, *, session_id: str, answer_text: str
+    ) -> str:
+        self._cleanup_expired_delegation_question_tokens()
+        token = uuid.uuid4().hex[:10]
+        self._delegation_question_tokens[token] = _DelegationQuestionToken(
+            session_id=session_id,
+            answer_text=answer_text,
+            expires_at=datetime.now(UTC) + timedelta(seconds=_MEMORY_CONFIRMATION_TTL_SECONDS),
+        )
+        return token
+
+    def _sign_delegation_question_callback(self, token: str, chat_id: int) -> str:
+        return sign_ask_question_callback(
+            token=token, chat_id=chat_id, secret=self._task_callback_secret()
+        )
+
+    def _verify_delegation_question_callback_token(self, event: NormalizedEvent) -> str | None:
+        if event.callback_query is None:
+            return None
+        chat_id = int(event.metadata.get("chat_id", 0))
+        return verify_ask_question_callback(
+            callback_data=event.callback_query.callback_data,
+            expected_chat_id=chat_id,
+            secret=self._task_callback_secret(),
+        )
+
+    def _cleanup_expired_delegation_question_tokens(self) -> None:
+        now = datetime.now(UTC)
+        expired = [
+            k for k, v in self._delegation_question_tokens.items() if v.expires_at <= now
+        ]
+        for key in expired:
+            self._delegation_question_tokens.pop(key, None)
 
     def _task_callback_secret(self) -> bytes:
         secret = (self._config.session_resume_hmac_secret or "").encode()
