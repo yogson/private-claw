@@ -13,6 +13,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    SystemPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -152,6 +153,11 @@ class PydanticAITurnAdapter:
         user_prompt = _message_to_user_prompt_content(messages[-1])
         history_msgs = messages[:-1] if len(messages) > 1 else []
         history = _llm_messages_to_history(history_msgs)
+        # pydantic_ai only injects SystemPromptPart when message_history is empty.
+        # On continuation turns, prepend it so the Anthropic backend always receives
+        # the `system` parameter regardless of turn number.
+        if history:
+            history = [ModelRequest(parts=[SystemPromptPart(content=self._system_prompt)]), *history]
         model_settings: dict[str, Any] = {
             "max_tokens": self._max_tokens,
             "anthropic_cache_instructions": True,
