@@ -20,6 +20,7 @@ from assistant.core.config.schemas import CommandAllowlistEntry
 logger = structlog.get_logger(__name__)
 
 _MAX_TIMEOUT_SECONDS = 30
+_DEFAULT_MAX_OUTPUT_CHARS = 8_000
 
 
 def _get_tool_params(deps: TurnDeps, tool_id: str) -> dict[str, Any]:
@@ -38,6 +39,15 @@ def _normalize_allowlist(
         elif isinstance(item, dict):
             result.append(CommandAllowlistEntry(**item))
     return result
+
+
+def _truncate_output(text: str, max_chars: int) -> str:
+    """Truncate command output to max_chars, appending a notice if cut."""
+    if len(text) <= max_chars:
+        return text
+    kept = text[:max_chars]
+    omitted = len(text) - max_chars
+    return kept + f"\n... [truncated — {omitted} chars omitted]"
 
 
 def _parse_command(command: str) -> tuple[str, list[str]]:
@@ -61,6 +71,7 @@ def shell_execute_readonly(
     Allowed commands come from tool_runtime_params.
     """
     params = _get_tool_params(ctx.deps, "shell_execute_readonly")
+    max_output_chars: int = int(params.get("shell_max_output_chars") or _DEFAULT_MAX_OUTPUT_CHARS)
     readonly_commands = params.get("shell_readonly_commands") or []
     allowed_set = frozenset(
         c.strip().lower() for c in readonly_commands if isinstance(c, str) and c.strip()
@@ -121,8 +132,8 @@ def shell_execute_readonly(
         return {
             "status": "ok",
             "returncode": result.returncode,
-            "stdout": result.stdout or "",
-            "stderr": result.stderr or "",
+            "stdout": _truncate_output(result.stdout or "", max_output_chars),
+            "stderr": _truncate_output(result.stderr or "", max_output_chars),
         }
     except subprocess.TimeoutExpired:
         logger.warning(
@@ -178,6 +189,7 @@ def shell_execute_allowlisted(
     max_timeout_seconds cap.
     """
     params = _get_tool_params(ctx.deps, "shell_execute_allowlisted")
+    max_output_chars: int = int(params.get("shell_max_output_chars") or _DEFAULT_MAX_OUTPUT_CHARS)
     allowlist = _normalize_allowlist(params.get("command_allowlist") or [])
     if not allowlist:
         logger.info(
@@ -234,8 +246,8 @@ def shell_execute_allowlisted(
         return {
             "status": "ok",
             "returncode": result.returncode,
-            "stdout": result.stdout or "",
-            "stderr": result.stderr or "",
+            "stdout": _truncate_output(result.stdout or "", max_output_chars),
+            "stderr": _truncate_output(result.stderr or "", max_output_chars),
         }
     except subprocess.TimeoutExpired:
         logger.warning(

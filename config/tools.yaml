@@ -39,6 +39,7 @@ tools:
     entrypoint: assistant.agent.tools.shell_execute:shell_execute_readonly
     enabled: true
     default_params:
+      shell_max_output_chars: 8000
       shell_readonly_commands:
         - cat
         - date
@@ -59,6 +60,7 @@ tools:
     entrypoint: assistant.agent.tools.shell_execute:shell_execute_allowlisted
     enabled: true
     default_params:
+      shell_max_output_chars: 8000
       command_allowlist: []
 
   - tool_id: web_search

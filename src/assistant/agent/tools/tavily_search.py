@@ -25,6 +25,30 @@ from tavily.errors import (
     TimeoutError as TavilyTimeoutError,
 )
 
+_MAX_CONTENT_CHARS = 2_000
+_BINARY_THRESHOLD = 0.1  # fraction of non-printable chars that marks content as binary
+
+
+def _is_binary(text: str, sample: int = 500) -> bool:
+    """Return True if the text looks like binary data (e.g. raw XLS/PDF bytes)."""
+    chunk = text[:sample]
+    if not chunk:
+        return False
+    non_printable = sum(1 for c in chunk if ord(c) > 126 or (ord(c) < 32 and c not in "\t\n\r"))
+    return (non_printable / len(chunk)) > _BINARY_THRESHOLD
+
+
+def _sanitize_result(result: TavilySearchResult) -> TavilySearchResult:
+    """Truncate or replace content to prevent binary/oversized payloads inflating context."""
+    content: str = result.get("content") or ""  # type: ignore[union-attr]
+    if _is_binary(content):
+        content = "[binary content omitted]"
+    elif len(content) > _MAX_CONTENT_CHARS:
+        content = content[:_MAX_CONTENT_CHARS] + f"... [{len(content) - _MAX_CONTENT_CHARS} chars omitted]"
+    else:
+        return result
+    return {**result, "content": content}  # type: ignore[return-value]
+
 
 def get_tavily_search_tool() -> Any | None:
     """Return Tavily search tool if TAVILY_API_KEY is set, else None."""
@@ -44,7 +68,7 @@ def get_tavily_search_tool() -> Any | None:
     ) -> list[TavilySearchResult]:
         """Searches Tavily for the given query and returns the results."""
         try:
-            return await inner(
+            results = await inner(
                 query,
                 search_depth=search_depth,
                 topic=topic,
@@ -52,6 +76,7 @@ def get_tavily_search_tool() -> Any | None:
                 include_domains=include_domains,
                 exclude_domains=exclude_domains,
             )
+            return [_sanitize_result(r) for r in results]
         except BadRequestError as exc:
             raise ModelRetry(
                 "Tavily rejected the search query: "
