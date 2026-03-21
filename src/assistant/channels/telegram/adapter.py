@@ -52,6 +52,7 @@ from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
 _MEMORY_CONFIRMATION_TTL_SECONDS = 3600
+_DELEGATION_QUESTION_TTL_SECONDS = 3600
 
 
 @dataclass(slots=True)
@@ -369,11 +370,18 @@ class TelegramAdapter:
             return None
         token = self._verify_delegation_question_callback_token(event)
         if token is None:
+            logger.info("delegation.question.callback_token_invalid", trace_id=event.trace_id)
             return None
         self._cleanup_expired_delegation_question_tokens()
         item = self._delegation_question_tokens.pop(token, None)
         if item is None:
+            logger.info("delegation.question.callback_token_invalid", trace_id=event.trace_id)
             return None
+        logger.debug(
+            "delegation.question.callback_token_consumed",
+            session_id=item.session_id,
+            trace_id=event.trace_id,
+        )
         return item.session_id, item.answer_text
 
     def build_memory_confirmation_response(
@@ -811,7 +819,7 @@ class TelegramAdapter:
         self._delegation_question_tokens[token] = _DelegationQuestionToken(
             session_id=session_id,
             answer_text=answer_text,
-            expires_at=datetime.now(UTC) + timedelta(seconds=_MEMORY_CONFIRMATION_TTL_SECONDS),
+            expires_at=datetime.now(UTC) + timedelta(seconds=_DELEGATION_QUESTION_TTL_SECONDS),
         )
         return token
 

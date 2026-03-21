@@ -151,23 +151,47 @@ def _build_orchestrator_handler(
         # Route inline-keyboard button taps for delegation question options.
         if event.callback_query is not None and adapter.is_delegation_question_callback(event):
             resolution = adapter.consume_delegation_question_callback(event)
-            if resolution is not None:
-                q_session_id, answer_text = resolution
-                if delegation_coordinator is not None and delegation_coordinator.has_pending_question(
-                    q_session_id
-                ):
-                    submitted = delegation_coordinator.submit_delegation_answer(
-                        q_session_id, answer_text
-                    )
-                    if submitted:
-                        return ChannelResponse(
-                            response_id=str(uuid.uuid4()),
-                            channel="telegram",
-                            session_id=q_session_id,
-                            trace_id=event.trace_id,
-                            message_type=MessageType.TEXT,
-                            text="Answer received. The task will continue.",
-                        )
+            if resolution is None:
+                logger.info("delegation.question.token_invalid", trace_id=event.trace_id)
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Invalid or expired delegation answer.",
+                )
+            q_session_id, answer_text = resolution
+            if delegation_coordinator is None or not delegation_coordinator.has_pending_question(q_session_id):
+                logger.info("delegation.question.expired", session_id=q_session_id, trace_id=event.trace_id)
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=q_session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="The question has already been answered or timed out.",
+                )
+            submitted = delegation_coordinator.submit_delegation_answer(q_session_id, answer_text)
+            if submitted:
+                logger.info("delegation.question.answered", session_id=q_session_id, trace_id=event.trace_id)
+                return ChannelResponse(
+                    response_id=str(uuid.uuid4()),
+                    channel="telegram",
+                    session_id=q_session_id,
+                    trace_id=event.trace_id,
+                    message_type=MessageType.TEXT,
+                    text="Answer received. The task will continue.",
+                )
+            logger.warning("delegation.question.submit_failed", session_id=q_session_id, trace_id=event.trace_id)
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=q_session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text="Could not submit answer. The task may have already completed.",
+            )
         if adapter.is_stop_request(event):
             cancelled = (
                 cancellation_registry.cancel(event.session_id)
