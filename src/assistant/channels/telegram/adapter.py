@@ -735,6 +735,7 @@ class TelegramAdapter:
             self._active_session_context.set_active_session(
                 self._build_session_context_id(chat_id), session_id
             )
+            self.clear_capabilities_override(chat_id)
             logger.info(
                 "telegram.adapter.session_resume.activated",
                 chat_id=chat_id,

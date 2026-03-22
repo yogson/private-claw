@@ -210,4 +210,9 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             permission_mode=permission_mode,
             add_dirs=add_dirs,
             can_use_tool=can_use_tool,
+            # Stub hook keeps SDK stdin open for ask_question relay (Fix 3).
+            # Even if the SDK patch (Fix 1) is lost on reinstall, bool(hooks)
+            # remains truthy so wait_for_result_and_end_input() won't close
+            # stdin early. The empty matcher list is harmless.
+            hooks={"PreToolUse": []},
         )

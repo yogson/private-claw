@@ -380,3 +380,128 @@ class TestDelegationQuestionCallbacks:
         cb_data = sign_ask_question_callback(token="deadbeef01", chat_id=self._CHAT_ID, secret=secret)
         event = self._make_aq_event(cb_data)
         assert adapter.consume_delegation_question_callback(event) is None
+
+
+class TestCapabilityOverrideSessionScoping:
+    """Capability overrides must be session-scoped: cleared on every session transition."""
+
+    _CHAT_ID = 42000
+    _DEFAULT_CAPABILITIES = ["cap_a", "cap_b"]
+
+    def _make_adapter(self) -> TelegramAdapter:
+        return TelegramAdapter(
+            _make_config(allowlist=[self._CHAT_ID]),
+            default_capabilities=list(self._DEFAULT_CAPABILITIES),
+        )
+
+    def _make_text_event(self, text: str = "/new") -> NormalizedEvent:
+        return NormalizedEvent(
+            event_id="ev-1",
+            event_type=EventType.USER_TEXT_MESSAGE,
+            source=EventSource.TELEGRAM,
+            session_id=f"tg:{self._CHAT_ID}:sess0",
+            user_id=str(self._CHAT_ID),
+            created_at=datetime.now(UTC),
+            trace_id="trace-cap",
+            text=text,
+            metadata={"chat_id": self._CHAT_ID},
+        )
+
+    def _make_callback_event(self, callback_data: str) -> NormalizedEvent:
+        return NormalizedEvent(
+            event_id="ev-cb",
+            event_type=EventType.USER_CALLBACK_QUERY,
+            source=EventSource.TELEGRAM,
+            session_id=f"tg:{self._CHAT_ID}:sess0",
+            user_id=str(self._CHAT_ID),
+            created_at=datetime.now(UTC),
+            trace_id="trace-cap-cb",
+            text=None,
+            callback_query=CallbackQueryMeta(
+                callback_id="cq-1",
+                callback_data=callback_data,
+                origin_message_id=1,
+                ui_version="1",
+            ),
+            metadata={"chat_id": self._CHAT_ID},
+        )
+
+    def test_start_new_session_clears_capability_override(self) -> None:
+        """start_new_session() must reset any dynamically-set capability override."""
+        adapter = self._make_adapter()
+        # Manually inject an override to simulate a prior dynamic activation
+        context_id = f"telegram:{self._CHAT_ID}"
+        adapter._capability_overrides[context_id] = ["cap_a", "cap_extra"]
+
+        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_a", "cap_extra"]
+
+        adapter.start_new_session(self._make_text_event())
+
+        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+
+    def test_handle_session_resume_callback_clears_capability_override(self) -> None:
+        """handle_session_resume_callback() must reset any dynamically-set capability override."""
+        from unittest.mock import MagicMock
+
+        adapter = self._make_adapter()
+        # Manually inject an override to simulate a prior dynamic activation
+        context_id = f"telegram:{self._CHAT_ID}"
+        adapter._capability_overrides[context_id] = ["cap_a", "cap_extra"]
+
+        assert adapter.get_capabilities_override(self._CHAT_ID) is not None
+
+        # Wire up a mock session_resume service that validates any callback
+        resumed_session_id = f"tg:{self._CHAT_ID}:resumed"
+        mock_session_resume = MagicMock()
+        mock_session_resume.verify_callback.return_value = resumed_session_id
+        adapter._session_resume = mock_session_resume
+
+        # Stub out the active session context so set_active_session doesn't fail
+        mock_active_ctx = MagicMock()
+        adapter._active_session_context = mock_active_ctx
+
+        event = self._make_callback_event("sr:fake-signed-payload")
+        result = adapter.handle_session_resume_callback(event)
+
+        assert result == resumed_session_id
+        # Capability override must have been cleared
+        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+
+    def test_capability_override_does_not_leak_to_new_session(self) -> None:
+        """Full scenario: override set in session A must not be visible after /new."""
+        adapter = self._make_adapter()
+        context_id = f"telegram:{self._CHAT_ID}"
+
+        # Simulate user toggling a capability in the current session
+        adapter._capability_overrides[context_id] = ["cap_a", "cap_b", "cap_extra"]
+        assert adapter.get_capabilities_override(self._CHAT_ID) == [
+            "cap_a", "cap_b", "cap_extra"
+        ]
+
+        # User starts a new session
+        adapter.start_new_session(self._make_text_event())
+
+        # New session must have NO override (defaults from config apply)
+        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+
+    def test_capability_override_does_not_leak_via_session_resume(self) -> None:
+        """Full scenario: override set in session A must not be visible after resuming session B."""
+        from unittest.mock import MagicMock
+
+        adapter = self._make_adapter()
+        context_id = f"telegram:{self._CHAT_ID}"
+
+        # Simulate user toggling a capability in session A
+        adapter._capability_overrides[context_id] = ["cap_a", "cap_extra"]
+        assert adapter.get_capabilities_override(self._CHAT_ID) is not None
+
+        # User resumes session B via /sessions
+        mock_session_resume = MagicMock()
+        mock_session_resume.verify_callback.return_value = f"tg:{self._CHAT_ID}:session_b"
+        adapter._session_resume = mock_session_resume
+        adapter._active_session_context = MagicMock()
+
+        adapter.handle_session_resume_callback(self._make_callback_event("sr:payload"))
+
+        # Resumed session B must have NO override carried over from session A
+        assert adapter.get_capabilities_override(self._CHAT_ID) is None
