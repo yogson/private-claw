@@ -115,6 +115,41 @@ async def _session_has_user_messages(store: Any, session_id: str) -> bool:
     return any(r.record_type == SessionRecordType.USER_MESSAGE for r in records)
 
 
+async def _notify_system_started(
+    adapter: TelegramAdapter,
+    active_session_context: ActiveSessionContextService,
+) -> None:
+    """Send 'System started.' to every chat that has an active session.
+
+    Chat IDs are derived from the persisted session context, which maps
+    'telegram:<chat_id>' context keys to session IDs.  Unknown or unparseable
+    keys are silently skipped.
+    """
+    context_ids = active_session_context.list_context_ids()
+    for context_id in context_ids:
+        # Context IDs for Telegram take the form 'telegram:<chat_id>'
+        if not context_id.startswith("telegram:"):
+            continue
+        raw_chat_id = context_id.removeprefix("telegram:")
+        try:
+            chat_id = int(raw_chat_id)
+        except ValueError:
+            continue
+        response = ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id="",
+            trace_id=str(uuid.uuid4()),
+            message_type=MessageType.TEXT,
+            text="System started.",
+        )
+        try:
+            await adapter.send_response(response, chat_id=chat_id)
+            logger.info("system.started.notified", chat_id=chat_id)
+        except Exception:
+            logger.warning("system.started.notify_failed", chat_id=chat_id)
+
+
 def _build_orchestrator_handler(
     adapter: TelegramAdapter,
     orchestrator: Orchestrator,
@@ -794,7 +829,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             default_model_id=runtime_config.model.default_model_id,
         )
         cancellation_registry = CancellationRegistry()
-        verbose_state = VerboseStateService()
+        verbose_state = VerboseStateService(
+            storage_path=data_root / "runtime" / "verbose_state.json"
+        )
         handler = _build_orchestrator_handler(
             adapter,
             orchestrator,
@@ -818,6 +855,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 cancellation_registry=cancellation_registry,
             )
         )
+
+        await _notify_system_started(adapter, active_session_context)
 
     try:
         yield

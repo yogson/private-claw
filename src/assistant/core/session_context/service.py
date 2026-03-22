@@ -25,6 +25,9 @@ class ActiveSessionContextInterface(Protocol):
     def clear_active_session(self, context_id: str) -> None:
         """Clear active session id for the given context."""
 
+    def list_context_ids(self) -> list[str]:
+        """Return all known context IDs (e.g. 'telegram:<chat_id>')."""
+
 
 class ActiveSessionContextService(ActiveSessionContextInterface):
     """In-memory active session context with optional persisted backing file."""
@@ -55,6 +58,10 @@ class ActiveSessionContextService(ActiveSessionContextInterface):
         removed = self._active_sessions.pop(normalized_context, None)
         if removed is not None:
             self._save()
+
+    def list_context_ids(self) -> list[str]:
+        """Return all known context IDs (e.g. 'telegram:<chat_id>')."""
+        return list(self._active_sessions.keys())
 
     def _load(self) -> dict[str, str]:
         path = self._storage_path
