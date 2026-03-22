@@ -40,6 +40,7 @@ from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import SessionRecordType
 from assistant.core.session_context import (
+    ActiveSessionContextInterface,
     ActiveSessionContextService,
     SessionModelContextService,
 )
@@ -113,6 +114,45 @@ async def _session_has_user_messages(store: Any, session_id: str) -> bool:
     """Return True if the session already contains at least one USER_MESSAGE record."""
     records = await store.sessions.read_window(session_id, max_records=50)
     return any(r.record_type == SessionRecordType.USER_MESSAGE for r in records)
+
+
+async def _notify_system_started(
+    adapter: TelegramAdapter,
+    active_session_context: ActiveSessionContextInterface,
+) -> None:
+    """Send 'System started.' to every chat that has an active session.
+
+    Chat IDs are derived from the persisted session context, which maps
+    'telegram:<chat_id>' context keys to session IDs.  Unknown or unparseable
+    keys are silently skipped.
+
+    Note: ``list_context_ids()`` returns *all* persisted sessions, including
+    stale ones from previous runs.  No TTL filter is applied, so users whose
+    sessions have long since expired will still receive the notification.
+    """
+    context_ids = active_session_context.list_context_ids()
+    for context_id in context_ids:
+        # Context IDs for Telegram take the form 'telegram:<chat_id>'
+        if not context_id.startswith("telegram:"):
+            continue
+        raw_chat_id = context_id.removeprefix("telegram:")
+        try:
+            chat_id = int(raw_chat_id)
+        except ValueError:
+            continue
+        response = ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id="__system__",
+            trace_id=str(uuid.uuid4()),
+            message_type=MessageType.TEXT,
+            text="System started.",
+        )
+        try:
+            await adapter.send_response(response, chat_id=chat_id)
+            logger.info("system.started.notified", chat_id=chat_id)
+        except Exception:
+            logger.warning("system.started.notify_failed", chat_id=chat_id)
 
 
 def _build_orchestrator_handler(
@@ -794,7 +834,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             default_model_id=runtime_config.model.default_model_id,
         )
         cancellation_registry = CancellationRegistry()
-        verbose_state = VerboseStateService()
+        verbose_state = VerboseStateService(
+            storage_path=data_root / "runtime" / "verbose_state.json"
+        )
         handler = _build_orchestrator_handler(
             adapter,
             orchestrator,
@@ -808,6 +850,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
             return await handler(event)
+
+        await _notify_system_started(adapter, active_session_context)
 
         polling_task = asyncio.create_task(
             run_polling(

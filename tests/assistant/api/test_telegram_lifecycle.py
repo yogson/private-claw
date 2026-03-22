@@ -787,3 +787,111 @@ async def test_delegation_feedback_handler_sends_ask_question_when_pending_ask()
         {"id": "1", "label": "private-claw"},
     ]
     adapter.send_response.assert_awaited_once_with(mock_response, chat_id=239146894)
+
+
+# ---------------------------------------------------------------------------
+# Tests for _notify_system_started
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_sends_to_known_chats() -> None:
+    """_notify_system_started sends 'System started.' to every known Telegram chat."""
+    from assistant.api.main import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    ctx.set_active_session("telegram:111", "tg:111:aaa")
+    ctx.set_active_session("telegram:222", "tg:222:bbb")
+
+    mock_adapter = AsyncMock()
+
+    await _notify_system_started(mock_adapter, ctx)
+
+    assert mock_adapter.send_response.call_count == 2
+    called_chat_ids = {
+        call.kwargs["chat_id"] for call in mock_adapter.send_response.call_args_list
+    }
+    assert called_chat_ids == {111, 222}
+
+    for call in mock_adapter.send_response.call_args_list:
+        response = call.args[0]
+        assert response.text == "System started."
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_no_sessions_sends_nothing() -> None:
+    """_notify_system_started is a no-op when there are no known sessions."""
+    from assistant.api.main import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    mock_adapter = AsyncMock()
+
+    await _notify_system_started(mock_adapter, ctx)
+
+    mock_adapter.send_response.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_skips_non_telegram_contexts() -> None:
+    """_notify_system_started ignores context IDs not prefixed with 'telegram:'."""
+    from assistant.api.main import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    ctx.set_active_session("telegram:123", "tg:123:abc")
+    ctx.set_active_session("slack:456", "sl:456:xyz")  # non-Telegram context
+
+    mock_adapter = AsyncMock()
+
+    await _notify_system_started(mock_adapter, ctx)
+
+    assert mock_adapter.send_response.call_count == 1
+    call = mock_adapter.send_response.call_args_list[0]
+    assert call.kwargs["chat_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_continues_after_send_failure() -> None:
+    """_notify_system_started swallows send errors and continues to remaining chats."""
+    from assistant.api.main import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    ctx.set_active_session("telegram:111", "tg:111:aaa")
+    ctx.set_active_session("telegram:222", "tg:222:bbb")
+
+    mock_adapter = AsyncMock()
+    # First call raises, second should still proceed
+    mock_adapter.send_response.side_effect = [RuntimeError("network error"), None]
+
+    # Should not raise even if a send fails
+    await _notify_system_started(mock_adapter, ctx)
+
+    # Both chats were attempted
+    assert mock_adapter.send_response.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_skips_malformed_context_id() -> None:
+    """_notify_system_started skips context IDs with non-integer chat_id parts.
+
+    A context ID like 'telegram:not-a-number' must be silently ignored while
+    valid entries continue to be notified.
+    """
+    from assistant.api.main import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    ctx.set_active_session("telegram:not-a-number", "tg:bad:abc")  # malformed
+    ctx.set_active_session("telegram:999", "tg:999:valid")  # valid entry
+
+    mock_adapter = AsyncMock()
+
+    await _notify_system_started(mock_adapter, ctx)
+
+    # Only the valid chat ID must have been notified
+    assert mock_adapter.send_response.call_count == 1
+    call = mock_adapter.send_response.call_args_list[0]
+    assert call.kwargs["chat_id"] == 999
