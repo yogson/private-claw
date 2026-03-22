@@ -687,7 +687,7 @@ class TelegramAdapter:
             chat_id = int(event.metadata.get("chat_id", 0))
         except (TypeError, ValueError):
             chat_id = 0
-        if chat_id:
+        if cleared and chat_id:
             self.clear_capabilities_override(chat_id)
         logger.info(
             "telegram.adapter.session_reset",

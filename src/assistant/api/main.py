@@ -40,6 +40,7 @@ from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import SessionRecordType
 from assistant.core.session_context import (
+    ActiveSessionContextInterface,
     ActiveSessionContextService,
     SessionModelContextService,
 )
@@ -117,13 +118,17 @@ async def _session_has_user_messages(store: Any, session_id: str) -> bool:
 
 async def _notify_system_started(
     adapter: TelegramAdapter,
-    active_session_context: ActiveSessionContextService,
+    active_session_context: ActiveSessionContextInterface,
 ) -> None:
     """Send 'System started.' to every chat that has an active session.
 
     Chat IDs are derived from the persisted session context, which maps
     'telegram:<chat_id>' context keys to session IDs.  Unknown or unparseable
     keys are silently skipped.
+
+    Note: ``list_context_ids()`` returns *all* persisted sessions, including
+    stale ones from previous runs.  No TTL filter is applied, so users whose
+    sessions have long since expired will still receive the notification.
     """
     context_ids = active_session_context.list_context_ids()
     for context_id in context_ids:
@@ -138,7 +143,7 @@ async def _notify_system_started(
         response = ChannelResponse(
             response_id=str(uuid.uuid4()),
             channel="telegram",
-            session_id="",
+            session_id="__system__",
             trace_id=str(uuid.uuid4()),
             message_type=MessageType.TEXT,
             text="System started.",
@@ -846,6 +851,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
             return await handler(event)
 
+        await _notify_system_started(adapter, active_session_context)
+
         polling_task = asyncio.create_task(
             run_polling(
                 adapter,
@@ -855,8 +862,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 cancellation_registry=cancellation_registry,
             )
         )
-
-        await _notify_system_started(adapter, active_session_context)
 
     try:
         yield

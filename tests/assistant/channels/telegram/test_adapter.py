@@ -597,3 +597,33 @@ class TestCapabilityOverrideResetScoping:
         assert result is False
         # Override is still present since reset was a no-op
         assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]
+
+    @pytest.mark.asyncio
+    async def test_cleared_false_does_not_clear_capability_override(self) -> None:
+        """When clear_session() returns False, capability overrides must NOT be cleared.
+
+        Scenario: the user issues /reset but the session store reports nothing was
+        cleared (e.g. the session was already empty).  The adapter must preserve the
+        existing capability override so that a subsequent 'Nothing to reset.' message
+        is consistent with the actual state — the override is still active.
+        """
+        from unittest.mock import AsyncMock
+
+        adapter = self._make_adapter()
+        context_id = f"telegram:{self._CHAT_ID}"
+
+        # Set up an existing capability override
+        adapter._capability_overrides[context_id] = ["cap_x", "cap_extra"]
+        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]
+
+        # Wire up a mock session store that reports nothing was cleared
+        mock_store = AsyncMock()
+        mock_store.clear_session.return_value = False
+        adapter._session_store = mock_store
+
+        result = await adapter.reset_session_context(self._make_reset_event())
+
+        # reset_session_context returns False (nothing cleared)
+        assert result is False
+        # Capability override must NOT have been touched
+        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]

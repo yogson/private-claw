@@ -871,3 +871,27 @@ async def test_notify_system_started_continues_after_send_failure() -> None:
 
     # Both chats were attempted
     assert mock_adapter.send_response.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_skips_malformed_context_id() -> None:
+    """_notify_system_started skips context IDs with non-integer chat_id parts.
+
+    A context ID like 'telegram:not-a-number' must be silently ignored while
+    valid entries continue to be notified.
+    """
+    from assistant.api.main import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    ctx.set_active_session("telegram:not-a-number", "tg:bad:abc")  # malformed
+    ctx.set_active_session("telegram:999", "tg:999:valid")  # valid entry
+
+    mock_adapter = AsyncMock()
+
+    await _notify_system_started(mock_adapter, ctx)
+
+    # Only the valid chat ID must have been notified
+    assert mock_adapter.send_response.call_count == 1
+    call = mock_adapter.send_response.call_args_list[0]
+    assert call.kwargs["chat_id"] == 999
