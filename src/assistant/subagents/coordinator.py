@@ -28,6 +28,9 @@ _COORDINATOR_SLEEP_SECONDS = 1.0
 _DEFAULT_MAX_WORKERS = 3
 _DEFAULT_BUDGET_WINDOW_SECONDS = 86400
 _DEFAULT_BACKEND = "claude_code"
+# Timeout for waiting on an AskUserQuestion relay answer from the user.
+# claude_code_streaming.py derives its SDK stdin-close timeout from this value.
+DELEGATION_RELAY_TIMEOUT_S = 300
 
 
 class DelegationCoordinator(DelegationCoordinatorInterface):
@@ -372,19 +375,28 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 )
                 future.cancel()
                 # Surface a visible error so the user is not left waiting.
-                await relay_callback(
-                    task_id,
-                    session_id,
-                    "\u26a0\ufe0f Could not relay question to you \u2014 delegation task aborted.",
-                    [],
+                # Guard against a secondary failure in relay_callback itself.
+                _err_msg = (
+                    "\u26a0\ufe0f Could not relay question to you"
+                    " \u2014 delegation task aborted."
                 )
+                try:
+                    await relay_callback(task_id, session_id, _err_msg, [])
+                except Exception:
+                    logger.exception(
+                        "subagent.question_relay.error_notify_failed",
+                        task_id=task_id,
+                        session_id=session_id,
+                    )
                 return ""
             # Register only after confirmed send so has_pending_question() only
             # returns True when the user actually received the question.
             self._pending_questions[pending_key] = future
             try:
                 # Wait until submit_delegation_answer() resolves the future
-                return await asyncio.wait_for(asyncio.shield(future), timeout=300)
+                return await asyncio.wait_for(
+                    asyncio.shield(future), timeout=DELEGATION_RELAY_TIMEOUT_S
+                )
             except TimeoutError:
                 logger.warning(
                     "subagent.question_relay.answer_timeout",

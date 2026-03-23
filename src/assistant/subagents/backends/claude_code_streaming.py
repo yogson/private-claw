@@ -15,11 +15,17 @@ from typing import Any
 
 import structlog
 
-# Extend the SDK's stdin-close timeout to 310 s so it stays open long enough
-# for a human to respond to an AskUserQuestion relay (relay timeout is 300 s).
+from assistant.subagents.coordinator import DELEGATION_RELAY_TIMEOUT_S
+
+# Extend the SDK's stdin-close timeout so it stays open long enough for a
+# human to respond to an AskUserQuestion relay.  We add 10 s of headroom on
+# top of the coordinator's relay timeout (DELEGATION_RELAY_TIMEOUT_S).
 # The SDK reads this env var in Query.__init__ (parent process), so setting it
 # here at module import time ensures it takes effect before query() is called.
-os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "310000")
+os.environ.setdefault(
+    "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT",
+    str(DELEGATION_RELAY_TIMEOUT_S * 1000 + 10_000),
+)
 
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
@@ -59,9 +65,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
     def __init__(self) -> None:
         # Keyed by task_id; each entry is an async callable that receives
         # (question, options) and returns the user's answer as a string.
-        self._task_relays: dict[
-            str, Callable[[str, list[str]], Awaitable[str]]
-        ] = {}
+        self._task_relays: dict[str, Callable[[str, list[str]], Awaitable[str]]] = {}
 
     @property
     def backend_id(self) -> str:
@@ -98,9 +102,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 question = str(input_data.get("question", ""))
                 raw_options = input_data.get("options")
                 options: list[str] = (
-                    [str(o) for o in raw_options]
-                    if isinstance(raw_options, list)
-                    else []
+                    [str(o) for o in raw_options] if isinstance(raw_options, list) else []
                 )
                 if relay is not None:
                     # Relay owns the timeout; the coordinator's _relay wraps the
@@ -115,9 +117,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                         question=question,
                     )
                     answer = ""
-                return PermissionResultAllow(
-                    updated_input={**input_data, "answer": answer}
-                )
+                return PermissionResultAllow(updated_input={**input_data, "answer": answer})
             # Auto-approve everything else
             return PermissionResultAllow()
 
@@ -125,7 +125,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         prompt = request.objective
 
         try:
-            result_msg: "ResultMessage | None" = None
+            result_msg: ResultMessage | None = None
             output_parts: list[str] = []
 
             # can_use_tool requires an AsyncIterable prompt (SDK constraint).
