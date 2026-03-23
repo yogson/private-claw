@@ -50,7 +50,7 @@ def memory_search(
         result = handler(query, bounded_limit, memory_types)
         matches = result.get("matches", []) if isinstance(result, dict) else []
         match_count = len(matches)
-        match_bodies = []
+        match_bodies: list[str] = []
         for m in matches:
             if isinstance(m, dict):
                 body = m.get("body", "")

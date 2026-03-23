@@ -1,5 +1,9 @@
 """Tests for delegate_subagent_task tool."""
 
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from assistant.agent.deps import TurnDeps
@@ -10,7 +14,7 @@ from assistant.agent.tools.delegate_subagent_task import delegate_subagent_task
 # ---------------------------------------------------------------------------
 
 
-def _make_handler():
+def _make_handler() -> Callable[[dict], Awaitable[dict]]:
     async def _handler(payload: dict) -> dict:
         return {
             "accepted": True,
@@ -22,7 +26,7 @@ def _make_handler():
     return _handler
 
 
-def _make_deps(**kwargs):
+def _make_deps(**kwargs: Any) -> TurnDeps:
     return TurnDeps(
         writes_approved=[],
         seen_intent_ids=set(),
@@ -66,7 +70,7 @@ async def test_delegate_subagent_task_calls_handler() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delegate_subagent_task_directory_forwarded(tmp_path) -> None:
+async def test_delegate_subagent_task_directory_forwarded(tmp_path: Path) -> None:
     ctx = _Ctx(_make_deps())
     result = await delegate_subagent_task(
         ctx,

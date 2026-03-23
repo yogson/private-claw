@@ -426,9 +426,7 @@ class Orchestrator:
                 enabled_capabilities=event.capabilities_override,
                 denied_capabilities=self._config.capabilities.denied_capabilities,
             )
-            effective_config = self._config.model_copy(
-                update={"capabilities": modified_caps}
-            )
+            effective_config = self._config.model_copy(update={"capabilities": modified_caps})
 
         token = set_trace_id(trace_id)
         try:

@@ -38,7 +38,6 @@ from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
-from assistant.store.models import SessionRecordType
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
     ActiveSessionContextService,
@@ -49,7 +48,7 @@ from assistant.observability.logfire import configure_logfire
 from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
-from assistant.store.models import TaskRecord
+from assistant.store.models import SessionRecordType, TaskRecord
 from assistant.subagents.backends import ClaudeCodeBackendAdapter, ClaudeCodeStreamingBackendAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
 
@@ -69,7 +68,8 @@ def _is_token_limit_error(exc: ModelHTTPError) -> bool:
     if exc.status_code != 400:
         return False
     body = exc.body if isinstance(exc.body, dict) else {}
-    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    raw_error = body.get("error")
+    error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
     msg = str(error.get("message", "")).lower()
     return "prompt is too long" in msg or "token" in msg and "maximum" in msg
 
@@ -102,10 +102,8 @@ def _build_tool_call_notifier(
             text=text,
             parse_mode="Markdown",
         )
-        try:
+        with suppress(Exception):
             await adapter.send_response(response, chat_id=chat_id)
-        except Exception:
-            pass
 
     return _notifier
 
@@ -202,8 +200,12 @@ def _build_orchestrator_handler(
                     text="Invalid or expired delegation answer.",
                 )
             q_session_id, answer_text = resolution
-            if delegation_coordinator is None or not delegation_coordinator.has_pending_question(q_session_id):
-                logger.info("delegation.question.expired", session_id=q_session_id, trace_id=event.trace_id)
+            if delegation_coordinator is None or not delegation_coordinator.has_pending_question(
+                q_session_id
+            ):
+                logger.info(
+                    "delegation.question.expired", session_id=q_session_id, trace_id=event.trace_id
+                )
                 return ChannelResponse(
                     response_id=str(uuid.uuid4()),
                     channel="telegram",
@@ -214,7 +216,9 @@ def _build_orchestrator_handler(
                 )
             submitted = delegation_coordinator.submit_delegation_answer(q_session_id, answer_text)
             if submitted:
-                logger.info("delegation.question.answered", session_id=q_session_id, trace_id=event.trace_id)
+                logger.info(
+                    "delegation.question.answered", session_id=q_session_id, trace_id=event.trace_id
+                )
                 return ChannelResponse(
                     response_id=str(uuid.uuid4()),
                     channel="telegram",
@@ -223,7 +227,11 @@ def _build_orchestrator_handler(
                     message_type=MessageType.TEXT,
                     text="Answer received. The task will continue.",
                 )
-            logger.warning("delegation.question.submit_failed", session_id=q_session_id, trace_id=event.trace_id)
+            logger.warning(
+                "delegation.question.submit_failed",
+                session_id=q_session_id,
+                trace_id=event.trace_id,
+            )
             return ChannelResponse(
                 response_id=str(uuid.uuid4()),
                 channel="telegram",
@@ -694,9 +702,7 @@ def _build_question_relay_handler(
     :meth:`DelegationCoordinator.submit_delegation_answer`.
     """
 
-    async def _relay(
-        task_id: str, session_id: str, question: str, options: list[str]
-    ) -> None:
+    async def _relay(task_id: str, session_id: str, question: str, options: list[str]) -> None:
         chat_id = DelegationCoordinator._chat_id_from_session(session_id)
         if chat_id is None:
             logger.warning(
@@ -787,9 +793,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_context = SessionModelContextService(
             data_root / "runtime" / "active_model_context.json"
         )
-        capability_definitions = load_capability_definitions(
-            config_dir=runtime_config.config_dir
-        )
+        capability_definitions = load_capability_definitions(config_dir=runtime_config.config_dir)
         adapter = TelegramAdapter(
             runtime_config.telegram,
             transcription_service=transcription_service,
@@ -824,9 +828,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter)
         )
-        delegation_coordinator.set_question_relay_callback(
-            _build_question_relay_handler(adapter)
-        )
+        delegation_coordinator.set_question_relay_callback(_build_question_relay_handler(adapter))
 
         usage_service = UsageStatsService(
             session_store=store.sessions,

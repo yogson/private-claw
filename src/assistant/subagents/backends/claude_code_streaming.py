@@ -10,7 +10,7 @@ AskUserQuestion feedback loop via a configurable question relay callback.
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -22,7 +22,7 @@ logger = structlog.get_logger(__name__)
 # Import SDK at module level so it can be patched in tests.
 # Import failures are caught at execution time in execute().
 try:
-    from claude_agent_sdk import (  # type: ignore[import-untyped]
+    from claude_agent_sdk import (
         ClaudeAgentOptions,
         PermissionResultAllow,
         ResultMessage,
@@ -52,9 +52,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
     def __init__(self) -> None:
         # Keyed by task_id; each entry is an async callable that receives
         # (question, options) and returns the user's answer as a string.
-        self._task_relays: dict[
-            str, Callable[[str, list[str]], Awaitable[str]]
-        ] = {}
+        self._task_relays: dict[str, Callable[[str, list[str]], Awaitable[str]]] = {}
 
     @property
     def backend_id(self) -> str:
@@ -91,9 +89,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 question = str(input_data.get("question", ""))
                 raw_options = input_data.get("options")
                 options: list[str] = (
-                    [str(o) for o in raw_options]
-                    if isinstance(raw_options, list)
-                    else []
+                    [str(o) for o in raw_options] if isinstance(raw_options, list) else []
                 )
                 if relay is not None:
                     # Relay owns the timeout; the coordinator's _relay wraps the
@@ -108,9 +104,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                         question=question,
                     )
                     answer = ""
-                return PermissionResultAllow(
-                    updated_input={**input_data, "answer": answer}
-                )
+                return PermissionResultAllow(updated_input={**input_data, "answer": answer})
             # Auto-approve everything else
             return PermissionResultAllow()
 
@@ -118,7 +112,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         prompt = request.objective
 
         try:
-            result_msg: "ResultMessage | None" = None
+            result_msg: ResultMessage | None = None
             output_parts: list[str] = []
 
             # can_use_tool requires an AsyncIterable prompt (SDK constraint).
@@ -155,7 +149,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         if result_msg is None:
             return DelegationResult(
                 ok=False,
-                error="Sub-agent stream ended without a ResultMessage (max_turns exhaustion or SDK error)",
+                error=(
+                    "Sub-agent stream ended without a ResultMessage"
+                    " (max_turns exhaustion or SDK error)"
+                ),
             )
 
         if result_msg.is_error:
@@ -186,11 +183,11 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         cwd = params.get("directory") or None
 
         raw_effort = str(params.get("effort", "")).strip() or None
-        effort = raw_effort if raw_effort in ("low", "medium", "high", "max") else None  # type: ignore[assignment]
+        effort = raw_effort if raw_effort in ("low", "medium", "high", "max") else None
 
         raw_permission_mode = str(params.get("permission_mode", "")).strip() or None
         permission_mode = (
-            raw_permission_mode  # type: ignore[assignment]
+            raw_permission_mode
             if raw_permission_mode in ("default", "acceptEdits", "plan", "bypassPermissions")
             else "bypassPermissions"  # safe default: no TTY to route approval requests to
         )
@@ -206,9 +203,9 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             model=request.model_id,
             max_turns=request.max_turns,
             cwd=cwd,
-            effort=effort,
-            permission_mode=permission_mode,
-            add_dirs=add_dirs,
+            effort=cast(Any, effort),
+            permission_mode=cast(Any, permission_mode),
+            add_dirs=cast(Any, add_dirs),
             can_use_tool=can_use_tool,
             # Stub hook keeps SDK stdin open for ask_question relay (Fix 3).
             # Even if the SDK patch (Fix 1) is lost on reinstall, bool(hooks)

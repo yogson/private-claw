@@ -9,7 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from assistant.agent.constants import MEMORY_AGENT_PROMPT_NAME
-from assistant.core.capabilities.loader import expand_nested_capabilities, load_capability_definitions
+from assistant.core.capabilities.loader import (
+    expand_nested_capabilities,
+    load_capability_definitions,
+)
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.prompts import load_prompt

@@ -29,8 +29,9 @@ def _make_result_msg(
     is_error: bool = False,
     usage: dict[str, Any] | None = None,
 ) -> Any:
-    from claude_agent_sdk import ResultMessage
     from unittest.mock import MagicMock
+
+    from claude_agent_sdk import ResultMessage
 
     msg = MagicMock(spec=ResultMessage)
     msg.result = result
@@ -284,7 +285,7 @@ async def test_execute_times_out_after_timeout_seconds() -> None:
     """execute() should return an error result when the query exceeds timeout_seconds."""
 
     async def _raise_timeout(**kwargs: Any) -> AsyncGenerator[Any, None]:
-        raise asyncio.TimeoutError
+        raise TimeoutError
         yield  # make it a generator
 
     with _patch_query_side_effect(_raise_timeout):

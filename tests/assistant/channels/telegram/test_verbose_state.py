@@ -48,8 +48,8 @@ class TestVerboseStatePersistence:
     def test_disabled_state_persisted_and_restored(self, tmp_path: Path) -> None:
         path = tmp_path / "verbose_state.json"
         svc = VerboseStateService(storage_path=path)
-        svc.toggle(42)   # on
-        svc.toggle(42)   # off again
+        svc.toggle(42)  # on
+        svc.toggle(42)  # off again
 
         restarted = VerboseStateService(storage_path=path)
         assert restarted.is_enabled(42) is False

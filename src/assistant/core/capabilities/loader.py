@@ -147,7 +147,7 @@ def apply_claude_code_settings(
     if not merged_allow and not merged_deny and not merged_mcp:
         return
 
-    existing: dict = {}
+    existing: dict[str, Any] = {}
     if settings_path.exists():
         try:
             existing = json.loads(settings_path.read_text())

@@ -6,6 +6,7 @@ Replaces manual provider tool protocol handling with Agent-managed tool loop.
 """
 
 import asyncio
+import contextlib
 from typing import Any
 
 from pydantic_ai import Agent
@@ -72,9 +73,12 @@ def _inject_cancellation_results(messages: list[ModelMessage]) -> list[ModelMess
     pending: list[ToolCallPart] = []
     for msg in messages:
         if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ToolCallPart) and part.tool_call_id not in completed_ids:
-                    pending.append(part)
+            for resp_part in msg.parts:
+                if (
+                    isinstance(resp_part, ToolCallPart)
+                    and resp_part.tool_call_id not in completed_ids
+                ):
+                    pending.append(resp_part)
 
     if not pending:
         return messages
@@ -102,7 +106,8 @@ def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> A
         model_id,
         deps_type=TurnDeps,
         system_prompt=system_prompt,
-        retries=0,
+        retries=0,  # tool call retries: keep at 0 to prevent loops
+        output_retries=1,  # output validation retries: allow 1 retry
         tools=get_agent_tools(config),
     )
 
@@ -143,7 +148,7 @@ class PydanticAITurnAdapter:
         Raises TurnCancelledWithPartial (subclass of CancelledError) if cancelled,
         carrying whatever messages were captured before the cancellation.
         """
-        from pydantic_ai._agent_graph import CallToolsNode  # type: ignore[import]
+        from pydantic_ai._agent_graph import CallToolsNode
 
         if not messages:
             return "", [], None
@@ -157,7 +162,10 @@ class PydanticAITurnAdapter:
         # On continuation turns, prepend it so the Anthropic backend always receives
         # the `system` parameter regardless of turn number.
         if history:
-            history = [ModelRequest(parts=[SystemPromptPart(content=self._system_prompt)]), *history]
+            history = [
+                ModelRequest(parts=[SystemPromptPart(content=self._system_prompt)]),
+                *history,
+            ]
         model_settings: dict[str, Any] = {
             "max_tokens": self._max_tokens,
             "anthropic_cache_instructions": True,
@@ -175,20 +183,16 @@ class PydanticAITurnAdapter:
                     if isinstance(node, CallToolsNode) and deps.tool_call_notifier is not None:
                         for part in node.model_response.parts:
                             if isinstance(part, ToolCallPart):
-                                try:
+                                with contextlib.suppress(Exception):
                                     await deps.tool_call_notifier(
                                         part.tool_name, part.args_as_json_str()
                                     )
-                                except Exception:
-                                    pass
             except asyncio.CancelledError:
                 # Capture whatever messages were processed before cancellation so the
                 # caller can persist them and keep session history intact.
                 partial: list[ModelMessage] = []
-                try:
+                with contextlib.suppress(Exception):
                     partial = list(agent_run.new_messages())
-                except Exception:
-                    pass
                 raise TurnCancelledWithPartial(_inject_cancellation_results(partial)) from None
 
         result = agent_run.result

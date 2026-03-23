@@ -35,9 +35,11 @@ class DelegationBackendAdapterInterface(ABC):
         relay: Callable[[str, list[str]], Awaitable[str]],
     ) -> None:
         """Register a per-task question relay. No-op unless overridden."""
+        return
 
     def unregister_relay(self, task_id: str) -> None:
         """Remove the per-task question relay. No-op unless overridden."""
+        return
 
 
 class DelegationCoordinatorInterface(ABC):

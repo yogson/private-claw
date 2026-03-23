@@ -196,7 +196,7 @@ async def _process_update(
         and current_task is not None
     )
     if should_track:
-        cancellation_registry.register(event.session_id, current_task)  # type: ignore[union-attr]
+        cancellation_registry.register(event.session_id, current_task)  # type: ignore[union-attr, arg-type]
 
     try:
         response = await event_handler(event)
@@ -218,7 +218,7 @@ async def _process_update(
         return
     finally:
         if should_track:
-            cancellation_registry.unregister(event.session_id, current_task)  # type: ignore[union-attr]
+            cancellation_registry.unregister(event.session_id, current_task)  # type: ignore[union-attr, arg-type]
 
     if response is None:
         return

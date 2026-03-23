@@ -22,7 +22,10 @@ from pydantic_ai import Tool
 from pydantic_ai.tools import ToolFuncEither
 
 from assistant.agent.deps import TurnDeps
-from assistant.core.capabilities.loader import expand_nested_capabilities, load_capability_definitions
+from assistant.core.capabilities.loader import (
+    expand_nested_capabilities,
+    load_capability_definitions,
+)
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.mcp.bridge import McpBridge

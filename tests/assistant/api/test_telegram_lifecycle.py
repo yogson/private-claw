@@ -809,9 +809,7 @@ async def test_notify_system_started_sends_to_known_chats() -> None:
     await _notify_system_started(mock_adapter, ctx)
 
     assert mock_adapter.send_response.call_count == 2
-    called_chat_ids = {
-        call.kwargs["chat_id"] for call in mock_adapter.send_response.call_args_list
-    }
+    called_chat_ids = {call.kwargs["chat_id"] for call in mock_adapter.send_response.call_args_list}
     assert called_chat_ids == {111, 222}
 
     for call in mock_adapter.send_response.call_args_list:

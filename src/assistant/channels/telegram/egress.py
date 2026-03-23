@@ -6,7 +6,7 @@ Handles text and interactive (inline keyboard) response types.
 """
 
 import asyncio
-from typing import Final
+from typing import Any, Final
 
 import structlog
 from aiogram import Bot
@@ -97,7 +97,7 @@ class TelegramEgress:
                 ):
                     is_last_chunk = chunk_index == total_chunks - 1
                     reply_markup = base_reply_markup if is_last_chunk else None
-                    send_kwargs: dict = {
+                    send_kwargs: dict[str, Any] = {
                         "chat_id": chat_id,
                         "text": chunk_text,
                         "reply_markup": reply_markup,

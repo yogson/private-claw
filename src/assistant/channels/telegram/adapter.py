@@ -20,6 +20,7 @@ from assistant.channels.telegram.ask_question_callbacks import (
     sign_ask_question_callback,
     verify_ask_question_callback,
 )
+from assistant.channels.telegram.capability_select_service import CapabilitySelectService
 from assistant.channels.telegram.commands import TelegramCommand, extract_supported_command
 from assistant.channels.telegram.egress import TelegramEgress
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
@@ -28,7 +29,6 @@ from assistant.channels.telegram.memory_confirmation_callbacks import (
     sign_memory_confirmation_callback,
     verify_memory_confirmation_callback,
 )
-from assistant.channels.telegram.capability_select_service import CapabilitySelectService
 from assistant.channels.telegram.model_select import ModelSelectService
 from assistant.channels.telegram.models import (
     ActionButton,
@@ -587,9 +587,7 @@ class TelegramAdapter:
             return None
         if chat_id != 0:
             context_id = self._build_session_context_id(chat_id)
-            current = list(
-                self._capability_overrides.get(context_id, self._default_capabilities)
-            )
+            current = list(self._capability_overrides.get(context_id, self._default_capabilities))
             if capability_id in current:
                 current.remove(capability_id)
             else:
@@ -818,9 +816,7 @@ class TelegramAdapter:
     def _build_session_context_id(self, chat_id: int) -> str:
         return f"telegram:{chat_id}"
 
-    def _register_delegation_question_token(
-        self, *, session_id: str, answer_text: str
-    ) -> str:
+    def _register_delegation_question_token(self, *, session_id: str, answer_text: str) -> str:
         self._cleanup_expired_delegation_question_tokens()
         token = uuid.uuid4().hex[:10]
         self._delegation_question_tokens[token] = _DelegationQuestionToken(
@@ -847,9 +843,7 @@ class TelegramAdapter:
 
     def _cleanup_expired_delegation_question_tokens(self) -> None:
         now = datetime.now(UTC)
-        expired = [
-            k for k, v in self._delegation_question_tokens.items() if v.expires_at <= now
-        ]
+        expired = [k for k, v in self._delegation_question_tokens.items() if v.expires_at <= now]
         for key in expired:
             self._delegation_question_tokens.pop(key, None)
 

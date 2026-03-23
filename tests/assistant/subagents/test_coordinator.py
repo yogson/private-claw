@@ -441,8 +441,14 @@ async def test_streaming_relay_submit_answer_resolves_future(tmp_path: Path) -> 
         task_id: str, session_id: str, question: str, options: list[str]
     ) -> None:
         question_received.append((task_id, session_id, question, options))
-        # Answer immediately via submit_delegation_answer
-        coordinator.submit_delegation_answer(session_id, "yes")
+
+        # Schedule the answer for the next event-loop iteration so that the
+        # future is registered (after relay_callback returns) before we resolve it.
+        async def _submit_soon() -> None:
+            await asyncio.sleep(0)
+            coordinator.submit_delegation_answer(session_id, "yes")
+
+        asyncio.ensure_future(_submit_soon())
 
     coordinator.set_question_relay_callback(_question_relay)
     await coordinator.start()
@@ -502,9 +508,6 @@ async def test_streaming_relay_answer_timeout_returns_empty(tmp_path: Path) -> N
     coordinator.set_question_relay_callback(_question_relay)
 
     # Patch the timeout in _register_streaming_relay to a tiny value
-    import unittest.mock as mock
-
-    original_register = coordinator._register_streaming_relay
 
     def _fast_register(backend: Any, task: Any) -> None:
         # Monkey-patch the relay to use a very short timeout
@@ -575,7 +578,6 @@ def test_options_relay_handler_converts_strings_to_dicts() -> None:
     We test the conversion logic in isolation so it doesn't depend on the full
     FastAPI app.
     """
-    from unittest.mock import MagicMock, patch
 
     # Reconstruct the conversion that the relay handler performs
     options: list[str] = ["yes", "no", "maybe"]

@@ -377,7 +377,9 @@ class TestDelegationQuestionCallbacks:
         adapter = TelegramAdapter(_make_config())
         # Sign a valid callback without registering it in the adapter's token registry
         secret = b"12345:test-token"
-        cb_data = sign_ask_question_callback(token="deadbeef01", chat_id=self._CHAT_ID, secret=secret)
+        cb_data = sign_ask_question_callback(
+            token="deadbeef01", chat_id=self._CHAT_ID, secret=secret
+        )
         event = self._make_aq_event(cb_data)
         assert adapter.consume_delegation_question_callback(event) is None
 
@@ -474,9 +476,7 @@ class TestCapabilityOverrideSessionScoping:
 
         # Simulate user toggling a capability in the current session
         adapter._capability_overrides[context_id] = ["cap_a", "cap_b", "cap_extra"]
-        assert adapter.get_capabilities_override(self._CHAT_ID) == [
-            "cap_a", "cap_b", "cap_extra"
-        ]
+        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_a", "cap_b", "cap_extra"]
 
         # User starts a new session
         adapter.start_new_session(self._make_text_event())
@@ -564,9 +564,7 @@ class TestCapabilityOverrideResetScoping:
 
         # Simulate user toggling a capability in the current session
         adapter._capability_overrides[context_id] = ["cap_x", "cap_y", "cap_extra"]
-        assert adapter.get_capabilities_override(self._CHAT_ID) == [
-            "cap_x", "cap_y", "cap_extra"
-        ]
+        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_y", "cap_extra"]
 
         # User runs /reset to clear the session context
         mock_store = AsyncMock()

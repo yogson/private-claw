@@ -74,7 +74,7 @@ def format_markdown_for_telegram(
 
 
 def _to_aiogram_entity(entity: object) -> MessageEntity:
-    d = getattr(entity, "to_dict", lambda: {})()
+    d: object = getattr(entity, "to_dict", lambda: {})()
     if not isinstance(d, dict):
         raise TypeError(f"Expected dict from entity.to_dict(), got {type(d)}")
     filtered = {k: v for k, v in d.items() if v is not None}

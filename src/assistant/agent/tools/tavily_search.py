@@ -40,14 +40,17 @@ def _is_binary(text: str, sample: int = 500) -> bool:
 
 def _sanitize_result(result: TavilySearchResult) -> TavilySearchResult:
     """Truncate or replace content to prevent binary/oversized payloads inflating context."""
-    content: str = result.get("content") or ""  # type: ignore[union-attr]
+    content: str = result.get("content") or ""
     if _is_binary(content):
         content = "[binary content omitted]"
     elif len(content) > _MAX_CONTENT_CHARS:
-        content = content[:_MAX_CONTENT_CHARS] + f"... [{len(content) - _MAX_CONTENT_CHARS} chars omitted]"
+        content = (
+            content[:_MAX_CONTENT_CHARS]
+            + f"... [{len(content) - _MAX_CONTENT_CHARS} chars omitted]"
+        )
     else:
         return result
-    return {**result, "content": content}  # type: ignore[return-value]
+    return {**result, "content": content}
 
 
 def get_tavily_search_tool() -> Any | None:
