@@ -442,13 +442,14 @@ async def test_streaming_relay_submit_answer_resolves_future(tmp_path: Path) -> 
     ) -> None:
         question_received.append((task_id, session_id, question, options))
 
-        # Schedule the answer for the next event-loop iteration so that the
-        # future is registered (after relay_callback returns) before we resolve it.
-        async def _submit_soon() -> None:
+        # Schedule the answer *after* relay_callback returns so that the
+        # coordinator has time to register the future in _pending_questions
+        # (futures are registered only after a confirmed send).
+        async def _submit_later() -> None:
             await asyncio.sleep(0)
             coordinator.submit_delegation_answer(session_id, "yes")
 
-        asyncio.ensure_future(_submit_soon())
+        asyncio.ensure_future(_submit_later())
 
     coordinator.set_question_relay_callback(_question_relay)
     await coordinator.start()
@@ -508,25 +509,25 @@ async def test_streaming_relay_answer_timeout_returns_empty(tmp_path: Path) -> N
     coordinator.set_question_relay_callback(_question_relay)
 
     # Patch the timeout in _register_streaming_relay to a tiny value
-
     def _fast_register(backend: Any, task: Any) -> None:
         # Monkey-patch the relay to use a very short timeout
         if coordinator._question_relay_callback is None:
             return
         task_id = task.task_id
         session_id = task.parent_session_id or ""
+        pending_key = coordinator._pending_question_key(session_id)
         relay_callback = coordinator._question_relay_callback
 
         async def _relay(question: str, options: list[str]) -> str:
             future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            coordinator._pending_questions[session_id] = future
+            coordinator._pending_questions[pending_key] = future
             try:
                 await relay_callback(task_id, session_id, question, options)
                 return await asyncio.wait_for(asyncio.shield(future), timeout=0.05)
             except TimeoutError:
                 return ""
             finally:
-                coordinator._pending_questions.pop(session_id, None)
+                coordinator._pending_questions.pop(pending_key, None)
                 if not future.done():
                     future.cancel()
 
@@ -569,6 +570,136 @@ async def test_streaming_relay_answer_timeout_returns_empty(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 # Options type conversion test (for _build_question_relay_handler in main.py)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_relay_session_switch_delivers_answer(tmp_path: Path) -> None:
+    """Answer submitted with a different session_id but same chat_id is delivered correctly."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+
+    relay_backend = _RelayCapableBackend()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path, model_allowlist=["claude-sonnet-4-5"]),
+        backends=[relay_backend],
+    )
+
+    # Session ID used when the task is created (original session)
+    original_session_id = "tg:456:session1"
+    # Session ID used when the answer is submitted (new session, same chat_id 456)
+    new_session_id = "tg:456:session2"
+
+    question_received: list[tuple[str, str, str, list[str]]] = []
+
+    async def _question_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> None:
+        question_received.append((task_id, session_id, question, options))
+
+        # Schedule the answer *after* relay_callback returns so that the
+        # coordinator has time to register the future in _pending_questions.
+        # Submit using the *new* session_id (different suffix, same chat_id 456).
+        async def _submit_later() -> None:
+            await asyncio.sleep(0)
+            coordinator.submit_delegation_answer(new_session_id, "switch-answer")
+
+        asyncio.ensure_future(_submit_later())
+
+    coordinator.set_question_relay_callback(_question_relay)
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id=original_session_id,
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={
+                "objective": "Session switch test",
+                "backend": "claude_code_streaming",
+                "tool_params": {},
+            },
+        )
+        assert accepted["accepted"] is True
+        task_id = accepted["task_id"]
+
+        for _ in range(40):
+            task = await coordinator.get_task(task_id)
+            if task is not None and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            await asyncio.sleep(0.1)
+
+        task = await coordinator.get_task(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.COMPLETED
+        # The relay was called
+        assert len(question_received) == 1
+        # The answer was correctly delivered despite the session switch
+        assert relay_backend.relay_answer == "switch-answer"
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_relay_error_notify_failure_does_not_escape(tmp_path: Path) -> None:
+    """When relay_callback raises on first call and also on the error notification,
+    _relay must swallow both exceptions and return '' without propagating."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+
+    relay_backend = _RelayCapableBackend()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path, model_allowlist=["claude-sonnet-4-5"]),
+        backends=[relay_backend],
+    )
+
+    call_count = 0
+
+    async def _always_failing_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> None:
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("send failed")
+
+    coordinator.set_question_relay_callback(_always_failing_relay)
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:789",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={
+                "objective": "Error notify test",
+                "backend": "claude_code_streaming",
+                "tool_params": {},
+            },
+        )
+        assert accepted["accepted"] is True
+        task_id = accepted["task_id"]
+
+        for _ in range(40):
+            task = await coordinator.get_task(task_id)
+            if task is not None and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            await asyncio.sleep(0.1)
+
+        task = await coordinator.get_task(task_id)
+        assert task is not None
+        # Task should complete (relay returned "" and backend got empty answer)
+        assert task.status == TaskStatus.COMPLETED
+        # relay_callback was called twice: once for the real question, once for the error notify
+        assert call_count == 2
+        # relay returned "" (future was cancelled, not resolved)
+        assert relay_backend.relay_answer == ""
+        # No pending questions left
+        assert coordinator._pending_questions == {}
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
 
 
 def test_options_relay_handler_converts_strings_to_dicts() -> None:
