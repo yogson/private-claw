@@ -713,13 +713,9 @@ def _build_question_relay_handler(
             question=f"[Delegation task] {question}",
             options=options,
         )
-        try:
-            await adapter.send_response(response, chat_id=chat_id)
-        except Exception:
-            logger.exception(
-                "subagent.question_relay.send_failed",
-                task_id=task_id,
-            )
+        # Propagate send errors so the coordinator can abort the wait and
+        # surface a visible error to the user rather than silently swallowing.
+        await adapter.send_response(response, chat_id=chat_id)
 
     return _relay
 
