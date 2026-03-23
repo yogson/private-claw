@@ -9,10 +9,17 @@ AskUserQuestion feedback loop via a configurable question relay callback.
 """
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 import structlog
+
+# Extend the SDK's stdin-close timeout to 310 s so it stays open long enough
+# for a human to respond to an AskUserQuestion relay (relay timeout is 300 s).
+# The SDK reads this env var in Query.__init__ (parent process), so setting it
+# here at module import time ensures it takes effect before query() is called.
+os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "310000")
 
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
