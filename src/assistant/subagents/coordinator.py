@@ -53,9 +53,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             Callable[[str, str, str, list[str]], Awaitable[None]] | None
         ) = None
         # Pending asyncio Futures for in-flight AskUserQuestion relays.
-        # Keyed by session_id — v1 constraint: only one pending question per
-        # session at a time.  A second question while one is in-flight will
-        # overwrite the first future, causing the earlier question to be lost.
+        # Keyed by chat_id (stable Telegram identifier, extracted from session)
+        # so that a session switch between task creation and reply does not lose
+        # the answer.  v1 constraint: only one pending question per chat at a time.
         self._pending_questions: dict[str, asyncio.Future[str]] = {}
         self._stop = asyncio.Event()
         self._worker_task: asyncio.Task[None] | None = None
@@ -103,15 +103,21 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         self._question_relay_callback = callback
 
     def has_pending_question(self, session_id: str) -> bool:
-        """Return True if the session has an in-flight AskUserQuestion relay."""
-        return session_id in self._pending_questions
+        """Return True if the session has an in-flight AskUserQuestion relay.
+
+        The lookup is keyed by chat_id (extracted from session_id) so that a
+        session switch between task creation and reply does not lose the answer.
+        """
+        key = self._pending_question_key(session_id)
+        return key in self._pending_questions
 
     def submit_delegation_answer(self, session_id: str, answer: str) -> bool:
         """Fulfil a pending AskUserQuestion relay with the user's answer.
 
         Returns True if a pending question was found and resolved, False otherwise.
         """
-        future = self._pending_questions.get(session_id)
+        key = self._pending_question_key(session_id)
+        future = self._pending_questions.get(key)
         if future is not None and not future.done():
             future.set_result(answer)
             return True
@@ -341,22 +347,42 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         """Build and register a per-task question relay on a streaming backend.
 
         The relay closure:
-        1. Creates an asyncio.Future keyed by session_id in ``_pending_questions``
-        2. Calls ``_question_relay_callback`` to notify the channel layer (send to Telegram)
+        1. Calls ``_question_relay_callback`` to notify the channel layer (send to Telegram)
+        2. Only after a confirmed send, registers an asyncio.Future keyed by chat_id
         3. Awaits the Future, which is resolved via :meth:`submit_delegation_answer`
         """
         if self._question_relay_callback is None:
             return
         task_id = task.task_id
         session_id = task.parent_session_id or ""
+        pending_key = self._pending_question_key(session_id)
         relay_callback = self._question_relay_callback
 
         async def _relay(question: str, options: list[str]) -> str:
             future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            self._pending_questions[session_id] = future
             try:
-                # Notify the channel layer; errors are logged inside relay_callback
+                # Notify the channel layer; propagates on send failure so we do
+                # not register a Future for a question the user never received.
                 await relay_callback(task_id, session_id, question, options)
+            except Exception:
+                logger.exception(
+                    "subagent.question_relay.send_failed",
+                    task_id=task_id,
+                    session_id=session_id,
+                )
+                future.cancel()
+                # Surface a visible error so the user is not left waiting.
+                await relay_callback(
+                    task_id,
+                    session_id,
+                    "\u26a0\ufe0f Could not relay question to you \u2014 delegation task aborted.",
+                    [],
+                )
+                return ""
+            # Register only after confirmed send so has_pending_question() only
+            # returns True when the user actually received the question.
+            self._pending_questions[pending_key] = future
+            try:
                 # Wait until submit_delegation_answer() resolves the future
                 return await asyncio.wait_for(asyncio.shield(future), timeout=300)
             except TimeoutError:
@@ -367,7 +393,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 )
                 return ""
             finally:
-                self._pending_questions.pop(session_id, None)
+                self._pending_questions.pop(pending_key, None)
                 if not future.done():
                     future.cancel()
 
@@ -642,3 +668,17 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             return int(parts[1])
         except ValueError:
             return None
+
+    @staticmethod
+    def _pending_question_key(session_id: str) -> str:
+        """Return a stable key for pending question lookup.
+
+        Keying by chat_id (the stable Telegram user/chat identifier extracted
+        from ``tg:{chat_id}:{suffix}``) ensures that a session switch between
+        task creation and reply does not lose the answer.  Falls back to the
+        full session_id for non-Telegram sessions.
+        """
+        parts = session_id.split(":")
+        if len(parts) >= 2 and parts[0] == "tg":
+            return parts[1]
+        return session_id
