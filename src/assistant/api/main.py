@@ -20,7 +20,7 @@ from fastapi.responses import RedirectResponse
 from pydantic_ai.exceptions import ModelHTTPError
 
 from assistant.admin.router import router as admin_router
-from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
+from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.api.deps import set_runtime_config
 from assistant.api.routers import config as config_router
 from assistant.api.routers import health
@@ -41,6 +41,7 @@ from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
     ActiveSessionContextService,
+    SessionCapabilityContextService,
     SessionModelContextService,
 )
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
@@ -776,10 +777,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_id = runtime_config.model.default_model_id
         if not model_id.startswith("anthropic:"):
             model_id = f"anthropic:{model_id}"
-        pydantic_ai_adapter = PydanticAITurnAdapter(
+        # Build the adapter cache (Option C).  The default capability set is
+        # pre-populated at construction time; additional capability sets are
+        # built lazily on the first turn that uses them and then reused.
+        adapter_cache = TurnAdapterCache(
             model_id=model_id,
             max_tokens=runtime_config.model.max_tokens_default,
-            config=runtime_config,
+            base_config=runtime_config,
         )
 
         transcription_service = build_transcription_service(runtime_config.telegram)
@@ -788,6 +792,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         model_context = SessionModelContextService(
             data_root / "runtime" / "active_model_context.json"
+        )
+        capability_context = SessionCapabilityContextService(
+            data_root / "runtime" / "active_capability_context.json"
         )
         capability_definitions = load_capability_definitions(config_dir=runtime_config.config_dir)
         adapter = TelegramAdapter(
@@ -800,6 +807,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             default_model_id=runtime_config.model.default_model_id,
             capability_definitions=capability_definitions,
             default_capabilities=runtime_config.capabilities.enabled_capabilities,
+            capability_context=capability_context,
         )
         app.state.telegram_adapter = adapter
 
@@ -818,8 +826,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             attachment_downloader=attachment_downloader,
             memory_writer=memory_writer,
             memory_retrieval=memory_retrieval,
-            pydantic_ai_adapter=pydantic_ai_adapter,
             delegation_coordinator=delegation_coordinator,
+            adapter_cache=adapter_cache,
         )
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter)

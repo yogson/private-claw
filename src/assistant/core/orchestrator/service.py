@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.agent.pydantic_ai_agent import (
     PydanticAITurnAdapter,
@@ -92,6 +93,7 @@ class Orchestrator:
         memory_retrieval: MemoryRetrievalInterface | None = None,
         pydantic_ai_adapter: PydanticAITurnAdapter | None = None,
         delegation_coordinator: DelegationCoordinatorInterface | None = None,
+        adapter_cache: TurnAdapterCache | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -101,6 +103,7 @@ class Orchestrator:
         self._memory_retrieval = memory_retrieval
         self._pydantic_ai_adapter = pydantic_ai_adapter
         self._delegation_coordinator = delegation_coordinator
+        self._adapter_cache = adapter_cache
         self._session_traces = SessionTraceManager()
 
     async def execute_turn(
@@ -156,16 +159,26 @@ class Orchestrator:
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
         cfg = effective_config if effective_config is not None else self._config
-        adapter = self._pydantic_ai_adapter
-        if adapter is None:
-            raise RuntimeError("Pydantic AI adapter not configured")
 
-        if effective_config is not None and effective_config is not self._config:
+        # Option C: use the adapter cache when available to avoid rebuilding
+        # the system prompt and tool list on every turn with a capability
+        # override.  The cache is keyed by frozenset(enabled_capabilities) so
+        # adapters are reused across turns that share the same capability set.
+        if self._adapter_cache is not None:
+            adapter: PydanticAITurnAdapter = self._adapter_cache.get_or_build(cfg)
+        elif self._pydantic_ai_adapter is None:
+            # Neither cache nor adapter is configured — programming error.
+            raise RuntimeError("Pydantic AI adapter not configured")
+        elif effective_config is not None and effective_config is not self._config:
+            # Legacy fallback: rebuild ad-hoc when a capability override is
+            # present and no cache is configured.
             adapter = PydanticAITurnAdapter(
                 model_id=f"anthropic:{cfg.model.default_model_id}",
                 max_tokens=self._config.model.max_tokens_default,
                 config=effective_config,
             )
+        else:
+            adapter = self._pydantic_ai_adapter
 
         model_id = model_id_override or cfg.model.default_model_id
         if model_id not in cfg.model.model_allowlist:
