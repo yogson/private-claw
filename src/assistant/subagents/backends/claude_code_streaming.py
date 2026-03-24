@@ -9,10 +9,23 @@ AskUserQuestion feedback loop via a configurable question relay callback.
 """
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, cast
 
 import structlog
+
+from assistant.subagents.coordinator import DELEGATION_RELAY_TIMEOUT_S
+
+# Extend the SDK's stdin-close timeout so it stays open long enough for a
+# human to respond to an AskUserQuestion relay.  We add 10 s of headroom on
+# top of the coordinator's relay timeout (DELEGATION_RELAY_TIMEOUT_S).
+# The SDK reads this env var in Query.__init__ (parent process), so setting it
+# here at module import time ensures it takes effect before query() is called.
+os.environ.setdefault(
+    "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT",
+    str(DELEGATION_RELAY_TIMEOUT_S * 1000 + 10_000),
+)
 
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
