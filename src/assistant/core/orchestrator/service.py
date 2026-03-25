@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.agent.interfaces import LLMMessage, MessageRole
@@ -22,6 +23,7 @@ from assistant.agent.pydantic_ai_agent import (
     _new_messages_to_session_records,
 )
 from assistant.agent.tools import build_tool_runtime_params
+from assistant.agent.tools.registry import collect_enabled_tool_ids
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -316,6 +318,27 @@ class Orchestrator:
                     turn_id=turn_id,
                 )
             raise
+        except UnexpectedModelBehavior as exc:
+            # Tool call failed because the tool is not registered (e.g. capability disabled).
+            # Persist a failed turn record so the turn appears in session history.
+            try:
+                await persist_turn_failed(
+                    self._store.sessions,
+                    self._config,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    user_text=user_content,
+                    user_id=user_id,
+                    status=TurnTerminalStatus.FAILED,
+                    assistant_content=f"[Tool call failed: {exc}]",
+                )
+            except Exception:
+                logger.warning(
+                    "orchestrator.unexpected_behavior_persist_failed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
+            raise
         prompt_trace: dict[str, Any] | None = None
         if self._config.model.prompt_trace_enabled:
             prompt_trace = {
@@ -446,6 +469,20 @@ class Orchestrator:
             with self._session_traces.session_trace(session_id, turn_id):
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
                 messages = records_to_messages(records)
+
+                # Preemptive check: if the most-recent turn's history references
+                # tools that are no longer active, warn the user before the LLM
+                # tries to call them and crashes.
+                cfg_for_check = effective_config if effective_config is not None else self._config
+                mismatch_msg = self._detect_tool_mismatch(records, cfg_for_check)
+                if mismatch_msg:
+                    logger.warning(
+                        "orchestrator.tool_mismatch_detected",
+                        session_id=session_id,
+                        trace_id=trace_id,
+                    )
+                    return OrchestratorResult(text=mismatch_msg)
+
                 if len(messages) > _LONG_HISTORY_THRESHOLD:
                     reminder = _SYSTEM_REMINDER + "\n\n"
                     if content_blocks is not None:
@@ -515,3 +552,58 @@ class Orchestrator:
             "query": query,
             "matches": matches,
         }
+
+    def _detect_tool_mismatch(
+        self,
+        records: "list[SessionRecord]",
+        config: "RuntimeConfig",
+    ) -> str | None:
+        """Return a warning string if the most-recent turn references unavailable tools.
+
+        Only the last assistant turn is inspected (not the full history) to avoid
+        false positives when a user intentionally changes their capability set
+        mid-session — plain-text messages after a capability change must not be
+        blocked.
+
+        MCP tools (prefixed ``cap.mcp.``) are excluded from the comparison because
+        their names differ between the capability-id representation and the
+        pydantic_ai tool name.
+
+        Returns ``None`` when no mismatch is detected (common path).
+        """
+        # Identify the most recent turn_id that has any ASSISTANT_TOOL_CALL record.
+        last_tool_turn_id: str | None = None
+        for record in records:
+            if record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
+                last_tool_turn_id = record.turn_id
+
+        if last_tool_turn_id is None:
+            return None
+
+        # Only examine tool calls from that most-recent tool-using turn.
+        historical_tools: set[str] = set()
+        for record in records:
+            if (
+                record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL
+                and record.turn_id == last_tool_turn_id
+            ):
+                tool_name = record.payload.get("tool_name", "")
+                if tool_name and not tool_name.startswith("cap.mcp."):
+                    historical_tools.add(tool_name)
+
+        if not historical_tools:
+            return None
+
+        current_tools = {
+            t for t in collect_enabled_tool_ids(config) if not t.startswith("cap.mcp.")
+        }
+        missing = historical_tools - current_tools
+        if not missing:
+            return None
+
+        tools_str = ", ".join(f"`{t}`" for t in sorted(missing))
+        return (
+            f"\u26a0\ufe0f Your session history references tools that are not currently active: "
+            f"{tools_str}. "
+            f"Please re-enable the required capability before continuing."
+        )

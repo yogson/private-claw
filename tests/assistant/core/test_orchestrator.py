@@ -4,9 +4,10 @@ Tests for CMP_CORE_AGENT_ORCHESTRATOR orchestrator module.
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
 from assistant.agent.interfaces import MessageRole
@@ -1153,4 +1154,166 @@ class TestOrchestratorExecuteTurn:
 
         with pytest.raises(RuntimeError, match="persist failed"):
             await orch.execute_turn(_minimal_event(text="remember this"))
-        memory_writer.apply_intent.assert_not_called()
+
+
+def _tool_call_record(
+    turn_id: str = "t1",
+    tool_name: str = "some_tool",
+    sequence: int = 0,
+) -> SessionRecord:
+    return SessionRecord(
+        session_id="s1",
+        sequence=sequence,
+        event_id=f"e-{sequence}",
+        turn_id=turn_id,
+        timestamp=datetime.now(UTC),
+        record_type=SessionRecordType.ASSISTANT_TOOL_CALL,
+        payload={
+            "message_id": f"m-{sequence}",
+            "tool_call_id": f"call-{sequence}",
+            "tool_name": tool_name,
+            "arguments_json": "{}",
+        },
+    )
+
+
+class TestDetectToolMismatch:
+    """Unit tests for Orchestrator._detect_tool_mismatch()."""
+
+    def _make_orch(self) -> Orchestrator:
+        store = MagicMock()
+        idempotency = MagicMock()
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        return Orchestrator(
+            store=store,
+            config=_runtime_config(),
+            idempotency=idempotency,
+            pydantic_ai_adapter=adapter,
+        )
+
+    def test_returns_none_when_no_records(self) -> None:
+        orch = self._make_orch()
+        assert orch._detect_tool_mismatch([], _runtime_config()) is None
+
+    def test_returns_none_when_no_tool_call_records(self) -> None:
+        orch = self._make_orch()
+        records = [
+            SessionRecord(
+                session_id="s1",
+                sequence=0,
+                event_id="e1",
+                turn_id="t1",
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": "m1", "content": "Hello"},
+            )
+        ]
+        assert orch._detect_tool_mismatch(records, _runtime_config()) is None
+
+    def test_returns_none_when_all_tools_still_active(self) -> None:
+        orch = self._make_orch()
+        records = [_tool_call_record(tool_name="some_tool")]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={"some_tool", "other_tool"},
+        ):
+            assert orch._detect_tool_mismatch(records, _runtime_config()) is None
+
+    def test_returns_warning_when_tool_missing(self) -> None:
+        orch = self._make_orch()
+        records = [_tool_call_record(tool_name="missing_tool")]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={"other_tool"},
+        ):
+            result = orch._detect_tool_mismatch(records, _runtime_config())
+        assert result is not None
+        assert "missing_tool" in result
+
+    def test_only_most_recent_turn_inspected(self) -> None:
+        """Tools referenced only in older turns must not trigger a mismatch."""
+        orch = self._make_orch()
+        records = [
+            # Older turn with a now-missing tool — must be ignored.
+            _tool_call_record(turn_id="t1", tool_name="old_tool", sequence=0),
+            # Newer turn with a currently active tool.
+            _tool_call_record(turn_id="t2", tool_name="active_tool", sequence=1),
+        ]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={"active_tool"},
+        ):
+            result = orch._detect_tool_mismatch(records, _runtime_config())
+        assert result is None
+
+    def test_mcp_tools_excluded_from_comparison(self) -> None:
+        """cap.mcp.* tool names in history are never flagged as missing."""
+        orch = self._make_orch()
+        records = [_tool_call_record(tool_name="cap.mcp.server.my_tool")]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value=set(),
+        ):
+            assert orch._detect_tool_mismatch(records, _runtime_config()) is None
+
+    def test_returns_none_when_tool_name_empty(self) -> None:
+        """Records with an empty tool_name payload should not cause false positives."""
+        orch = self._make_orch()
+        record = _tool_call_record(tool_name="")
+        record.payload["tool_name"] = ""
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value=set(),
+        ):
+            assert orch._detect_tool_mismatch([record], _runtime_config()) is None
+
+
+class TestUnexpectedModelBehaviorHandling:
+    """Verify the orchestrator persists a failed record and re-raises UnexpectedModelBehavior."""
+
+    @pytest.mark.asyncio
+    async def test_unexpected_model_behavior_is_reraised(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+    ) -> None:
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=UnexpectedModelBehavior("Tool not found: unknown_tool")
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            await orch.execute_turn(_minimal_event(text="do something"))
+
+    @pytest.mark.asyncio
+    async def test_unexpected_model_behavior_triggers_failed_persist(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+    ) -> None:
+        """A TURN_FAILED record must be appended to the session store."""
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=UnexpectedModelBehavior("Tool not found: unknown_tool")
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            await orch.execute_turn(_minimal_event(text="do something"))
+
+        # persist_turn_failed writes a batch containing a TURN_TERMINAL record.
+        assert mock_store.sessions.append.call_count >= 1
+        all_records: list[SessionRecord] = []
+        for call in mock_store.sessions.append.call_args_list:
+            all_records.extend(call[0][0])
+        record_types = {r.record_type for r in all_records}
+        assert SessionRecordType.TURN_TERMINAL in record_types

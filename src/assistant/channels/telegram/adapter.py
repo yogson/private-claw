@@ -562,7 +562,7 @@ class TelegramAdapter:
                 message_type=MessageType.TEXT,
                 text="Capability selection is not available.",
             )
-        stored = self._capability_context.get_capabilities(self._build_session_context_id(chat_id))
+        stored = self._capability_context.get_capabilities(session_id)
         enabled = stored if stored is not None else self._default_capabilities
         return self._capability_select.build_capabilities_menu(
             current_session_id=session_id,
@@ -589,35 +589,36 @@ class TelegramAdapter:
                 trace_id=event.trace_id,
             )
             return None
-        if chat_id != 0:
-            context_id = self._build_session_context_id(chat_id)
-            stored = self._capability_context.get_capabilities(context_id)
+        session_id = event.session_id
+        if session_id:
+            stored = self._capability_context.get_capabilities(session_id)
             current = list(stored if stored is not None else self._default_capabilities)
             if capability_id in current:
                 current.remove(capability_id)
             else:
                 current.append(capability_id)
-            self._capability_context.set_capabilities(context_id, current)
+            self._capability_context.set_capabilities(session_id, current)
             logger.info(
                 "telegram.adapter.capability_select.toggled",
                 chat_id=chat_id,
+                session_id=session_id,
                 capability_id=capability_id,
                 enabled_capabilities=current,
                 trace_id=event.trace_id,
             )
         return capability_id
 
-    def get_capabilities_override(self, chat_id: int) -> list[str] | None:
-        """Return capability overrides for the given chat, or None if not customized."""
-        if chat_id == 0:
+    def get_capabilities_override(self, session_id: str) -> list[str] | None:
+        """Return capability overrides for the given session, or None if not customized."""
+        if not session_id:
             return None
-        return self._capability_context.get_capabilities(self._build_session_context_id(chat_id))
+        return self._capability_context.get_capabilities(session_id)
 
-    def clear_capabilities_override(self, chat_id: int) -> None:
-        """Remove any capability override for the given chat."""
-        if chat_id <= 0:
+    def clear_capabilities_override(self, session_id: str) -> None:
+        """Remove any capability override for the given session."""
+        if not session_id:
             return
-        self._capability_context.clear_capabilities(self._build_session_context_id(chat_id))
+        self._capability_context.clear_capabilities(session_id)
 
     def handle_model_callback(self, event: NormalizedEvent) -> str | None:
         """
@@ -667,7 +668,6 @@ class TelegramAdapter:
         self._active_session_context.set_active_session(
             self._build_session_context_id(chat_id), session_id
         )
-        self.clear_capabilities_override(chat_id)
         logger.info(
             "telegram.adapter.session_new.activated",
             chat_id=chat_id,
@@ -685,12 +685,8 @@ class TelegramAdapter:
         if self._session_store is None:
             return False
         cleared = await self._session_store.clear_session(event.session_id)
-        try:
-            chat_id = int(event.metadata.get("chat_id", 0))
-        except (TypeError, ValueError):
-            chat_id = 0
-        if cleared and chat_id:
-            self.clear_capabilities_override(chat_id)
+        if cleared:
+            self.clear_capabilities_override(event.session_id)
         logger.info(
             "telegram.adapter.session_reset",
             session_id=event.session_id,
@@ -743,7 +739,6 @@ class TelegramAdapter:
             self._active_session_context.set_active_session(
                 self._build_session_context_id(chat_id), session_id
             )
-            self.clear_capabilities_override(chat_id)
             logger.info(
                 "telegram.adapter.session_resume.activated",
                 chat_id=chat_id,

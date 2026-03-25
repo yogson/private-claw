@@ -204,7 +204,8 @@ class TestAdapterCapabilitySelect:
         event = _make_event(callback_data=signed)
         result = adapter.handle_capabilities_callback(event)
         assert result == "web_search"
-        override = adapter.get_capabilities_override(_CHAT_ID)
+        # Capability is now stored under the event's session_id (not chat_id)
+        override = adapter.get_capabilities_override(event.session_id)
         assert override is not None
         assert "web_search" not in override
 
@@ -216,8 +217,8 @@ class TestAdapterCapabilitySelect:
 
     def test_get_capabilities_override_returns_none_before_any_toggle(self) -> None:
         adapter = self._make_adapter()
-        assert adapter.get_capabilities_override(_CHAT_ID) is None
+        assert adapter.get_capabilities_override(f"tg:{_CHAT_ID}") is None
 
-    def test_get_capabilities_override_returns_none_for_zero_chat(self) -> None:
+    def test_get_capabilities_override_returns_none_for_empty_session_id(self) -> None:
         adapter = self._make_adapter()
-        assert adapter.get_capabilities_override(0) is None
+        assert adapter.get_capabilities_override("") is None

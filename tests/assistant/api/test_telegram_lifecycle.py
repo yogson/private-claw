@@ -648,6 +648,7 @@ async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
     )
 
     mock_adapter = MagicMock()
+    mock_adapter.is_delegation_question_callback.return_value = False
     mock_adapter.is_stop_request.return_value = False
     mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = False

@@ -17,7 +17,7 @@ import structlog
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from assistant.admin.router import router as admin_router
 from assistant.agent.adapter_cache import TurnAdapterCache
@@ -508,7 +508,7 @@ def _build_orchestrator_handler(
         model_override = adapter.get_model_override(chat_id) if chat_id else None
         if model_override:
             orch_event = orch_event.model_copy(update={"model_id_override": model_override})
-        capabilities_override = adapter.get_capabilities_override(chat_id) if chat_id else None
+        capabilities_override = adapter.get_capabilities_override(event.session_id)
         if capabilities_override is not None:
             orch_event = orch_event.model_copy(
                 update={"capabilities_override": capabilities_override}
@@ -546,6 +546,24 @@ def _build_orchestrator_handler(
                     text=f"Conversation history exceeded the model limit. {reset_msg}",
                 )
             raise
+        except UnexpectedModelBehavior as exc:
+            logger.warning(
+                "orchestrator.unexpected_model_behavior",
+                session_id=orch_event.session_id,
+                trace_id=event.trace_id,
+                error=str(exc),
+            )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text=(
+                    "The assistant tried to use a tool that is not currently available. "
+                    "Please re-enable the required capability or start a fresh session."
+                ),
+            )
         if orch_result is None:
             return None
         session_id = orch_event.session_id

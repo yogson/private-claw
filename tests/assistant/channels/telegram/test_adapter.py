@@ -385,10 +385,12 @@ class TestDelegationQuestionCallbacks:
 
 
 class TestCapabilityOverrideSessionScoping:
-    """Capability overrides must be session-scoped: cleared on every session transition."""
+    """Capability overrides are scoped per session-id and persist across session switches."""
 
     _CHAT_ID = 42000
     _DEFAULT_CAPABILITIES = ["cap_a", "cap_b"]
+    # session_id used in the test events — must match what _make_adapter_with_caps stores
+    _SESSION_ID = f"tg:{42000}:sess0"
 
     def _make_adapter(self) -> TelegramAdapter:
         return TelegramAdapter(
@@ -397,12 +399,12 @@ class TestCapabilityOverrideSessionScoping:
         )
 
     def _make_adapter_with_caps(self, capabilities: list[str]) -> TelegramAdapter:
-        """Create an adapter with a pre-populated per-chat capability override."""
+        """Create an adapter with a pre-populated per-session capability override."""
         from assistant.core.session_context import SessionCapabilityContextService
 
-        context_id = f"telegram:{self._CHAT_ID}"
+        # Key by session_id (not chat_id) matching the events below
         cap_ctx = SessionCapabilityContextService()
-        cap_ctx.set_capabilities(context_id, capabilities)
+        cap_ctx.set_capabilities(self._SESSION_ID, capabilities)
         return TelegramAdapter(
             _make_config(allowlist=[self._CHAT_ID]),
             default_capabilities=list(self._DEFAULT_CAPABILITIES),
@@ -414,7 +416,7 @@ class TestCapabilityOverrideSessionScoping:
             event_id="ev-1",
             event_type=EventType.USER_TEXT_MESSAGE,
             source=EventSource.TELEGRAM,
-            session_id=f"tg:{self._CHAT_ID}:sess0",
+            session_id=self._SESSION_ID,
             user_id=str(self._CHAT_ID),
             created_at=datetime.now(UTC),
             trace_id="trace-cap",
@@ -427,7 +429,7 @@ class TestCapabilityOverrideSessionScoping:
             event_id="ev-cb",
             event_type=EventType.USER_CALLBACK_QUERY,
             source=EventSource.TELEGRAM,
-            session_id=f"tg:{self._CHAT_ID}:sess0",
+            session_id=self._SESSION_ID,
             user_id=str(self._CHAT_ID),
             created_at=datetime.now(UTC),
             trace_id="trace-cap-cb",
@@ -441,23 +443,31 @@ class TestCapabilityOverrideSessionScoping:
             metadata={"chat_id": self._CHAT_ID},
         )
 
-    def test_start_new_session_clears_capability_override(self) -> None:
-        """start_new_session() must reset any dynamically-set capability override."""
+    def test_start_new_session_preserves_old_session_capability_override(self) -> None:
+        """start_new_session() must NOT clear the old session's capability override.
+
+        Capabilities are per-session-id; creating a new session must not destroy
+        the capability state of the previous session.
+        """
         adapter = self._make_adapter_with_caps(["cap_a", "cap_extra"])
 
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_a", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_a", "cap_extra"]
 
-        adapter.start_new_session(self._make_text_event())
+        new_session_id = adapter.start_new_session(self._make_text_event())
+        assert new_session_id is not None
 
-        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+        # Old session's capabilities must be preserved
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_a", "cap_extra"]
+        # New session has no override (defaults from config apply)
+        assert adapter.get_capabilities_override(new_session_id) is None
 
-    def test_handle_session_resume_callback_clears_capability_override(self) -> None:
-        """handle_session_resume_callback() must reset any dynamically-set capability override."""
+    def test_handle_session_resume_callback_preserves_capability_overrides(self) -> None:
+        """handle_session_resume_callback() must NOT clear any session's capability override."""
         from unittest.mock import MagicMock
 
         adapter = self._make_adapter_with_caps(["cap_a", "cap_extra"])
 
-        assert adapter.get_capabilities_override(self._CHAT_ID) is not None
+        assert adapter.get_capabilities_override(self._SESSION_ID) is not None
 
         # Wire up a mock session_resume service that validates any callback
         resumed_session_id = f"tg:{self._CHAT_ID}:resumed"
@@ -473,37 +483,45 @@ class TestCapabilityOverrideSessionScoping:
         result = adapter.handle_session_resume_callback(event)
 
         assert result == resumed_session_id
-        # Capability override must have been cleared
-        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+        # Old session's capability override must NOT have been cleared
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_a", "cap_extra"]
+        # Resumed session has no override stored for it
+        assert adapter.get_capabilities_override(resumed_session_id) is None
 
     def test_capability_override_does_not_leak_to_new_session(self) -> None:
-        """Full scenario: override set in session A must not be visible after /new."""
+        """Full scenario: override set in session A must not be visible in new session B."""
         adapter = self._make_adapter_with_caps(["cap_a", "cap_b", "cap_extra"])
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_a", "cap_b", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == [
+            "cap_a",
+            "cap_b",
+            "cap_extra",
+        ]
 
         # User starts a new session
-        adapter.start_new_session(self._make_text_event())
+        new_session_id = adapter.start_new_session(self._make_text_event())
+        assert new_session_id is not None
 
         # New session must have NO override (defaults from config apply)
-        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+        assert adapter.get_capabilities_override(new_session_id) is None
 
     def test_capability_override_does_not_leak_via_session_resume(self) -> None:
-        """Full scenario: override set in session A must not be visible after resuming session B."""
+        """Full scenario: override in session A must not be visible in unrelated session B."""
         from unittest.mock import MagicMock
 
         adapter = self._make_adapter_with_caps(["cap_a", "cap_extra"])
-        assert adapter.get_capabilities_override(self._CHAT_ID) is not None
+        assert adapter.get_capabilities_override(self._SESSION_ID) is not None
 
-        # User resumes session B via /sessions
+        # User resumes unrelated session B via /sessions
+        resumed_session_id = f"tg:{self._CHAT_ID}:session_b"
         mock_session_resume = MagicMock()
-        mock_session_resume.verify_callback.return_value = f"tg:{self._CHAT_ID}:session_b"
+        mock_session_resume.verify_callback.return_value = resumed_session_id
         adapter._session_resume = mock_session_resume
         adapter._active_session_context = MagicMock()
 
         adapter.handle_session_resume_callback(self._make_callback_event("sr:payload"))
 
-        # Resumed session B must have NO override carried over from session A
-        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+        # Resumed session B must have NO override (it was never set for that session)
+        assert adapter.get_capabilities_override(resumed_session_id) is None
 
 
 class TestCapabilityOverrideResetScoping:
@@ -511,6 +529,8 @@ class TestCapabilityOverrideResetScoping:
 
     _CHAT_ID = 43000
     _DEFAULT_CAPABILITIES = ["cap_x", "cap_y"]
+    # session_id used in the reset event — must match what _make_adapter_with_caps stores
+    _SESSION_ID = f"tg:{43000}:sess0"
 
     def _make_adapter(self) -> TelegramAdapter:
         return TelegramAdapter(
@@ -519,12 +539,12 @@ class TestCapabilityOverrideResetScoping:
         )
 
     def _make_adapter_with_caps(self, capabilities: list[str]) -> TelegramAdapter:
-        """Create an adapter with a pre-populated per-chat capability override."""
+        """Create an adapter with a pre-populated per-session capability override."""
         from assistant.core.session_context import SessionCapabilityContextService
 
-        context_id = f"telegram:{self._CHAT_ID}"
+        # Key by session_id to match reset_session_context behaviour (Fix 1)
         cap_ctx = SessionCapabilityContextService()
-        cap_ctx.set_capabilities(context_id, capabilities)
+        cap_ctx.set_capabilities(self._SESSION_ID, capabilities)
         return TelegramAdapter(
             _make_config(allowlist=[self._CHAT_ID]),
             default_capabilities=list(self._DEFAULT_CAPABILITIES),
@@ -536,7 +556,7 @@ class TestCapabilityOverrideResetScoping:
             event_id="ev-reset-1",
             event_type=EventType.USER_TEXT_MESSAGE,
             source=EventSource.TELEGRAM,
-            session_id=f"tg:{self._CHAT_ID}:sess0",
+            session_id=self._SESSION_ID,
             user_id=str(self._CHAT_ID),
             created_at=datetime.now(UTC),
             trace_id="trace-reset",
@@ -551,7 +571,7 @@ class TestCapabilityOverrideResetScoping:
 
         adapter = self._make_adapter_with_caps(["cap_x", "cap_extra"])
 
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_x", "cap_extra"]
 
         # Wire up a mock session store so reset_session_context proceeds
         mock_store = AsyncMock()
@@ -561,7 +581,7 @@ class TestCapabilityOverrideResetScoping:
         await adapter.reset_session_context(self._make_reset_event())
 
         # Capability override must have been cleared after /reset
-        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+        assert adapter.get_capabilities_override(self._SESSION_ID) is None
 
     @pytest.mark.asyncio
     async def test_capability_override_does_not_persist_after_reset(self) -> None:
@@ -569,7 +589,11 @@ class TestCapabilityOverrideResetScoping:
         from unittest.mock import AsyncMock
 
         adapter = self._make_adapter_with_caps(["cap_x", "cap_y", "cap_extra"])
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_y", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == [
+            "cap_x",
+            "cap_y",
+            "cap_extra",
+        ]
 
         # User runs /reset to clear the session context
         mock_store = AsyncMock()
@@ -580,13 +604,13 @@ class TestCapabilityOverrideResetScoping:
 
         assert cleared is True
         # After reset, capabilities must fall back to config defaults (no override)
-        assert adapter.get_capabilities_override(self._CHAT_ID) is None
+        assert adapter.get_capabilities_override(self._SESSION_ID) is None
 
     @pytest.mark.asyncio
     async def test_reset_without_session_store_does_not_clear_override(self) -> None:
         """When session reset is unavailable, capability override state is unchanged."""
         adapter = self._make_adapter_with_caps(["cap_x", "cap_extra"])
-        assert adapter.get_capabilities_override(self._CHAT_ID) is not None
+        assert adapter.get_capabilities_override(self._SESSION_ID) is not None
 
         # No session store configured — reset is unavailable
         adapter._session_store = None
@@ -596,7 +620,7 @@ class TestCapabilityOverrideResetScoping:
         # reset_session_context returns False and must not touch overrides
         assert result is False
         # Override is still present since reset was a no-op
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_x", "cap_extra"]
 
     @pytest.mark.asyncio
     async def test_cleared_false_does_not_clear_capability_override(self) -> None:
@@ -610,7 +634,7 @@ class TestCapabilityOverrideResetScoping:
         from unittest.mock import AsyncMock
 
         adapter = self._make_adapter_with_caps(["cap_x", "cap_extra"])
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_x", "cap_extra"]
 
         # Wire up a mock session store that reports nothing was cleared
         mock_store = AsyncMock()
@@ -622,4 +646,4 @@ class TestCapabilityOverrideResetScoping:
         # reset_session_context returns False (nothing cleared)
         assert result is False
         # Capability override must NOT have been touched
-        assert adapter.get_capabilities_override(self._CHAT_ID) == ["cap_x", "cap_extra"]
+        assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_x", "cap_extra"]
