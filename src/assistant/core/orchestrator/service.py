@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.agent.interfaces import LLMMessage, MessageRole
@@ -335,6 +335,34 @@ class Orchestrator:
             except Exception:
                 logger.warning(
                     "orchestrator.unexpected_behavior_persist_failed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
+            raise
+        except ModelHTTPError as exc:
+            # Anthropic API returned an HTTP error (e.g. 403, 429, 5xx).
+            # Persist a failed turn so the session history stays consistent, then re-raise
+            # so the API layer can surface a user-friendly message.
+            logger.warning(
+                "orchestrator.model_http_error",
+                session_id=session_id,
+                turn_id=turn_id,
+                status_code=exc.status_code,
+            )
+            try:
+                await persist_turn_failed(
+                    self._store.sessions,
+                    self._config,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    user_text=user_content,
+                    user_id=user_id,
+                    status=TurnTerminalStatus.FAILED,
+                    assistant_content=f"[API error {exc.status_code}]",
+                )
+            except Exception:
+                logger.warning(
+                    "orchestrator.model_http_error_persist_failed",
                     session_id=session_id,
                     turn_id=turn_id,
                 )

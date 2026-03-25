@@ -545,7 +545,20 @@ def _build_orchestrator_handler(
                     message_type=MessageType.TEXT,
                     text=f"Conversation history exceeded the model limit. {reset_msg}",
                 )
-            raise
+            logger.warning(
+                "orchestrator.model_http_error",
+                session_id=orch_event.session_id,
+                trace_id=event.trace_id,
+                status_code=exc.status_code,
+            )
+            return ChannelResponse(
+                response_id=str(uuid.uuid4()),
+                channel="telegram",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+                message_type=MessageType.TEXT,
+                text=f"The AI model returned an error (HTTP {exc.status_code}). Please try again.",
+            )
         except UnexpectedModelBehavior as exc:
             logger.warning(
                 "orchestrator.unexpected_model_behavior",

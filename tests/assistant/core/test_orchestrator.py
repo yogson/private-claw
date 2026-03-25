@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
 from assistant.agent.interfaces import MessageRole
@@ -1317,3 +1317,76 @@ class TestUnexpectedModelBehaviorHandling:
             all_records.extend(call[0][0])
         record_types = {r.record_type for r in all_records}
         assert SessionRecordType.TURN_TERMINAL in record_types
+
+
+class TestModelHTTPErrorHandling:
+    """Verify the orchestrator persists a failed record and re-raises ModelHTTPError."""
+
+    def _make_error(self, status_code: int = 403) -> ModelHTTPError:
+        return ModelHTTPError(
+            status_code=status_code,
+            model_name="claude-opus-4-6",
+            body={"error": {"type": "forbidden", "message": "Request not allowed"}},
+        )
+
+    @pytest.mark.asyncio
+    async def test_model_http_error_is_reraised(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+    ) -> None:
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(side_effect=self._make_error(403))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+        )
+        with pytest.raises(ModelHTTPError):
+            await orch.execute_turn(_minimal_event(text="do something"))
+
+    @pytest.mark.asyncio
+    async def test_model_http_error_triggers_failed_persist(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+    ) -> None:
+        """A TURN_TERMINAL record must be written even when the API returns 403."""
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(side_effect=self._make_error(403))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+        )
+        with pytest.raises(ModelHTTPError):
+            await orch.execute_turn(_minimal_event(text="do something"))
+
+        assert mock_store.sessions.append.call_count >= 1
+        all_records: list[SessionRecord] = []
+        for call in mock_store.sessions.append.call_args_list:
+            all_records.extend(call[0][0])
+        record_types = {r.record_type for r in all_records}
+        assert SessionRecordType.TURN_TERMINAL in record_types
+
+    @pytest.mark.asyncio
+    async def test_model_http_error_persist_failure_does_not_swallow_original(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+    ) -> None:
+        """If persistence itself fails, the original ModelHTTPError is still re-raised."""
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(side_effect=self._make_error(429))
+        mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("store unavailable"))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+        )
+        with pytest.raises(ModelHTTPError) as exc_info:
+            await orch.execute_turn(_minimal_event(text="do something"))
+        assert exc_info.value.status_code == 429

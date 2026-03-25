@@ -894,3 +894,55 @@ async def test_notify_system_started_skips_malformed_context_id() -> None:
     assert mock_adapter.send_response.call_count == 1
     call = mock_adapter.send_response.call_args_list[0]
     assert call.kwargs["chat_id"] == 999
+
+
+@pytest.mark.asyncio
+async def test_handler_model_http_error_non_token_limit_returns_friendly_message() -> None:
+    """When ModelHTTPError is NOT a token-limit error (e.g. 403), return a user-friendly message."""
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-403",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:789",
+        user_id="789",
+        created_at=datetime.now(UTC),
+        trace_id="trace-403",
+        text="hello",
+        metadata={"chat_id": 789},
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
+    mock_adapter.is_capabilities_request.return_value = False
+    mock_adapter.is_capabilities_callback_request.return_value = False
+    mock_adapter.is_usage_request.return_value = False
+    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.get_model_override.return_value = None
+    mock_adapter.get_capabilities_override.return_value = None
+
+    forbidden_error = ModelHTTPError(
+        status_code=403,
+        model_name="claude-opus-4-6",
+        body={"error": {"type": "forbidden", "message": "Request not allowed"}},
+    )
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock(side_effect=forbidden_error)
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
+    response = await handler(event)
+
+    assert response is not None
+    assert "403" in response.text
+    assert response.message_type == MessageType.TEXT
