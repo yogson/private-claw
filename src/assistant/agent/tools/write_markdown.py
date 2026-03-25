@@ -3,7 +3,7 @@ Component ID: CMP_PROVIDER_PYDANTIC_AI_AGENT
 
 write_markdown_file tool for the Pydantic AI agent.
 Writes (creates or overwrites) a markdown file at the given path.
-Rejects paths that resolve into the user's home directory.
+Writing outside the user's home directory is forbidden.
 """
 
 from pathlib import Path
@@ -25,7 +25,7 @@ def write_markdown_file(
     """Write (create or overwrite) a markdown (.md) file at file_path with content.
 
     Parent directories are created automatically.
-    Writing inside the user's home directory is forbidden.
+    Writing outside the user's home directory is forbidden.
     """
     logger.info(
         "provider.tool_call.write_markdown_file",
@@ -59,19 +59,19 @@ def _validate_and_write_markdown(file_path: str, content: str) -> dict[str, Any]
 
     resolved = Path(file_path).expanduser().resolve()
 
-    # Security: deny writes inside the user's home directory
+    # Security: only allow writes inside the user's home directory
     home = Path.home().resolve()
     try:
         resolved.relative_to(home)
-        # If relative_to succeeds the path is inside home — deny it
+        # If relative_to succeeds the path is inside home — allow it
+    except ValueError:
+        # Not inside home — deny it
         return {
             "status": "rejected_forbidden",
             "reason": (
-                f"writing inside the user home directory is not allowed (resolved path: {resolved})"
+                f"writing outside the user home directory is not allowed (resolved path: {resolved})"
             ),
         }
-    except ValueError:
-        pass  # Not inside home — allowed
 
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")
