@@ -201,19 +201,22 @@ class PydanticAITurnAdapter:
         response_text = result.output
         new_msgs = result.new_messages()
 
-        # Fallback: if the final output is empty, the model may have returned explanatory
-        # text in a mixed ModelResponse (TextPart + ToolCallPart) that pydantic_ai treats
-        # as an intermediate step and therefore excludes from result.output.  Scan the new
-        # messages in reverse and use the last such intermediate text so the user receives
-        # a response rather than silence.
-        if not response_text:
-            for msg in reversed(list(new_msgs)):
-                if isinstance(msg, ModelResponse):
-                    text_parts = [p for p in msg.parts if isinstance(p, TextPart) and p.content]
-                    tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
-                    if text_parts and tool_parts:
-                        response_text = " ".join(p.content for p in text_parts).strip()
-                        break
+        # Collect text from intermediate mixed ModelResponses (TextPart + ToolCallPart).
+        # Pydantic AI excludes these from result.output because it treats them as
+        # intermediate steps, but they often contain important reasoning or status that
+        # the user should see.  Prepend them to the final response so nothing is lost.
+        intermediate_texts: list[str] = []
+        for msg in list(new_msgs):
+            if isinstance(msg, ModelResponse):
+                text_parts = [p for p in msg.parts if isinstance(p, TextPart) and p.content]
+                tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
+                if text_parts and tool_parts:
+                    intermediate_texts.append(" ".join(p.content for p in text_parts).strip())
+        if intermediate_texts:
+            if response_text:
+                response_text = "\n\n".join(intermediate_texts) + "\n\n" + response_text
+            else:
+                response_text = "\n\n".join(intermediate_texts)
         usage = None
         usage_obj = result.usage()
         if usage_obj is not None:

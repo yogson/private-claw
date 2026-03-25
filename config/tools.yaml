@@ -68,6 +68,10 @@ tools:
     entrypoint: assistant.agent.tools.tavily_search:get_tavily_search_tool
     enabled: true
 
+  - tool_id: write_markdown_file
+    entrypoint: assistant.agent.tools.write_markdown:write_markdown_file
+    enabled: true
+
   - tool_id: macos_notes_read
     entrypoint: assistant.agent.tools.macos_tools:macos_notes_read
     enabled: true
