@@ -561,8 +561,7 @@ def _build_orchestrator_handler(
                 message_type=MessageType.TEXT,
                 text=(
                     "The assistant tried to use a tool that is not currently available. "
-                    "Please re-enable the required capability with /capabilities "
-                    "or use /new to start a fresh session."
+                    "Please re-enable the required capability or start a fresh session."
                 ),
             )
         if orch_result is None:

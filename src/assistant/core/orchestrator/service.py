@@ -23,7 +23,7 @@ from assistant.agent.pydantic_ai_agent import (
     _new_messages_to_session_records,
 )
 from assistant.agent.tools import build_tool_runtime_params
-from assistant.agent.tools.registry import _collect_enabled_tool_ids
+from assistant.agent.tools.registry import collect_enabled_tool_ids
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -470,9 +470,9 @@ class Orchestrator:
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
                 messages = records_to_messages(records)
 
-                # Fix 3: Detect tool mismatches before executing the turn.
-                # If session history references tools that aren't in the current
-                # capability set, warn the user so they can re-enable the capability.
+                # Preemptive check: if the most-recent turn's history references
+                # tools that are no longer active, warn the user before the LLM
+                # tries to call them and crashes.
                 cfg_for_check = effective_config if effective_config is not None else self._config
                 mismatch_msg = self._detect_tool_mismatch(records, cfg_for_check)
                 if mismatch_msg:
@@ -558,18 +558,35 @@ class Orchestrator:
         records: "list[SessionRecord]",
         config: "RuntimeConfig",
     ) -> str | None:
-        """Return a warning string if session history references unavailable tools.
+        """Return a warning string if the most-recent turn references unavailable tools.
 
-        Scans ASSISTANT_TOOL_CALL records for tool names not present in the
-        currently enabled capability set.  MCP tools (prefixed ``cap.mcp.``) are
-        excluded from the comparison because their names differ between the
-        capability-id representation and the pydantic_ai tool name.
+        Only the last assistant turn is inspected (not the full history) to avoid
+        false positives when a user intentionally changes their capability set
+        mid-session — plain-text messages after a capability change must not be
+        blocked.
+
+        MCP tools (prefixed ``cap.mcp.``) are excluded from the comparison because
+        their names differ between the capability-id representation and the
+        pydantic_ai tool name.
 
         Returns ``None`` when no mismatch is detected (common path).
         """
-        historical_tools: set[str] = set()
+        # Identify the most recent turn_id that has any ASSISTANT_TOOL_CALL record.
+        last_tool_turn_id: str | None = None
         for record in records:
             if record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
+                last_tool_turn_id = record.turn_id
+
+        if last_tool_turn_id is None:
+            return None
+
+        # Only examine tool calls from that most-recent tool-using turn.
+        historical_tools: set[str] = set()
+        for record in records:
+            if (
+                record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL
+                and record.turn_id == last_tool_turn_id
+            ):
                 tool_name = record.payload.get("tool_name", "")
                 if tool_name and not tool_name.startswith("cap.mcp."):
                     historical_tools.add(tool_name)
@@ -578,7 +595,7 @@ class Orchestrator:
             return None
 
         current_tools = {
-            t for t in _collect_enabled_tool_ids(config) if not t.startswith("cap.mcp.")
+            t for t in collect_enabled_tool_ids(config) if not t.startswith("cap.mcp.")
         }
         missing = historical_tools - current_tools
         if not missing:
@@ -586,7 +603,7 @@ class Orchestrator:
 
         tools_str = ", ".join(f"`{t}`" for t in sorted(missing))
         return (
-            f"\u26a0\ufe0f Your session history references tools that are not currently available: "
+            f"\u26a0\ufe0f Your session history references tools that are not currently active: "
             f"{tools_str}. "
-            f"Please re-enable the required capability with /capabilities before continuing."
+            f"Please re-enable the required capability before continuing."
         )

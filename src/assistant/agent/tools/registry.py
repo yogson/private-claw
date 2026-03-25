@@ -43,7 +43,7 @@ type AgentTool = Tool[TurnDeps] | ToolFuncEither[TurnDeps, ...]
 
 def build_tool_runtime_params(config: RuntimeConfig) -> dict[str, dict[str, Any]]:
     """Build merged per-tool params from tools.yaml defaults + capability overrides."""
-    tool_ids = _collect_enabled_tool_ids(config)
+    tool_ids = collect_enabled_tool_ids(config)
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
     definitions = load_capability_definitions(config_dir=_config_dir(config))
     policy = config.capabilities
@@ -94,7 +94,7 @@ def _resolve_entrypoint(entrypoint: str) -> object:
     return obj
 
 
-def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
+def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
     """Collect tool_ids from enabled capabilities (excluding denied).
 
     MCP tools: cap.mcp.<server>.<tool> in enabled_capabilities are added directly
@@ -130,7 +130,7 @@ def _collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
 
 def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
     """Return tools for the agent from tools.yaml and MCP bridge, gated by enabled capabilities."""
-    tool_ids = _collect_enabled_tool_ids(config)
+    tool_ids = collect_enabled_tool_ids(config)
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
     mcp_ids = {t for t in tool_ids if t.startswith("cap.mcp.")}
     first_party_ids = tool_ids - mcp_ids
