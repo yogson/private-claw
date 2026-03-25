@@ -641,6 +641,7 @@ def _build_delegation_feedback_handler(
         }
         if stdout_excerpt:
             payload["stdout_excerpt"] = stdout_excerpt
+        capabilities_override = adapter.get_capabilities_override(session_id)
         event = OrchestratorEvent(
             event_id=f"delegation-feedback-{task.task_id}-{task.status.value}",
             event_type=EventType.SYSTEM_CONTROL_EVENT,
@@ -651,6 +652,7 @@ def _build_delegation_feedback_handler(
             trace_id=trace_id,
             text="[[DELEGATION_COMPLETED]]\n" + json.dumps(payload, separators=(",", ":")),
             metadata={"delegation_feedback": True, "task_id": task.task_id},
+            capabilities_override=capabilities_override,
         )
         logfire_ctx = task.metadata.get("logfire_context")
         if isinstance(logfire_ctx, dict) and logfire_ctx:
