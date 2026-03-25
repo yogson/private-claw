@@ -49,7 +49,7 @@ from assistant.observability.logfire import configure_logfire
 from assistant.observability.logging import configure_logging
 from assistant.store.facade import StoreFacade
 from assistant.store.idempotency.service import IngressIdempotencyService
-from assistant.store.models import SessionRecordType, TaskRecord
+from assistant.store.models import TaskRecord
 from assistant.subagents.backends import ClaudeCodeBackendAdapter, ClaudeCodeStreamingBackendAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
 
@@ -107,12 +107,6 @@ def _build_tool_call_notifier(
             await adapter.send_response(response, chat_id=chat_id)
 
     return _notifier
-
-
-async def _session_has_user_messages(store: Any, session_id: str) -> bool:
-    """Return True if the session already contains at least one USER_MESSAGE record."""
-    records = await store.sessions.read_window(session_id, max_records=50)
-    return any(r.record_type == SessionRecordType.USER_MESSAGE for r in records)
 
 
 async def _notify_system_started(
@@ -366,35 +360,11 @@ def _build_orchestrator_handler(
             )
         if adapter.is_capabilities_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
-            if store is not None and await _session_has_user_messages(store, event.session_id):
-                return ChannelResponse(
-                    response_id=str(uuid.uuid4()),
-                    channel="telegram",
-                    session_id=event.session_id,
-                    trace_id=event.trace_id,
-                    message_type=MessageType.TEXT,
-                    text=(
-                        "Capabilities can only be changed in a fresh session. "
-                        "Use /new to start a new session first."
-                    ),
-                )
             return await adapter.build_capabilities_menu_response(
                 chat_id, event.session_id, event.trace_id
             )
         if adapter.is_capabilities_callback_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
-            if store is not None and await _session_has_user_messages(store, event.session_id):
-                return ChannelResponse(
-                    response_id=str(uuid.uuid4()),
-                    channel="telegram",
-                    session_id=event.session_id,
-                    trace_id=event.trace_id,
-                    message_type=MessageType.TEXT,
-                    text=(
-                        "Capabilities can only be changed in a fresh session. "
-                        "Use /new to start a new session first."
-                    ),
-                )
             capability_id = adapter.handle_capabilities_callback(event)
             if capability_id is None:
                 return ChannelResponse(

@@ -588,10 +588,11 @@ class Orchestrator:
     ) -> str | None:
         """Return a warning string if the most-recent turn references unavailable tools.
 
-        Only the last assistant turn is inspected (not the full history) to avoid
-        false positives when a user intentionally changes their capability set
-        mid-session — plain-text messages after a capability change must not be
-        blocked.
+        Only the most recently completed turn is inspected.  ``build_replay``
+        returns only complete turns, so the last record's ``turn_id`` identifies
+        that turn.  If the last turn had no tool calls (e.g. a plain-text reply
+        after a capability change), the check short-circuits: the model has
+        already adapted and must not be blocked.
 
         MCP tools (prefixed ``cap.mcp.``) are excluded from the comparison because
         their names differ between the capability-id representation and the
@@ -599,21 +600,23 @@ class Orchestrator:
 
         Returns ``None`` when no mismatch is detected (common path).
         """
-        # Identify the most recent turn_id that has any ASSISTANT_TOOL_CALL record.
-        last_tool_turn_id: str | None = None
+        # Identify the most recently completed turn.  Records from build_replay
+        # are ordered by sequence and represent only complete turns, so the last
+        # record's turn_id is the most recently completed turn.
+        last_turn_id: str | None = None
         for record in records:
-            if record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
-                last_tool_turn_id = record.turn_id
+            last_turn_id = record.turn_id
 
-        if last_tool_turn_id is None:
+        if last_turn_id is None:
             return None
 
-        # Only examine tool calls from that most-recent tool-using turn.
+        # Only examine tool calls from the most recently completed turn.
+        # If that turn had no tool calls, no mismatch is possible.
         historical_tools: set[str] = set()
         for record in records:
             if (
                 record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL
-                and record.turn_id == last_tool_turn_id
+                and record.turn_id == last_turn_id
             ):
                 tool_name = record.payload.get("tool_name", "")
                 if tool_name and not tool_name.startswith("cap.mcp."):

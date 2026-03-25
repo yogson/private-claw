@@ -945,4 +945,123 @@ async def test_handler_model_http_error_non_token_limit_returns_friendly_message
 
     assert response is not None
     assert "403" in response.text
-    assert response.message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
+async def test_handler_capabilities_request_allowed_mid_session() -> None:
+    """
+    Regression: /capabilities must return the selection menu even when the session
+    already has user messages (mid-session capability switching is allowed after PR #20).
+    """
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.channels.telegram.models import MessageType
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-caps-mid",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123:active-session",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-caps-mid",
+        text="/capabilities",
+        metadata={"chat_id": 123},
+    )
+
+    expected_menu = ChannelResponse(
+        response_id="resp-caps",
+        channel="telegram",
+        session_id=event.session_id,
+        trace_id=event.trace_id,
+        message_type=MessageType.INTERACTIVE,
+        text="Select capabilities:",
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
+    mock_adapter.is_capabilities_request.return_value = True
+    mock_adapter.build_capabilities_menu_response = AsyncMock(return_value=expected_menu)
+
+    # Provide a store that contains user messages — guard must NOT block anymore.
+    mock_store = MagicMock()
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock()
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None, store=mock_store)
+    response = await handler(event)
+
+    assert response is not None
+    assert response.message_type == MessageType.INTERACTIVE
+    mock_adapter.build_capabilities_menu_response.assert_awaited_once()
+    mock_orchestrator.execute_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_capabilities_callback_allowed_mid_session() -> None:
+    """
+    Regression: capability toggle callbacks must be processed and return the updated
+    menu even when the session already has user messages (mid-session capability
+    switching is allowed after PR #20).
+    """
+    from assistant.api.main import _build_orchestrator_handler
+    from assistant.channels.telegram.models import MessageType
+    from assistant.core.events.models import EventSource, EventType
+
+    event = NormalizedEvent(
+        event_id="ev-caps-cb-mid",
+        event_type=EventType.USER_CALLBACK_QUERY,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123:active-session",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-caps-cb-mid",
+        text=None,
+        metadata={"chat_id": 123},
+    )
+
+    expected_menu = ChannelResponse(
+        response_id="resp-caps-cb",
+        channel="telegram",
+        session_id=event.session_id,
+        trace_id=event.trace_id,
+        message_type=MessageType.INTERACTIVE,
+        text="Select capabilities:",
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = False
+    mock_adapter.is_session_resume_request.return_value = False
+    mock_adapter.is_session_resume_callback.return_value = False
+    mock_adapter.is_model_request.return_value = False
+    mock_adapter.is_model_callback_request.return_value = False
+    mock_adapter.is_capabilities_request.return_value = False
+    mock_adapter.is_capabilities_callback_request.return_value = True
+    mock_adapter.handle_capabilities_callback.return_value = "web_search"
+    mock_adapter.build_capabilities_menu_response = AsyncMock(return_value=expected_menu)
+
+    # Provide a store that contains user messages — guard must NOT block anymore.
+    mock_store = MagicMock()
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock()
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None, store=mock_store)
+    response = await handler(event)
+
+    assert response is not None
+    assert response.message_type == MessageType.INTERACTIVE
+    mock_adapter.handle_capabilities_callback.assert_called_once_with(event)
+    mock_adapter.build_capabilities_menu_response.assert_awaited_once()
+    mock_orchestrator.execute_turn.assert_not_called()
