@@ -12,7 +12,7 @@ tools:
     enabled: true
   - tool_id: shell_execute_readonly
     enabled: true
-  - tool_id: web_search
+  - tool_id: tavily_search
     enabled: true
   - tool_id: write_markdown_file
     enabled: true

@@ -155,11 +155,11 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
                 error=str(exc),
             )
             continue
-        if tool_id == "web_search":
+        if tool_id == "tavily_search":
             tool_instance = resolved() if callable(resolved) else None
             if tool_instance is None:
                 logger.info(
-                    "provider.tools.web_search_skipped",
+                    "provider.tools.tavily_search_skipped",
                     reason="TAVILY_API_KEY not set",
                     hint="Set TAVILY_API_KEY to enable web search",
                 )

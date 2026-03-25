@@ -64,7 +64,7 @@ tools:
       shell_max_output_chars: 8000
       command_allowlist: []
 
-  - tool_id: web_search
+  - tool_id: tavily_search
     entrypoint: assistant.agent.tools.tavily_search:get_tavily_search_tool
     enabled: true
 
