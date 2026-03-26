@@ -1,10 +1,33 @@
 # MCP servers configuration
 # Environment override prefix: ASSISTANT_MCP_
+#
+# Each server entry maps to tool capabilities via plugins/mcp/<server_id>/tool_map.yaml.
+# Enabled tools must also be listed in capabilities.yaml as cap.mcp.<server_id>.<tool_name>.
+#
+# Supported transports: sse (default), stdio, streamable-http
+#   - sse:              url points to the SSE endpoint (e.g. http://localhost:9222/sse)
+#   - stdio:            command + args to spawn the server process
+#   - streamable-http:  url points to the HTTP endpoint (e.g. http://localhost:8080/mcp)
 
 servers: []
-# Example server entry:
+# Example server entries:
+#
 # - id: chrome_devtools
-#   url: ws://localhost:9222
+#   url: http://localhost:9222/sse
+#   transport: sse          # optional, defaults to "sse"
+#   enabled: true
+#   tool_policy: deny_by_default
+#
+# - id: filesystem
+#   transport: stdio
+#   command: npx
+#   args: ["-y", "@anthropic/mcp-server-filesystem", "/tmp"]
+#   enabled: true
+#   tool_policy: deny_by_default
+#
+# - id: remote_api
+#   url: https://api.example.com/mcp
+#   transport: streamable-http
 #   enabled: true
 #   tool_policy: deny_by_default
 

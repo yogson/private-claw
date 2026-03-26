@@ -129,7 +129,7 @@ def test_mcp_bridge_get_tools_returns_tools_when_server_enabled(
     bridge = McpBridge(config)
     tools = bridge.get_tools_for_capability_ids({"cap.mcp.chrome_devtools.browser_navigate"})
     assert len(tools) == 1
-    assert tools[0].name == "cap.mcp.chrome_devtools.browser_navigate"
+    assert tools[0].name == "cap_mcp_chrome_devtools_browser_navigate"
     assert "Nav" in (tools[0].description or "")
 
 

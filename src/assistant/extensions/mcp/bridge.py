@@ -7,18 +7,31 @@ MCP bridge: maps enabled MCP tools to Pydantic AI tools with risk-class policy.
 from typing import Any
 
 import structlog
+from pydantic import create_model
+from pydantic.fields import FieldInfo
 from pydantic_ai import RunContext, Tool
 
 from assistant.agent.deps import TurnDeps
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.mcp.client import call_mcp_tool
+from assistant.extensions.mcp.confirmation import check_confirmation
 from assistant.extensions.mcp.loader import (
     load_tool_mappings,
 )
 from assistant.extensions.mcp.models import RiskClass
 
 logger = structlog.get_logger(__name__)
+
+# JSON Schema type → Python type mapping for input_schema forwarding
+_JSON_TYPE_MAP: dict[str, type] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
 
 
 def _config_dir(config: RuntimeConfig) -> str | None:
@@ -27,10 +40,17 @@ def _config_dir(config: RuntimeConfig) -> str | None:
     return str(resolve_config_dir())
 
 
-def _get_server_url(config: RuntimeConfig, server_id: str) -> str | None:
+def _get_server_connection(config: RuntimeConfig, server_id: str) -> dict[str, Any] | None:
+    """Return connection details for an enabled server, or None."""
     for srv in config.mcp_servers.servers:
         if srv.id == server_id and srv.enabled:
-            return srv.url
+            return {
+                "url": srv.url,
+                "transport": srv.transport,
+                "command": srv.command,
+                "args": srv.args,
+                "env": srv.env or None,
+            }
     return None
 
 
@@ -42,6 +62,34 @@ def _effective_tool_policy(config: RuntimeConfig, server_id: str) -> str:
     return config.mcp_servers.defaults.tool_policy
 
 
+def _build_input_model(capability_id: str, input_schema: dict[str, Any] | None) -> type | None:
+    """Build a Pydantic model from JSON Schema so the LLM gets parameter descriptions.
+
+    Returns None if no usable schema is provided (falls back to generic dict).
+    """
+    if not input_schema:
+        return None
+    properties = input_schema.get("properties")
+    if not properties or not isinstance(properties, dict):
+        return None
+
+    required = set(input_schema.get("required", []))
+    fields: dict[str, Any] = {}
+    for name, prop in properties.items():
+        json_type = prop.get("type", "string")
+        py_type = _JSON_TYPE_MAP.get(json_type, Any)
+        description = prop.get("description", "")
+        default = ... if name in required else prop.get("default")
+        fields[name] = (py_type, FieldInfo(default=default, description=description))
+
+    if not fields:
+        return None
+
+    # Sanitise capability_id into a valid Python class name
+    model_name = capability_id.replace(".", "_").replace("-", "_") + "_Input"
+    return create_model(model_name, **fields)  # type: ignore[no-any-return]
+
+
 def _build_mcp_tool(
     capability_id: str,
     server_id: str,
@@ -49,20 +97,82 @@ def _build_mcp_tool(
     summary: str,
     risk_class: RiskClass,
     requires_confirmation: bool,
-    url: str,
+    input_schema: dict[str, Any] | None,
+    connection: dict[str, Any],
     connect_timeout: float,
     call_timeout: float,
 ) -> Tool[TurnDeps]:
     """Build a Pydantic AI Tool that invokes MCP."""
 
+    url = connection["url"]
+    transport = connection.get("transport", "sse")
+    command = connection.get("command")
+    args = connection.get("args")
+    env = connection.get("env")
+
+    input_model = _build_input_model(capability_id, input_schema)
+
+    if input_model is not None:
+
+        async def _invoke_typed(
+            ctx: RunContext[TurnDeps],
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            if requires_confirmation:
+                await check_confirmation(ctx, capability_id, server_id, tool_name, kwargs)
+            result = await call_mcp_tool(
+                url,
+                tool_name,
+                kwargs or {},
+                transport=transport,
+                command=command,
+                args=args,
+                env=env,
+                connect_timeout=connect_timeout,
+                call_timeout=call_timeout,
+            )
+            logger.info(
+                "mcp.tool_invoked",
+                capability_id=capability_id,
+                mcp_server=server_id,
+                mcp_tool=tool_name,
+                risk_class=risk_class.value,
+                status=result.get("status", "unknown"),
+            )
+            return result
+
+        # Apply the generated model's annotations so PydanticAI sees typed params
+        _invoke_typed.__annotations__ = {
+            "ctx": RunContext[TurnDeps],
+            "return": dict[str, Any],
+            **{k: v for k, v in input_model.__annotations__.items()},
+        }
+
+        desc = summary or f"MCP tool {tool_name} from server {server_id}."
+        if requires_confirmation or risk_class != RiskClass.READONLY:
+            desc += f" [Risk: {risk_class.value}; requires_confirmation={requires_confirmation}]"
+        safe_name = capability_id.replace(".", "_")
+        return Tool(
+            _invoke_typed,
+            name=safe_name,
+            description=desc,
+        )
+
+    # Fallback: generic dict arguments (no input_schema provided)
     async def _invoke(
         ctx: RunContext[TurnDeps],
         arguments: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if requires_confirmation:
+            await check_confirmation(ctx, capability_id, server_id, tool_name, arguments)
         result = await call_mcp_tool(
             url,
             tool_name,
             arguments or {},
+            transport=transport,
+            command=command,
+            args=args,
+            env=env,
             connect_timeout=connect_timeout,
             call_timeout=call_timeout,
         )
@@ -79,9 +189,10 @@ def _build_mcp_tool(
     desc = summary or f"MCP tool {tool_name} from server {server_id}."
     if requires_confirmation or risk_class != RiskClass.READONLY:
         desc += f" [Risk: {risk_class.value}; requires_confirmation={requires_confirmation}]"
+    safe_name = capability_id.replace(".", "_")
     return Tool(
         _invoke,
-        name=capability_id,
+        name=safe_name,
         description=desc,
     )
 
@@ -122,12 +233,12 @@ class McpBridge:
                     reason="tool not in allowlist",
                 )
                 continue
-            url = _get_server_url(self._config, server_id)
-            if not url:
+            connection = _get_server_connection(self._config, server_id)
+            if not connection:
                 logger.debug(
                     "mcp.tool_skipped",
                     capability_id=cap_id,
-                    reason="server not enabled or missing url",
+                    reason="server not enabled or not configured",
                 )
                 continue
             policy = _effective_tool_policy(self._config, server_id)
@@ -145,7 +256,8 @@ class McpBridge:
                 summary=mapped.summary,
                 risk_class=mapped.risk_class,
                 requires_confirmation=mapped.requires_confirmation,
-                url=url,
+                input_schema=mapped.input_schema,
+                connection=connection,
                 connect_timeout=connect_timeout,
                 call_timeout=call_timeout,
             )

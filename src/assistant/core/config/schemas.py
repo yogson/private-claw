@@ -190,12 +190,33 @@ class CapabilitiesPolicyConfig(BaseModel):
 
 
 class McpServerEntry(BaseModel):
-    """Single MCP server entry."""
+    """Single MCP server entry.
+
+    Supports three transports:
+    - sse (default): url points to the SSE endpoint.
+    - stdio: command + args spawn the server process.
+    - streamable-http: url points to the HTTP endpoint.
+    """
 
     id: str
-    url: str
+    url: str = ""
+    transport: str = "sse"
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     tool_policy: str = "deny_by_default"
+
+    @model_validator(mode="after")
+    def validate_transport_fields(self) -> "McpServerEntry":
+        if self.transport in ("sse", "streamable-http"):
+            if not self.url:
+                raise ValueError(
+                    f"url is required for transport={self.transport!r} (server: {self.id})"
+                )
+        elif self.transport == "stdio" and not self.command:
+            raise ValueError(f"command is required for transport='stdio' (server: {self.id})")
+        return self
 
 
 class McpDefaults(BaseModel):
