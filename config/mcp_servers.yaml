@@ -30,6 +30,27 @@ servers: []
 #   transport: streamable-http
 #   enabled: true
 #   tool_policy: deny_by_default
+#
+# Finance MCP (kimnam1/finance-mcp) — two options:
+#
+# Option A: Local clone (stdio transport)
+#   git clone https://github.com/kimnam1/finance-mcp
+#   pip install fastmcp httpx yfinance
+# - id: finance
+#   transport: stdio
+#   command: python3
+#   args: ["/path/to/finance-mcp/server.py"]
+#   enabled: true
+#   tool_policy: deny_by_default
+#   env:
+#     FRED_API_KEY: "your_fred_key"   # optional, free at fred.stlouisfed.org
+#
+# Option B: Apify hosted (no local install required)
+# - id: finance
+#   url: "https://kimnam1--finance-mcp.apify.actor/mcp?token=YOUR_APIFY_TOKEN"
+#   transport: streamable-http
+#   enabled: true
+#   tool_policy: deny_by_default
 
 defaults:
   enabled: false

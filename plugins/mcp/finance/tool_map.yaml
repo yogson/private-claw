@@ -1,7 +1,17 @@
-# MCP tool mapping for finance server (kimnam1-finance-mcp)
+# MCP tool mapping for finance server (kimnam1/finance-mcp)
 # Repository: https://github.com/kimnam1/finance-mcp
 # Capability IDs: cap.mcp.finance.<tool_name>
 # Add to enabled_capabilities in config/capabilities.yaml to activate
+#
+# Setup (two options):
+#   Option A — Local clone (stdio):
+#     git clone https://github.com/kimnam1/finance-mcp
+#     pip install fastmcp httpx yfinance
+#     In mcp_servers.yaml: transport=stdio, command=python3, args=[/path/to/finance-mcp/server.py]
+#
+#   Option B — Apify hosted (streamable-http, no local install):
+#     In mcp_servers.yaml: transport=streamable-http,
+#       url=https://kimnam1--finance-mcp.apify.actor/mcp?token=YOUR_APIFY_TOKEN
 #
 # Note: This is a curated subset of the 119 available tools. Add more as needed.
 # Full tool list: https://lobehub.com/mcp/kimnam1-finance-mcp
