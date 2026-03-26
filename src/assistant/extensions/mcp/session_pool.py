@@ -13,7 +13,7 @@ Usage:
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,6 +75,8 @@ class McpSessionPool:
         self._idle_ttl = idle_ttl
         self._max_sessions = max_sessions
         self._total_sessions = 0
+        self._sweeper_task: asyncio.Task[None] | None = None
+        self._sweeper_interval: float = 60.0
 
     @asynccontextmanager
     async def acquire(
@@ -183,8 +185,48 @@ class McpSessionPool:
             except Exception:
                 logger.debug("mcp.session_pool.close_error", key=entry.key, exc_info=True)
 
+    async def sweep(self) -> int:
+        """Evict all idle sessions that have exceeded idle_ttl. Returns count evicted."""
+        now = time.monotonic()
+        stale: list[_PoolEntry] = []
+        async with self._lock:
+            for key, entries in list(self._pool.items()):
+                fresh = [e for e in entries if e.in_use or (now - e.last_used) < self._idle_ttl]
+                evicted = [e for e in entries if not e.in_use and (now - e.last_used) >= self._idle_ttl]
+                stale.extend(evicted)
+                self._pool[key] = fresh
+                self._total_sessions -= len(evicted)
+        for entry in stale:
+            await self._close_entry(entry)
+        if stale:
+            logger.info("mcp.session_pool.sweep", evicted=len(stale))
+        return len(stale)
+
+    async def start_sweeper(self, interval: float = 60.0) -> None:
+        """Start a background task that sweeps expired sessions every `interval` seconds."""
+        if self._sweeper_task is not None:
+            return
+        self._sweeper_interval = interval
+        self._sweeper_task = asyncio.create_task(self._sweep_loop())
+        logger.info("mcp.session_pool.sweeper_started", interval_seconds=interval, idle_ttl=self._idle_ttl)
+
+    async def stop_sweeper(self) -> None:
+        """Cancel the background sweeper task if running."""
+        if self._sweeper_task is not None:
+            self._sweeper_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._sweeper_task
+            self._sweeper_task = None
+            logger.info("mcp.session_pool.sweeper_stopped")
+
+    async def _sweep_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._sweeper_interval)
+            await self.sweep()
+
     async def close(self) -> None:
-        """Close all pooled sessions. Call on application shutdown."""
+        """Close all pooled sessions and stop the sweeper. Call on application shutdown."""
+        await self.stop_sweeper()
         async with self._lock:
             all_entries = [e for bucket in self._pool.values() for e in bucket]
             self._pool.clear()

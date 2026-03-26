@@ -31,3 +31,41 @@ async def test_pool_close_empty() -> None:
 async def test_pool_initial_state() -> None:
     pool = McpSessionPool(idle_ttl=60, max_sessions=5)
     assert pool.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sweep_empty_pool() -> None:
+    pool = McpSessionPool(idle_ttl=60)
+    evicted = await pool.sweep()
+    assert evicted == 0
+
+
+@pytest.mark.asyncio
+async def test_start_stop_sweeper() -> None:
+    pool = McpSessionPool(idle_ttl=60)
+    assert pool._sweeper_task is None
+    await pool.start_sweeper(interval=3600.0)
+    assert pool._sweeper_task is not None
+    assert not pool._sweeper_task.done()
+    await pool.stop_sweeper()
+    assert pool._sweeper_task is None
+
+
+@pytest.mark.asyncio
+async def test_start_sweeper_idempotent() -> None:
+    """Calling start_sweeper twice does not create a second task."""
+    pool = McpSessionPool(idle_ttl=60)
+    await pool.start_sweeper(interval=3600.0)
+    task1 = pool._sweeper_task
+    await pool.start_sweeper(interval=3600.0)
+    assert pool._sweeper_task is task1
+    await pool.stop_sweeper()
+
+
+@pytest.mark.asyncio
+async def test_close_stops_sweeper() -> None:
+    pool = McpSessionPool(idle_ttl=60)
+    await pool.start_sweeper(interval=3600.0)
+    assert pool._sweeper_task is not None
+    await pool.close()
+    assert pool._sweeper_task is None

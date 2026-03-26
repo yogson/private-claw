@@ -33,6 +33,7 @@ from assistant.channels.telegram.polling import CancellationRegistry, run_pollin
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap
+from assistant.extensions.mcp.bridge import mcp_pool
 from assistant.core.capabilities.loader import load_capability_definitions
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
@@ -872,9 +873,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         )
 
+    await mcp_pool.start_sweeper(interval=60.0)
+
     try:
         yield
     finally:
+        await mcp_pool.close()
         if polling_task is not None:
             polling_stop.set()
             try:
