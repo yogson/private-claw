@@ -6,4 +6,64 @@
 enabled_capabilities:
   - assistant
   - delegation_coding
+  # Finance MCP tools (kimnam1/finance-mcp via stdio)
+  - cap.mcp.finance.get_exchange_rate
+  - cap.mcp.finance.convert_currency
+  - cap.mcp.finance.get_historical_rates
+  - cap.mcp.finance.get_rate_trend
+  - cap.mcp.finance.list_supported_currencies
+  - cap.mcp.finance.get_crypto_price
+  - cap.mcp.finance.get_crypto_market
+  - cap.mcp.finance.get_crypto_historical
+  - cap.mcp.finance.compare_crypto
+  - cap.mcp.finance.get_gdp
+  - cap.mcp.finance.get_inflation
+  - cap.mcp.finance.get_macro_overview
+  - cap.mcp.finance.compare_gdp_growth
+  - cap.mcp.finance.get_interest_rate
+  - cap.mcp.finance.compare_interest_rates
+  - cap.mcp.finance.compare_population
+  - cap.mcp.finance.get_fed_funds_rate
+  - cap.mcp.finance.get_us_cpi
+  - cap.mcp.finance.get_us_pce
+  - cap.mcp.finance.get_us_m2
+  - cap.mcp.finance.get_us_unemployment
+  - cap.mcp.finance.get_commodity_price
+  - cap.mcp.finance.get_commodity_prices
+  - cap.mcp.finance.get_stock_index
+  - cap.mcp.finance.compare_stock_indices
+  - cap.mcp.finance.get_etf_info
+  - cap.mcp.finance.get_index_history
+  - cap.mcp.finance.backtest_buy_hold
+  - cap.mcp.finance.get_asset_correlation
+  - cap.mcp.finance.get_portfolio_volatility
+  - cap.mcp.finance.get_fear_greed_index
+  - cap.mcp.finance.get_dividend_info
+  - cap.mcp.finance.compare_sectors
+  - cap.mcp.finance.get_stock_summary
+  - cap.mcp.finance.get_analyst_ratings
+  - cap.mcp.finance.get_earnings_calendar
+  - cap.mcp.finance.get_batch_earnings
+  - cap.mcp.finance.get_stock_news
+  - cap.mcp.finance.get_market_sentiment
+  - cap.mcp.finance.get_market_breadth
+  - cap.mcp.finance.get_sec_filings
+  - cap.mcp.finance.get_insider_trades
+  - cap.mcp.finance.get_company_facts
+  - cap.mcp.finance.get_institutional_holdings
+  - cap.mcp.finance.get_short_interest
+  - cap.mcp.finance.get_treasury_yield_curve
+  - cap.mcp.finance.get_historical_treasury_yields
+  - cap.mcp.finance.get_options_chain
+  - cap.mcp.finance.get_options_flow
+  - cap.mcp.finance.get_macro_dashboard
+  - cap.mcp.finance.get_earnings_surprise
+  - cap.mcp.finance.get_insider_sentiment
+  - cap.mcp.finance.get_currency_carry
+  - cap.mcp.finance.get_stock_screener
+  - cap.mcp.finance.get_earnings_call_sentiment
+  - cap.mcp.finance.get_economic_surprise_index
+  - cap.mcp.finance.get_sector_momentum
+  - cap.mcp.finance.get_crypto_defi_tvl
+  - cap.mcp.finance.get_economic_calendar
 denied_capabilities: []

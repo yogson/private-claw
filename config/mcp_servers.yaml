@@ -9,7 +9,15 @@
 #   - stdio:            command + args to spawn the server process
 #   - streamable-http:  url points to the HTTP endpoint (e.g. http://localhost:8080/mcp)
 
-servers: []
+servers:
+  - id: finance
+    transport: stdio
+    command: /Users/yogson/PycharmProjects/finance-mcp/.venv/bin/python3
+    args: ["/Users/yogson/PycharmProjects/finance-mcp/server.py"]
+    enabled: true
+    tool_policy: deny_by_default
+    # env:
+    #   FRED_API_KEY: "your_fred_key"   # optional, free at fred.stlouisfed.org
 # Example server entries:
 #
 # - id: chrome_devtools
