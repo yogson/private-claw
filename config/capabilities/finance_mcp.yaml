@@ -1,0 +1,215 @@
+# Finance MCP capability - provides access to financial data via kimnam1/finance-mcp
+# Repository: https://github.com/kimnam1/finance-mcp
+# LobeHub: https://lobehub.com/mcp/kimnam1-finance-mcp
+#
+# This capability enables 59 curated finance tools covering:
+# - Forex exchange rates and currency conversion
+# - Cryptocurrency prices, markets, and DeFi data
+# - Macro economics (GDP, inflation, unemployment)
+# - US Federal Reserve data (requires optional FRED_API_KEY)
+# - Commodities (gold, silver, oil, etc.)
+# - Stock indices, ETFs, and backtesting
+# - Portfolio analytics and volatility metrics
+# - Stock fundamentals, dividends, and analyst ratings
+# - Earnings calendars and news
+# - SEC filings, insider trades, institutional holdings
+# - Treasury yields and options data
+# - Market sentiment and breadth indicators
+#
+# Installation (Option A — local clone, stdio transport):
+#   git clone https://github.com/kimnam1/finance-mcp ~/PycharmProjects/finance-mcp
+#   cd ~/PycharmProjects/finance-mcp && python3 -m venv .venv
+#   .venv/bin/pip install fastmcp httpx yfinance colorama
+#
+# mcp_servers.yaml entry:
+#   - id: finance
+#     transport: stdio
+#     command: /Users/yogson/PycharmProjects/finance-mcp/.venv/bin/python3
+#     args: ["/Users/yogson/PycharmProjects/finance-mcp/server.py"]
+#     enabled: true
+#     tool_policy: deny_by_default
+#     # env:
+#     #   FRED_API_KEY: "your_fred_key"   # optional, free at fred.stlouisfed.org
+#
+# Enable this capability in config.local/capabilities.yaml:
+#   enabled_capabilities:
+#     - finance_mcp
+
+capability_id: finance_mcp
+
+prompt: |
+  You have access to comprehensive financial data tools via the Finance MCP server.
+
+  **Available Data Categories:**
+  - **Forex**: Real-time exchange rates, currency conversion, historical rates
+  - **Crypto**: Prices, market cap rankings, historical OHLCV, DeFi TVL
+  - **Macro Economics**: GDP, inflation, unemployment by country
+  - **US Federal Reserve**: Fed funds rate, CPI, PCE, M2, unemployment
+  - **Commodities**: Gold, silver, oil, copper, natural gas, wheat prices
+  - **Stock Indices**: S&P 500, NASDAQ, Dow Jones, global indices
+  - **ETFs**: Info and historical data for SPY, QQQ, ARKK, GLD, etc.
+  - **Portfolio**: Correlation matrices, volatility, Sharpe ratios, backtesting
+  - **Stock Fundamentals**: P/E, EPS, market cap, dividends, analyst ratings
+  - **Earnings**: Calendar, estimates, surprise history
+  - **SEC Data**: Filings (10-K, 10-Q, 8-K), insider trades, institutional holdings
+  - **Treasury**: Yield curve, historical yields
+  - **Options**: Options chains, put/call ratios, unusual activity
+  - **Sentiment**: Fear & Greed Index, VIX, market breadth
+
+  **Usage Guidelines:**
+  - Use these tools when the user asks about financial markets, investments, or economic data
+  - Combine multiple tools for comprehensive analysis (e.g., stock summary + analyst ratings + news)
+  - For portfolio analysis, gather correlation and volatility data together
+  - All tools are read-only and do not execute any trades
+  - Currency codes follow ISO 4217 (USD, EUR, GBP, JPY, etc.)
+  - Stock tickers use standard symbols (AAPL, MSFT, GOOGL, etc.)
+  - Crypto symbols use Binance convention (BTC, ETH, SOL, etc.)
+
+tools:
+  # Forex Tools
+  - tool_id: cap.mcp.finance.get_exchange_rate
+    enabled: true
+  - tool_id: cap.mcp.finance.convert_currency
+    enabled: true
+  - tool_id: cap.mcp.finance.get_historical_rates
+    enabled: true
+  - tool_id: cap.mcp.finance.get_rate_trend
+    enabled: true
+  - tool_id: cap.mcp.finance.list_supported_currencies
+    enabled: true
+
+  # Crypto Tools
+  - tool_id: cap.mcp.finance.get_crypto_price
+    enabled: true
+  - tool_id: cap.mcp.finance.get_crypto_market
+    enabled: true
+  - tool_id: cap.mcp.finance.get_crypto_historical
+    enabled: true
+  - tool_id: cap.mcp.finance.compare_crypto
+    enabled: true
+
+  # Macro Economics Tools
+  - tool_id: cap.mcp.finance.get_gdp
+    enabled: true
+  - tool_id: cap.mcp.finance.get_inflation
+    enabled: true
+  - tool_id: cap.mcp.finance.get_macro_overview
+    enabled: true
+  - tool_id: cap.mcp.finance.compare_gdp_growth
+    enabled: true
+  - tool_id: cap.mcp.finance.get_interest_rate
+    enabled: true
+  - tool_id: cap.mcp.finance.compare_interest_rates
+    enabled: true
+  - tool_id: cap.mcp.finance.compare_population
+    enabled: true
+
+  # US Federal Reserve Tools
+  - tool_id: cap.mcp.finance.get_fed_funds_rate
+    enabled: true
+  - tool_id: cap.mcp.finance.get_us_cpi
+    enabled: true
+  - tool_id: cap.mcp.finance.get_us_pce
+    enabled: true
+  - tool_id: cap.mcp.finance.get_us_m2
+    enabled: true
+  - tool_id: cap.mcp.finance.get_us_unemployment
+    enabled: true
+
+  # Commodities Tools
+  - tool_id: cap.mcp.finance.get_commodity_price
+    enabled: true
+  - tool_id: cap.mcp.finance.get_commodity_prices
+    enabled: true
+
+  # Stock Indices Tools
+  - tool_id: cap.mcp.finance.get_stock_index
+    enabled: true
+  - tool_id: cap.mcp.finance.compare_stock_indices
+    enabled: true
+
+  # ETFs & Backtesting Tools
+  - tool_id: cap.mcp.finance.get_etf_info
+    enabled: true
+  - tool_id: cap.mcp.finance.get_index_history
+    enabled: true
+  - tool_id: cap.mcp.finance.backtest_buy_hold
+    enabled: true
+
+  # Portfolio Analytics Tools
+  - tool_id: cap.mcp.finance.get_asset_correlation
+    enabled: true
+  - tool_id: cap.mcp.finance.get_portfolio_volatility
+    enabled: true
+  - tool_id: cap.mcp.finance.get_fear_greed_index
+    enabled: true
+
+  # Stock Fundamentals & Analysis Tools
+  - tool_id: cap.mcp.finance.get_dividend_info
+    enabled: true
+  - tool_id: cap.mcp.finance.compare_sectors
+    enabled: true
+  - tool_id: cap.mcp.finance.get_stock_summary
+    enabled: true
+  - tool_id: cap.mcp.finance.get_analyst_ratings
+    enabled: true
+
+  # Earnings Tools
+  - tool_id: cap.mcp.finance.get_earnings_calendar
+    enabled: true
+  - tool_id: cap.mcp.finance.get_batch_earnings
+    enabled: true
+
+  # News & Sentiment Tools
+  - tool_id: cap.mcp.finance.get_stock_news
+    enabled: true
+  - tool_id: cap.mcp.finance.get_market_sentiment
+    enabled: true
+  - tool_id: cap.mcp.finance.get_market_breadth
+    enabled: true
+
+  # SEC & Institutional Tools
+  - tool_id: cap.mcp.finance.get_sec_filings
+    enabled: true
+  - tool_id: cap.mcp.finance.get_insider_trades
+    enabled: true
+  - tool_id: cap.mcp.finance.get_company_facts
+    enabled: true
+  - tool_id: cap.mcp.finance.get_institutional_holdings
+    enabled: true
+  - tool_id: cap.mcp.finance.get_short_interest
+    enabled: true
+
+  # Treasury & Options Tools
+  - tool_id: cap.mcp.finance.get_treasury_yield_curve
+    enabled: true
+  - tool_id: cap.mcp.finance.get_historical_treasury_yields
+    enabled: true
+  - tool_id: cap.mcp.finance.get_options_chain
+    enabled: true
+  - tool_id: cap.mcp.finance.get_options_flow
+    enabled: true
+
+  # Advanced Analysis Tools
+  - tool_id: cap.mcp.finance.get_macro_dashboard
+    enabled: true
+  - tool_id: cap.mcp.finance.get_earnings_surprise
+    enabled: true
+  - tool_id: cap.mcp.finance.get_insider_sentiment
+    enabled: true
+  - tool_id: cap.mcp.finance.get_currency_carry
+    enabled: true
+  - tool_id: cap.mcp.finance.get_stock_screener
+    enabled: true
+  - tool_id: cap.mcp.finance.get_earnings_call_sentiment
+    enabled: true
+  - tool_id: cap.mcp.finance.get_economic_surprise_index
+    enabled: true
+  - tool_id: cap.mcp.finance.get_sector_momentum
+    enabled: true
+
+  # DeFi & Economic Calendar Tools
+  - tool_id: cap.mcp.finance.get_crypto_defi_tvl
+    enabled: true
+  - tool_id: cap.mcp.finance.get_economic_calendar
+    enabled: true
