@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from assistant.core.session.interfaces import SessionMetadataStoreInterface
 from assistant.store.models import (
     IdempotencyRecord,
     LockRecord,
@@ -308,6 +309,11 @@ class StoreFacadeInterface(ABC):
     @abstractmethod
     def runtime(self) -> StoreRuntimeManagerInterface | None:
         """Access runtime management component (if enabled)."""
+
+    @property
+    @abstractmethod
+    def session_metadata(self) -> SessionMetadataStoreInterface | None:
+        """Access session metadata store component (if enabled)."""
 
     @abstractmethod
     async def initialize(self) -> None:
