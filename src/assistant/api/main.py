@@ -33,7 +33,6 @@ from assistant.channels.telegram.polling import CancellationRegistry, run_pollin
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap
-from assistant.extensions.mcp.bridge import mcp_pool
 from assistant.core.capabilities.loader import load_capability_definitions
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
@@ -45,6 +44,7 @@ from assistant.core.session_context import (
     SessionCapabilityContextService,
     SessionModelContextService,
 )
+from assistant.extensions.mcp.bridge import mcp_pool
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logfire import configure_logfire
 from assistant.observability.logging import configure_logging

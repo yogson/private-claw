@@ -30,7 +30,7 @@ class SessionMetadata:
     created_at: datetime
     session_type: SessionType = "regular"
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize metadata to dictionary for persistence."""
         return {
             "session_id": self.session_id,
@@ -61,7 +61,7 @@ class SessionState:
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     turn_count: int = 0
 
-    def to_dict(self) -> dict[str, str | int]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize state to dictionary for persistence."""
         return {
             "status": self.status.value,

@@ -4,7 +4,10 @@ Component ID: CMP_STORE_SESSION_PERSISTENCE
 Filesystem-backed implementation of session metadata storage.
 """
 
+import asyncio
+import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +21,9 @@ logger = structlog.get_logger(__name__)
 
 _STORAGE_VERSION = 1
 
+# Pattern for allowed characters in session IDs: alphanumeric, underscore, colon, hyphen
+_SAFE_SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_:\-]+$")
+
 
 class FilesystemSessionMetadataStore(SessionMetadataStoreInterface):
     """
@@ -30,6 +36,14 @@ class FilesystemSessionMetadataStore(SessionMetadataStoreInterface):
     def __init__(self, storage_dir: Path) -> None:
         self._storage_dir = storage_dir
         ensure_directory(storage_dir)
+        # Per-session locks to prevent lost-update races during concurrent read-modify-write
+        self._session_locks: dict[str, asyncio.Lock] = {}
+
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Get or create a lock for a specific session."""
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
 
     async def save(self, metadata: SessionMetadata, state: SessionState) -> None:
         """Save session metadata and state to persistent storage."""
@@ -54,6 +68,18 @@ class FilesystemSessionMetadataStore(SessionMetadataStoreInterface):
 
         try:
             data = json.loads(path.read_text())
+
+            # Validate storage version for future-proofing schema migrations
+            stored_version = data.get("__version", 1)
+            if stored_version > _STORAGE_VERSION:
+                logger.warning(
+                    "session_metadata.version_mismatch",
+                    session_id=session_id,
+                    stored_version=stored_version,
+                    current_version=_STORAGE_VERSION,
+                )
+                return None
+
             metadata = SessionMetadata.from_dict(data["metadata"])
             state = SessionState.from_dict(data["state"])
             return metadata, state
@@ -66,28 +92,30 @@ class FilesystemSessionMetadataStore(SessionMetadataStoreInterface):
             return None
 
     async def update_state(self, session_id: str, state: SessionState) -> bool:
-        """Update session state."""
+        """Update session state with concurrency protection."""
         path = self._get_path(session_id)
         if not path.exists():
             return False
 
-        try:
-            data = json.loads(path.read_text())
-            data["state"] = state.to_dict()
-            await atomic_write_text(path, json.dumps(data, indent=2))
-            logger.debug(
-                "session_metadata.state_updated",
-                session_id=session_id,
-                status=state.status,
-            )
-            return True
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-            logger.warning(
-                "session_metadata.update_failed",
-                session_id=session_id,
-                error=str(e),
-            )
-            return False
+        # Use per-session lock to prevent lost-update races in read-modify-write
+        async with self._get_session_lock(session_id):
+            try:
+                data = json.loads(path.read_text())
+                data["state"] = state.to_dict()
+                await atomic_write_text(path, json.dumps(data, indent=2))
+                logger.debug(
+                    "session_metadata.state_updated",
+                    session_id=session_id,
+                    status=state.status,
+                )
+                return True
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+                logger.warning(
+                    "session_metadata.update_failed",
+                    session_id=session_id,
+                    error=str(e),
+                )
+                return False
 
     async def delete(self, session_id: str) -> bool:
         """Delete session metadata."""
@@ -185,6 +213,23 @@ class FilesystemSessionMetadataStore(SessionMetadataStoreInterface):
 
     def _get_path(self, session_id: str) -> Path:
         """Get the file path for a session's metadata."""
-        # Sanitize session_id for use in filename
-        safe_id = session_id.replace("/", "_").replace("\\", "_")
+        safe_id = self._sanitize_session_id(session_id)
         return self._storage_dir / f"{safe_id}.meta.json"
+
+    def _sanitize_session_id(self, session_id: str) -> str:
+        """
+        Sanitize session_id for use in filename.
+
+        Only allows [a-zA-Z0-9_:-]. Any session_id containing other characters
+        is hashed to prevent path traversal and filesystem compatibility issues.
+        """
+        if _SAFE_SESSION_ID_PATTERN.match(session_id):
+            return session_id
+        # Hash session IDs with unsafe characters to ensure filesystem safety
+        hashed = hashlib.sha256(session_id.encode()).hexdigest()[:32]
+        logger.debug(
+            "session_metadata.id_sanitized",
+            original_id=session_id,
+            sanitized_id=hashed,
+        )
+        return f"hashed_{hashed}"

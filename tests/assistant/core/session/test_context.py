@@ -175,7 +175,7 @@ class TestSessionContextResourceAccess:
         result = session_context.get_capabilities()
 
         assert result == ["cap1", "cap2"]
-        mock_capability_context.get_capabilities.assert_called_once_with("test-session-abc")
+        mock_capability_context.get_capabilities.assert_called_once_with("telegram:12345")
 
     def test_set_capabilities(
         self, session_context: SessionContext, mock_capability_context: MagicMock
@@ -183,7 +183,7 @@ class TestSessionContextResourceAccess:
         session_context.set_capabilities(["cap1", "cap3"])
 
         mock_capability_context.set_capabilities.assert_called_once_with(
-            "test-session-abc", ["cap1", "cap3"]
+            "telegram:12345", ["cap1", "cap3"]
         )
 
 

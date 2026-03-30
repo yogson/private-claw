@@ -22,6 +22,10 @@ from assistant.core.session.metadata import (
     SessionType,
 )
 
+# TYPE_CHECKING guard: These interfaces are only needed for type hints.
+# Importing them at runtime would create circular dependencies:
+# - session_context.py imports SessionContextFactory from this module
+# - StoreFacadeInterface imports SessionMetadataStoreInterface which imports SessionMetadata
 if TYPE_CHECKING:
     from assistant.core.session_context import (
         ActiveSessionContextInterface,
@@ -125,6 +129,9 @@ class SessionContextFactory:
 
         metadata, state = result
 
+        # Capture previous status before any mutation
+        previous_status = state.status
+
         # Reactivate if suspended
         if state.status == SessionStatus.SUSPENDED:
             state.status = SessionStatus.ACTIVE
@@ -134,7 +141,7 @@ class SessionContextFactory:
             "session_context.resumed",
             session_id=session_id,
             context_id=metadata.context_id,
-            previous_status=state.status,
+            previous_status=previous_status,
         )
 
         return SessionContext(

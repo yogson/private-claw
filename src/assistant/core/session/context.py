@@ -11,8 +11,13 @@ from typing import TYPE_CHECKING
 import structlog
 
 from assistant.core.session.metadata import SessionMetadata, SessionState, SessionStatus
+from assistant.store.interfaces import LockAcquisitionError
 from assistant.store.models import SessionRecord
 
+# TYPE_CHECKING guard: These interfaces are only needed for type hints.
+# Importing them at runtime would create circular dependencies:
+# - session_context.py imports SessionContext from this module
+# - StoreFacadeInterface imports SessionMetadataStoreInterface which imports SessionMetadata
 if TYPE_CHECKING:
     from assistant.core.session_context import (
         SessionCapabilityContextInterface,
@@ -53,6 +58,9 @@ class SessionContext:
         self._capability_context = capability_context
         self._lock_acquired = False
         self._lock_owner: str = ""
+
+    def __repr__(self) -> str:
+        return f"SessionContext(session_id={self.session_id!r}, status={self._state.status})"
 
     @property
     def session_id(self) -> str:
@@ -109,15 +117,15 @@ class SessionContext:
 
     def get_capabilities(self) -> list[str] | None:
         """Get capability overrides for this session's context."""
-        return self._capability_context.get_capabilities(self.session_id)
+        return self._capability_context.get_capabilities(self.context_id)
 
     def set_capabilities(self, capabilities: list[str]) -> None:
         """Set capability overrides for this session's context."""
-        self._capability_context.set_capabilities(self.session_id, capabilities)
+        self._capability_context.set_capabilities(self.context_id, capabilities)
 
     def clear_capabilities(self) -> None:
         """Clear capability overrides for this session's context."""
-        self._capability_context.clear_capabilities(self.session_id)
+        self._capability_context.clear_capabilities(self.context_id)
 
     # --- Persistence ---
 
@@ -149,8 +157,6 @@ class SessionContext:
             self._lock_owner,
         )
         if lock_record is None:
-            from assistant.store.interfaces import LockAcquisitionError
-
             raise LockAcquisitionError(f"Failed to acquire lock: {lock_key}")
 
         self._lock_acquired = True
@@ -169,7 +175,15 @@ class SessionContext:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        """Called on context exit - release resources."""
+        """
+        Called on context exit - release resources.
+
+        WARNING: State changes made during the session are NOT automatically persisted.
+        The caller is responsible for persisting state via
+        `SessionContextFactory.persist_state(ctx)` if persistence is required.
+        This is by design to allow batch operations and explicit control over
+        persistence timing.
+        """
         if self._lock_acquired:
             await self._store.locks.release(
                 f"session:{self.session_id}",
