@@ -462,6 +462,18 @@ def mock_pydantic_adapter() -> MagicMock:
     return adapter
 
 
+@pytest.fixture
+def mock_session_factory() -> MagicMock:
+    factory = MagicMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_ctx.increment_turn_count = MagicMock()
+    factory.resume = AsyncMock(return_value=mock_ctx)
+    factory.persist_state = AsyncMock(return_value=True)
+    return factory
+
+
 class TestOrchestratorExecuteTurn:
     @pytest.mark.asyncio
     async def test_duplicate_returns_none(
@@ -469,6 +481,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_idempotency.check_and_register = AsyncMock(return_value=(True, MagicMock()))
         orch = Orchestrator(
@@ -476,6 +489,7 @@ class TestOrchestratorExecuteTurn:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event()
         result = await orch.execute_turn(event)
@@ -488,12 +502,14 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         orch = Orchestrator(
             store=mock_store,
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event()
         result = await orch.execute_turn(event)
@@ -510,6 +526,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -518,6 +535,7 @@ class TestOrchestratorExecuteTurn:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text="What is 2+2?")
         result = await orch.execute_turn(event)
@@ -534,6 +552,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
         retrieval_service = MagicMock()
@@ -565,6 +584,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             memory_retrieval=retrieval_service,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text="Do you know my name?")
         await orch.execute_turn(event)
@@ -586,6 +606,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         long_body = "x" * (MEMORY_SEARCH_MATCH_BODY_MAX_CHARS + 50)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -618,6 +639,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             memory_retrieval=retrieval_service,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         await orch.execute_turn(_minimal_event(text="q"))
         deps = mock_pydantic_adapter.run_turn.call_args.kwargs["deps"]
@@ -632,6 +654,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         cfg = _runtime_config()
         cfg.model.prompt_trace_enabled = True
@@ -641,6 +664,7 @@ class TestOrchestratorExecuteTurn:
             config=cfg,
             idempotency=mock_idempotency,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         await orch.execute_turn(_minimal_event(text="trace me"))
         initial_records = mock_store.sessions.append.call_args_list[0][0][0]
@@ -656,6 +680,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         orch = Orchestrator(
@@ -663,6 +688,7 @@ class TestOrchestratorExecuteTurn:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(event_id="ev-99", text="Hi")
         await orch.execute_turn(event)
@@ -683,6 +709,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -691,6 +718,7 @@ class TestOrchestratorExecuteTurn:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text="check this!")
         event = event.model_copy(
@@ -729,6 +757,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -747,6 +776,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text="check this!")
         event = event.model_copy(
@@ -777,6 +807,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -795,6 +826,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text=None)
         event = event.model_copy(
@@ -822,6 +854,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -840,6 +873,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text="Check this out!")
         event = event.model_copy(
@@ -871,6 +905,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.session_exists = AsyncMock(return_value=True)
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
@@ -889,6 +924,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             attachment_downloader=mock_downloader,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         event = _minimal_event(text="Please review this")
         event = event.model_copy(
@@ -922,6 +958,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
         mock_pydantic_adapter.run_turn = AsyncMock(
@@ -980,6 +1017,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             memory_writer=memory_writer,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
 
         event = _minimal_event(text="Please remember I prefer concise replies.")
@@ -1008,6 +1046,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_pydantic_adapter.run_turn = AsyncMock(
             return_value=(
@@ -1056,6 +1095,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             memory_writer=memory_writer,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
 
         result = await orch.execute_turn(_minimal_event(text="remember this"))
@@ -1078,6 +1118,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_pydantic_adapter.run_turn = AsyncMock(
             return_value=('{"memory_update_intents":[{"intent_id":"x"}]}', [], None)
@@ -1089,6 +1130,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             memory_writer=memory_writer,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
         result = await orch.execute_turn(_minimal_event(text="remember this"))
         assert result is not None and result.text == '{"memory_update_intents":[{"intent_id":"x"}]}'
@@ -1100,6 +1142,7 @@ class TestOrchestratorExecuteTurn:
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
         mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("persist failed"))
@@ -1150,6 +1193,7 @@ class TestOrchestratorExecuteTurn:
             idempotency=mock_idempotency,
             memory_writer=memory_writer,
             pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
         )
 
         with pytest.raises(RuntimeError, match="persist failed"):
@@ -1184,11 +1228,19 @@ class TestDetectToolMismatch:
         store = MagicMock()
         idempotency = MagicMock()
         adapter = MagicMock(spec=PydanticAITurnAdapter)
+        factory = MagicMock()
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_ctx.increment_turn_count = MagicMock()
+        factory.resume = AsyncMock(return_value=mock_ctx)
+        factory.persist_state = AsyncMock(return_value=True)
         return Orchestrator(
             store=store,
             config=_runtime_config(),
             idempotency=idempotency,
             pydantic_ai_adapter=adapter,
+            session_factory=factory,
         )
 
     def test_returns_none_when_no_records(self) -> None:
@@ -1276,6 +1328,7 @@ class TestUnexpectedModelBehaviorHandling:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         adapter = MagicMock(spec=PydanticAITurnAdapter)
         adapter.run_turn = AsyncMock(
@@ -1286,6 +1339,7 @@ class TestUnexpectedModelBehaviorHandling:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
         )
         with pytest.raises(UnexpectedModelBehavior):
             await orch.execute_turn(_minimal_event(text="do something"))
@@ -1295,6 +1349,7 @@ class TestUnexpectedModelBehaviorHandling:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         """A TURN_FAILED record must be appended to the session store."""
         adapter = MagicMock(spec=PydanticAITurnAdapter)
@@ -1306,6 +1361,7 @@ class TestUnexpectedModelBehaviorHandling:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
         )
         with pytest.raises(UnexpectedModelBehavior):
             await orch.execute_turn(_minimal_event(text="do something"))
@@ -1334,6 +1390,7 @@ class TestModelHTTPErrorHandling:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         adapter = MagicMock(spec=PydanticAITurnAdapter)
         adapter.run_turn = AsyncMock(side_effect=self._make_error(403))
@@ -1342,6 +1399,7 @@ class TestModelHTTPErrorHandling:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
         )
         with pytest.raises(ModelHTTPError):
             await orch.execute_turn(_minimal_event(text="do something"))
@@ -1351,6 +1409,7 @@ class TestModelHTTPErrorHandling:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         """A TURN_TERMINAL record must be written even when the API returns 403."""
         adapter = MagicMock(spec=PydanticAITurnAdapter)
@@ -1360,6 +1419,7 @@ class TestModelHTTPErrorHandling:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
         )
         with pytest.raises(ModelHTTPError):
             await orch.execute_turn(_minimal_event(text="do something"))
@@ -1376,6 +1436,7 @@ class TestModelHTTPErrorHandling:
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
     ) -> None:
         """If persistence itself fails, the original ModelHTTPError is still re-raised."""
         adapter = MagicMock(spec=PydanticAITurnAdapter)
@@ -1386,6 +1447,7 @@ class TestModelHTTPErrorHandling:
             config=_runtime_config(),
             idempotency=mock_idempotency,
             pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
         )
         with pytest.raises(ModelHTTPError) as exc_info:
             await orch.execute_turn(_minimal_event(text="do something"))
@@ -1452,13 +1514,13 @@ class TestOrchestratorWithSessionFactory:
         mock_factory.persist_state.assert_called_once_with(mock_ctx)
 
     @pytest.mark.asyncio
-    async def test_execute_turn_falls_back_on_session_not_found(
+    async def test_execute_turn_raises_on_session_not_found(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
     ) -> None:
-        """Pre-migration sessions (no metadata) fall back to legacy lock path."""
+        """If the session metadata is missing, SessionNotFoundError propagates."""
         from assistant.core.session.interfaces import SessionNotFoundError
 
         mock_factory = MagicMock()
@@ -1472,30 +1534,5 @@ class TestOrchestratorWithSessionFactory:
             session_factory=mock_factory,
         )
         event = _minimal_event()
-        result = await orch.execute_turn(event)
-
-        assert result is not None
-        assert result.text == "Model response"
-        # Legacy lock path was used
-        mock_store.locks.lock.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_execute_turn_without_factory_uses_legacy(
-        self,
-        mock_store: MagicMock,
-        mock_idempotency: MagicMock,
-        mock_pydantic_adapter: MagicMock,
-    ) -> None:
-        """Without factory, existing lock-based behavior is unchanged."""
-        orch = Orchestrator(
-            store=mock_store,
-            config=_runtime_config(),
-            idempotency=mock_idempotency,
-            pydantic_ai_adapter=mock_pydantic_adapter,
-        )
-        event = _minimal_event()
-        result = await orch.execute_turn(event)
-
-        assert result is not None
-        assert result.text == "Model response"
-        mock_store.locks.lock.assert_called_once()
+        with pytest.raises(SessionNotFoundError):
+            await orch.execute_turn(event)

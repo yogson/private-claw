@@ -87,11 +87,7 @@ class SessionContextFactory:
             created_at=now,
             session_type=session_type,
         )
-        state = SessionState(
-            status=SessionStatus.ACTIVE,
-            last_activity_at=now,
-            turn_count=0,
-        )
+        state = SessionState()
 
         # Persist metadata
         await self._metadata_store.save(metadata, state)
