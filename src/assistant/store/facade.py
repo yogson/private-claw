@@ -9,9 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from assistant.core.session.interfaces import SessionMetadataStoreInterface
 from assistant.store.filesystem.atomic import atomic_write_text, ensure_directory
 from assistant.store.filesystem.idempotency import FilesystemIdempotencyLedger
 from assistant.store.filesystem.lock import FilesystemLockCoordinator
+from assistant.store.filesystem.metadata import FilesystemSessionMetadataStore
 from assistant.store.filesystem.session import FilesystemSessionStore
 from assistant.store.filesystem.task import FilesystemTaskStore
 from assistant.store.interfaces import (
@@ -48,6 +50,7 @@ class StoreFacade(StoreFacadeInterface):
         idempotency_ttl_seconds: int = 86400,
         enable_runtime_manager: bool = True,
         cleanup_interval_seconds: int = 300,
+        enable_session_metadata: bool = True,
     ) -> None:
         self._data_root = data_root
         self._runtime_dir = data_root / "runtime"
@@ -57,6 +60,7 @@ class StoreFacade(StoreFacadeInterface):
         self._locks_dir = self._runtime_dir / "locks"
         self._idempotency_dir = self._runtime_dir / "idempotency"
         self._recovery_dir = self._runtime_dir / "recovery"
+        self._metadata_dir = self._runtime_dir / "session_metadata"
 
         self._sessions = FilesystemSessionStore(self._sessions_dir)
         self._tasks = FilesystemTaskStore(self._tasks_dir)
@@ -64,6 +68,10 @@ class StoreFacade(StoreFacadeInterface):
         self._idempotency = FilesystemIdempotencyLedger(
             self._idempotency_dir, idempotency_ttl_seconds
         )
+
+        self._session_metadata: FilesystemSessionMetadataStore | None = None
+        if enable_session_metadata:
+            self._session_metadata = FilesystemSessionMetadataStore(self._metadata_dir)
 
         self._runtime_manager: StoreRuntimeManager | None = None
         if enable_runtime_manager:
@@ -93,6 +101,11 @@ class StoreFacade(StoreFacadeInterface):
         """Access runtime management component (if enabled)."""
         return self._runtime_manager
 
+    @property
+    def session_metadata(self) -> SessionMetadataStoreInterface | None:
+        """Access session metadata store component (if enabled)."""
+        return self._session_metadata
+
     async def initialize(self) -> None:
         """Initialize store and run startup recovery scan."""
         if self._initialized:
@@ -104,6 +117,7 @@ class StoreFacade(StoreFacadeInterface):
         ensure_directory(self._locks_dir)
         ensure_directory(self._idempotency_dir)
         ensure_directory(self._recovery_dir)
+        ensure_directory(self._metadata_dir)
 
         self._last_recovery = await self.run_recovery_scan()
 

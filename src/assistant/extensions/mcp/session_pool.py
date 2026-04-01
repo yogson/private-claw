@@ -192,7 +192,9 @@ class McpSessionPool:
         async with self._lock:
             for key, entries in list(self._pool.items()):
                 fresh = [e for e in entries if e.in_use or (now - e.last_used) < self._idle_ttl]
-                evicted = [e for e in entries if not e.in_use and (now - e.last_used) >= self._idle_ttl]
+                evicted = [
+                    e for e in entries if not e.in_use and (now - e.last_used) >= self._idle_ttl
+                ]
                 stale.extend(evicted)
                 self._pool[key] = fresh
                 self._total_sessions -= len(evicted)
@@ -208,7 +210,9 @@ class McpSessionPool:
             return
         self._sweeper_interval = interval
         self._sweeper_task = asyncio.create_task(self._sweep_loop())
-        logger.info("mcp.session_pool.sweeper_started", interval_seconds=interval, idle_ttl=self._idle_ttl)
+        logger.info(
+            "mcp.session_pool.sweeper_started", interval_seconds=interval, idle_ttl=self._idle_ttl
+        )
 
     async def stop_sweeper(self) -> None:
         """Cancel the background sweeper task if running."""
