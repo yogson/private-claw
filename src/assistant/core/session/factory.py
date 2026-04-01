@@ -62,7 +62,7 @@ class SessionContextFactory:
     async def create(
         self,
         context_id: str,
-        session_type: SessionType = "regular",
+        session_type: SessionType = SessionType.REGULAR,
     ) -> SessionContext:
         """
         Create a new session.
@@ -155,7 +155,7 @@ class SessionContextFactory:
     async def get_or_create(
         self,
         context_id: str,
-        session_type: SessionType = "regular",
+        session_type: SessionType = SessionType.REGULAR,
     ) -> SessionContext:
         """
         Get active session or create new one.

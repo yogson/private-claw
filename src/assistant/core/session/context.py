@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from assistant.core.session.metadata import SessionMetadata, SessionState, SessionStatus
+from assistant.core.session.metadata import SessionMetadata, SessionState, SessionStatus, SessionType
 from assistant.store.interfaces import LockAcquisitionError
 from assistant.store.models import SessionRecord
 
@@ -85,7 +85,7 @@ class SessionContext:
     @property
     def is_long_running(self) -> bool:
         """True if this is a long-running session."""
-        return self._metadata.session_type == "long_running"
+        return self._metadata.session_type == SessionType.LONG_RUNNING
 
     @property
     def is_active(self) -> bool:

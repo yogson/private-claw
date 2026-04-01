@@ -11,6 +11,7 @@ from assistant.core.session.metadata import (
     SessionMetadata,
     SessionState,
     SessionStatus,
+    SessionType,
 )
 
 
@@ -99,10 +100,10 @@ class TestSessionContextFactoryCreate:
         factory: SessionContextFactory,
         mock_metadata_store: MagicMock,
     ) -> None:
-        ctx = await factory.create("telegram:12345", session_type="long_running")
+        ctx = await factory.create("telegram:12345", session_type=SessionType.LONG_RUNNING)
 
         assert ctx.is_long_running is True
-        assert ctx.metadata.session_type == "long_running"
+        assert ctx.metadata.session_type == SessionType.LONG_RUNNING
 
     @pytest.mark.asyncio
     async def test_create_generates_unique_session_id(
@@ -139,7 +140,7 @@ class TestSessionContextFactoryResume:
             session_id="existing-session",
             context_id="telegram:999",
             created_at=now,
-            session_type="regular",
+            session_type=SessionType.REGULAR,
         )
         state = SessionState(
             status=SessionStatus.SUSPENDED,

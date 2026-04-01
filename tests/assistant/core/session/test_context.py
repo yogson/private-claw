@@ -10,6 +10,7 @@ from assistant.core.session.metadata import (
     SessionMetadata,
     SessionState,
     SessionStatus,
+    SessionType,
 )
 from assistant.store.models import SessionRecord, SessionRecordType
 
@@ -54,7 +55,7 @@ def metadata() -> SessionMetadata:
         session_id="test-session-abc",
         context_id="telegram:12345",
         created_at=datetime.now(UTC),
-        session_type="regular",
+        session_type=SessionType.REGULAR,
     )
 
 
@@ -115,7 +116,7 @@ class TestSessionContextProperties:
             session_id="lrs-session",
             context_id="telegram:999",
             created_at=datetime.now(UTC),
-            session_type="long_running",
+            session_type=SessionType.LONG_RUNNING,
         )
         ctx = SessionContext(
             metadata=lrs_metadata,

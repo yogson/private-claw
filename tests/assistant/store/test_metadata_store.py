@@ -9,6 +9,7 @@ from assistant.core.session.metadata import (
     SessionMetadata,
     SessionState,
     SessionStatus,
+    SessionType,
 )
 from assistant.store.filesystem.metadata import FilesystemSessionMetadataStore
 
@@ -35,7 +36,7 @@ class TestFilesystemSessionMetadataStoreSaveLoad:
             session_id="test-session-123",
             context_id="telegram:12345",
             created_at=now,
-            session_type="regular",
+            session_type=SessionType.REGULAR,
         )
         state = SessionState(
             status=SessionStatus.ACTIVE,

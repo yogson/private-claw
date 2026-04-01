@@ -6,6 +6,7 @@ from assistant.core.session.metadata import (
     SessionMetadata,
     SessionState,
     SessionStatus,
+    SessionType,
 )
 
 
@@ -18,13 +19,13 @@ class TestSessionMetadata:
             session_id="test-session-123",
             context_id="telegram:12345",
             created_at=now,
-            session_type="regular",
+            session_type=SessionType.REGULAR,
         )
 
         assert metadata.session_id == "test-session-123"
         assert metadata.context_id == "telegram:12345"
         assert metadata.created_at == now
-        assert metadata.session_type == "regular"
+        assert metadata.session_type == SessionType.REGULAR
 
     def test_metadata_to_dict(self) -> None:
         now = datetime.now(UTC)
@@ -32,7 +33,7 @@ class TestSessionMetadata:
             session_id="test-session",
             context_id="telegram:999",
             created_at=now,
-            session_type="long_running",
+            session_type=SessionType.LONG_RUNNING,
         )
 
         data = metadata.to_dict()
@@ -56,7 +57,7 @@ class TestSessionMetadata:
         assert metadata.session_id == "restored-session"
         assert metadata.context_id == "telegram:555"
         assert metadata.created_at == now
-        assert metadata.session_type == "regular"
+        assert metadata.session_type == SessionType.REGULAR
 
     def test_metadata_from_dict_default_session_type(self) -> None:
         now = datetime.now(UTC)
@@ -68,7 +69,7 @@ class TestSessionMetadata:
 
         metadata = SessionMetadata.from_dict(data)
 
-        assert metadata.session_type == "regular"
+        assert metadata.session_type == SessionType.REGULAR
 
     def test_metadata_immutable(self) -> None:
         now = datetime.now(UTC)
@@ -164,3 +165,15 @@ class TestSessionStatus:
         assert SessionStatus("active") == SessionStatus.ACTIVE
         assert SessionStatus("suspended") == SessionStatus.SUSPENDED
         assert SessionStatus("archived") == SessionStatus.ARCHIVED
+
+
+class TestSessionType:
+    """Tests for SessionType enum."""
+
+    def test_type_values(self) -> None:
+        assert SessionType.REGULAR.value == "regular"
+        assert SessionType.LONG_RUNNING.value == "long_running"
+
+    def test_type_from_string(self) -> None:
+        assert SessionType("regular") == SessionType.REGULAR
+        assert SessionType("long_running") == SessionType.LONG_RUNNING

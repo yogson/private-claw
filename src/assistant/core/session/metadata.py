@@ -7,7 +7,7 @@ Session metadata models for unified session lifecycle management.
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 
 class SessionStatus(StrEnum):
@@ -18,7 +18,11 @@ class SessionStatus(StrEnum):
     ARCHIVED = "archived"
 
 
-SessionType = Literal["regular", "long_running"]
+class SessionType(StrEnum):
+    """Type of session."""
+
+    REGULAR = "regular"
+    LONG_RUNNING = "long_running"
 
 
 @dataclass(frozen=True)
@@ -28,7 +32,7 @@ class SessionMetadata:
     session_id: str
     context_id: str  # e.g., "telegram:123456"
     created_at: datetime
-    session_type: SessionType = "regular"
+    session_type: SessionType = SessionType.REGULAR
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize metadata to dictionary for persistence."""
@@ -49,7 +53,7 @@ class SessionMetadata:
             session_id=data["session_id"],
             context_id=data["context_id"],
             created_at=created_at,
-            session_type=data.get("session_type", "regular"),
+            session_type=SessionType(data.get("session_type", "regular")),
         )
 
 
