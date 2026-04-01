@@ -44,6 +44,7 @@ from assistant.core.orchestrator.persistence import (
     persist_turn_outcomes,
     persist_turn_terminal_failed,
 )
+from assistant.core.session.factory import SessionContextFactory
 from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
 from assistant.memory.retrieval.models import RetrievalQuery
 from assistant.memory.store.models import MemoryType
@@ -67,14 +68,11 @@ MEMORY_SEARCH_MATCH_BODY_MAX_CHARS = 12_000
 logger = structlog.get_logger(__name__)
 
 _REPLAY_BUDGET = 50
-_LONG_HISTORY_THRESHOLD = 20
 _SYSTEM_REMINDER = (
     "[System reminder: Follow your delegation instructions. "
     "Delegate all coding tasks (develop, review, test, debug) to sub-agents. "
     "If delegation fails, ask the user what to do next—do not complete the task yourself.]"
 )
-_LOCK_KEY_PREFIX = "session:"
-_LOCK_OWNER_PREFIX = "orchestrator:"
 
 
 class Orchestrator:
@@ -90,6 +88,7 @@ class Orchestrator:
         store: StoreFacadeInterface,
         config: RuntimeConfig,
         idempotency: IngressIdempotencyService,
+        session_factory: SessionContextFactory,
         attachment_downloader: AttachmentDownloaderInterface | None = None,
         memory_writer: MemoryWriterInterface | None = None,
         memory_retrieval: MemoryRetrievalInterface | None = None,
@@ -106,6 +105,7 @@ class Orchestrator:
         self._pydantic_ai_adapter = pydantic_ai_adapter
         self._delegation_coordinator = delegation_coordinator
         self._adapter_cache = adapter_cache
+        self._session_factory = session_factory
         self._session_traces = SessionTraceManager()
 
     async def execute_turn(
@@ -117,7 +117,12 @@ class Orchestrator:
         Execute one turn for the given event.
 
         Returns OrchestratorResult on success, None if duplicate (caller
-        should not send a response). Raises on lock timeout or provider failure.
+        should not send a response). Raises on lock timeout, missing session,
+        or provider failure.
+
+        The turn is executed inside a ``SessionContext`` (acquired via
+        ``session_factory``) which handles lock acquisition/release and
+        tracks turn count.
         """
         source = event.source.value
         key = self._idempotency.build_key(source, event.event_id)
@@ -128,13 +133,13 @@ class Orchestrator:
             logger.info("orchestrator.duplicate_ignored", event_id=event.event_id, key=key)
             return None
 
-        lock_key = f"{_LOCK_KEY_PREFIX}{event.session_id}"
-        owner = f"{_LOCK_OWNER_PREFIX}{event.trace_id}"
+        ctx = await self._session_factory.resume(event.session_id)
         try:
-            async with self._store.locks.lock(
-                lock_key, owner, ttl_seconds=self._config.store.lock_ttl_seconds
-            ):
-                return await self._run_turn(event, tool_call_notifier=tool_call_notifier)
+            async with ctx:
+                result = await self._run_turn(event, tool_call_notifier=tool_call_notifier)
+                ctx.increment_turn_count()
+                await self._session_factory.persist_state(ctx)
+                return result
         except LockAcquisitionError as exc:
             logger.warning(
                 "orchestrator.lock_timeout",
@@ -511,19 +516,6 @@ class Orchestrator:
                     )
                     return OrchestratorResult(text=mismatch_msg)
 
-                if len(messages) > _LONG_HISTORY_THRESHOLD:
-                    reminder = _SYSTEM_REMINDER + "\n\n"
-                    if content_blocks is not None:
-                        user_message = LLMMessage(
-                            role=MessageRole.USER,
-                            content="",
-                            content_blocks=[{"type": "text", "text": reminder}]
-                            + list(content_blocks),
-                        )
-                    else:
-                        user_message = LLMMessage(
-                            role=MessageRole.USER, content=reminder + user_content
-                        )
                 messages.append(user_message)
 
                 return await self._run_turn_pydantic_ai(

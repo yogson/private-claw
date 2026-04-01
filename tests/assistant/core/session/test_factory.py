@@ -125,6 +125,37 @@ class TestSessionContextFactoryCreate:
         assert ctx.state.status == SessionStatus.ACTIVE
         assert ctx.state.turn_count == 0
 
+    @pytest.mark.asyncio
+    async def test_create_with_explicit_session_id(
+        self,
+        factory: SessionContextFactory,
+        mock_metadata_store: MagicMock,
+        mock_active_context: MagicMock,
+    ) -> None:
+        ctx = await factory.create(
+            "telegram:12345", session_id="tg:12345:custom_abc"
+        )
+
+        assert ctx.session_id == "tg:12345:custom_abc"
+        assert ctx.context_id == "telegram:12345"
+        mock_metadata_store.save.assert_called_once()
+        saved_metadata = mock_metadata_store.save.call_args[0][0]
+        assert saved_metadata.session_id == "tg:12345:custom_abc"
+        mock_active_context.set_active_session.assert_called_once_with(
+            "telegram:12345", "tg:12345:custom_abc"
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_explicit_id_overrides_generated(
+        self,
+        factory: SessionContextFactory,
+    ) -> None:
+        ctx1 = await factory.create("telegram:12345", session_id="fixed-id")
+        ctx2 = await factory.create("telegram:12345", session_id="fixed-id")
+
+        assert ctx1.session_id == "fixed-id"
+        assert ctx2.session_id == "fixed-id"
+
 
 class TestSessionContextFactoryResume:
     """Tests for SessionContextFactory.resume()."""

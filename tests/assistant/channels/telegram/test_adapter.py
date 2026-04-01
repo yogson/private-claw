@@ -443,7 +443,8 @@ class TestCapabilityOverrideSessionScoping:
             metadata={"chat_id": self._CHAT_ID},
         )
 
-    def test_start_new_session_preserves_old_session_capability_override(self) -> None:
+    @pytest.mark.asyncio
+    async def test_start_new_session_preserves_old_session_capability_override(self) -> None:
         """start_new_session() must NOT clear the old session's capability override.
 
         Capabilities are per-session-id; creating a new session must not destroy
@@ -453,7 +454,7 @@ class TestCapabilityOverrideSessionScoping:
 
         assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_a", "cap_extra"]
 
-        new_session_id = adapter.start_new_session(self._make_text_event())
+        new_session_id = await adapter.start_new_session(self._make_text_event())
         assert new_session_id is not None
 
         # Old session's capabilities must be preserved
@@ -488,7 +489,8 @@ class TestCapabilityOverrideSessionScoping:
         # Resumed session has no override stored for it
         assert adapter.get_capabilities_override(resumed_session_id) is None
 
-    def test_capability_override_does_not_leak_to_new_session(self) -> None:
+    @pytest.mark.asyncio
+    async def test_capability_override_does_not_leak_to_new_session(self) -> None:
         """Full scenario: override set in session A must not be visible in new session B."""
         adapter = self._make_adapter_with_caps(["cap_a", "cap_b", "cap_extra"])
         assert adapter.get_capabilities_override(self._SESSION_ID) == [
@@ -498,7 +500,7 @@ class TestCapabilityOverrideSessionScoping:
         ]
 
         # User starts a new session
-        new_session_id = adapter.start_new_session(self._make_text_event())
+        new_session_id = await adapter.start_new_session(self._make_text_event())
         assert new_session_id is not None
 
         # New session must have NO override (defaults from config apply)
@@ -647,3 +649,77 @@ class TestCapabilityOverrideResetScoping:
         assert result is False
         # Capability override must NOT have been touched
         assert adapter.get_capabilities_override(self._SESSION_ID) == ["cap_x", "cap_extra"]
+
+
+class TestAdapterWithSessionFactory:
+    """Tests for TelegramAdapter integration with SessionContextFactory."""
+
+    _CHAT_ID = 999
+    _SESSION_ID = "tg:999:existing"
+
+    def _make_event(self, text: str = "/new") -> NormalizedEvent:
+        return NormalizedEvent(
+            event_id="ev-factory-1",
+            event_type=EventType.USER_TEXT_MESSAGE,
+            source=EventSource.TELEGRAM,
+            session_id=self._SESSION_ID,
+            user_id=str(self._CHAT_ID),
+            created_at=datetime.now(UTC),
+            trace_id="trace-factory",
+            text=text,
+            metadata={"chat_id": self._CHAT_ID},
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_new_session_delegates_to_factory(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_ctx = MagicMock()
+        mock_ctx.session_id = "tg:999:factory_abc"
+        mock_factory = MagicMock()
+        mock_factory.create = AsyncMock(return_value=mock_ctx)
+
+        adapter = TelegramAdapter(
+            _make_config(allowlist=[self._CHAT_ID]),
+            session_factory=mock_factory,
+        )
+
+        result = await adapter.start_new_session(self._make_event())
+
+        assert result == "tg:999:factory_abc"
+        mock_factory.create.assert_called_once()
+        call_kwargs = mock_factory.create.call_args
+        assert call_kwargs[0][0] == f"telegram:{self._CHAT_ID}"
+        assert call_kwargs[1]["session_id"].startswith(f"tg:{self._CHAT_ID}:")
+
+    @pytest.mark.asyncio
+    async def test_start_new_session_without_factory_uses_legacy(self) -> None:
+        adapter = TelegramAdapter(
+            _make_config(allowlist=[self._CHAT_ID]),
+        )
+
+        result = await adapter.start_new_session(self._make_event())
+
+        assert result is not None
+        assert result.startswith(f"tg:{self._CHAT_ID}:")
+        assert adapter.get_active_session(self._CHAT_ID) == result
+
+    @pytest.mark.asyncio
+    async def test_start_new_session_factory_invalid_chat(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_factory = MagicMock()
+        mock_factory.create = AsyncMock()
+
+        adapter = TelegramAdapter(
+            _make_config(allowlist=[self._CHAT_ID]),
+            session_factory=mock_factory,
+        )
+
+        event = self._make_event()
+        event = event.model_copy(update={"metadata": {"chat_id": 0}})
+
+        result = await adapter.start_new_session(event)
+
+        assert result is None
+        mock_factory.create.assert_not_called()

@@ -42,6 +42,7 @@ from assistant.channels.telegram.session_resume import SessionResumeService
 from assistant.channels.telegram.task_callbacks import sign_task_callback, verify_task_callback
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.session import SessionContextFactory
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
     ActiveSessionContextService,
@@ -103,9 +104,11 @@ class TelegramAdapter:
         capability_definitions: dict[str, CapabilityDefinition] | None = None,
         default_capabilities: list[str] | None = None,
         capability_context: SessionCapabilityContextInterface | None = None,
+        session_factory: SessionContextFactory | None = None,
     ) -> None:
         self._config = config
         self._session_store = session_store
+        self._session_factory = session_factory
         self._active_session_context = active_session_context or ActiveSessionContextService()
         self._model_context = model_context or SessionModelContextService()
         self._capability_context: SessionCapabilityContextInterface = (
@@ -656,7 +659,7 @@ class TelegramAdapter:
             return None
         return self._model_context.get_model_override(self._build_session_context_id(chat_id))
 
-    def start_new_session(self, event: NormalizedEvent) -> str | None:
+    async def start_new_session(self, event: NormalizedEvent) -> str | None:
         """Create and activate a new session id for the event chat context."""
         try:
             chat_id = int(event.metadata.get("chat_id", 0))
@@ -664,10 +667,20 @@ class TelegramAdapter:
             return None
         if chat_id <= 0:
             return None
+        context_id = self._build_session_context_id(chat_id)
         session_id = f"tg:{chat_id}:{uuid.uuid4().hex[:12]}"
-        self._active_session_context.set_active_session(
-            self._build_session_context_id(chat_id), session_id
-        )
+        if self._session_factory is not None:
+            ctx = await self._session_factory.create(
+                context_id, session_id=session_id
+            )
+            logger.info(
+                "telegram.adapter.session_new.activated",
+                chat_id=chat_id,
+                session_id=ctx.session_id,
+                trace_id=event.trace_id,
+            )
+            return ctx.session_id
+        self._active_session_context.set_active_session(context_id, session_id)
         logger.info(
             "telegram.adapter.session_new.activated",
             chat_id=chat_id,

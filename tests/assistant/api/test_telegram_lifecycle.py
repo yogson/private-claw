@@ -55,9 +55,9 @@ def test_startup_calls_build_transcription_service_with_telegram_config() -> Non
     config = _runtime_config(allowlist=[123456])
     mock_mem0_client = MagicMock()
     with (
-        patch("assistant.api.main.bootstrap", return_value=config),
-        patch("assistant.api.main.build_transcription_service") as mock_factory,
-        patch("assistant.api.main.run_polling", new_callable=AsyncMock) as mock_polling,
+        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.build_transcription_service") as mock_factory,
+        patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock) as mock_polling,
         patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
         patch("assistant.memory.mem0.write.MemoryClient", mock_mem0_client),
         patch("assistant.memory.mem0.retrieval.MemoryClient", mock_mem0_client),
@@ -76,8 +76,8 @@ def test_startup_starts_polling_when_telegram_enabled() -> None:
     config = _runtime_config(allowlist=[123456])
     mock_mem0_client = MagicMock()
     with (
-        patch("assistant.api.main.bootstrap", return_value=config),
-        patch("assistant.api.main.run_polling", new_callable=AsyncMock) as mock_polling,
+        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock) as mock_polling,
         patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
         patch("assistant.memory.mem0.write.MemoryClient", mock_mem0_client),
         patch("assistant.memory.mem0.retrieval.MemoryClient", mock_mem0_client),
@@ -100,8 +100,8 @@ def test_startup_skips_telegram_when_disabled() -> None:
         update={"telegram": config.telegram.model_copy(update={"enabled": False})}
     )
     with (
-        patch("assistant.api.main.bootstrap", return_value=config),
-        patch("assistant.api.main.run_polling", new_callable=AsyncMock) as mock_polling,
+        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock) as mock_polling,
     ):
         from assistant.api.main import app
 
@@ -117,7 +117,7 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     Acceptance: a Telegram text event goes through orchestrator and returns
     model/greeting output, not echo of input. Prevents regression of hello->hello.
     """
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -165,7 +165,7 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
 
 @pytest.mark.asyncio
 async def test_handler_handles_reset_without_orchestrator_call() -> None:
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -204,7 +204,7 @@ async def test_handler_handles_reset_without_orchestrator_call() -> None:
 
 @pytest.mark.asyncio
 async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> None:
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -246,7 +246,7 @@ async def test_handler_token_limit_resets_session_and_notifies() -> None:
     """When ModelHTTPError indicates token limit exceeded, reset session and notify user."""
     from pydantic_ai.exceptions import ModelHTTPError
 
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -311,7 +311,7 @@ async def test_handler_token_limit_notifies_when_reset_unavailable() -> None:
     """When token limit exceeded and reset unavailable, notify user with /reset guidance."""
     from pydantic_ai.exceptions import ModelHTTPError
 
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -368,7 +368,7 @@ async def test_handler_token_limit_notifies_when_reset_unavailable() -> None:
 
 @pytest.mark.asyncio
 async def test_handler_handles_new_session_without_orchestrator_call() -> None:
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -389,7 +389,7 @@ async def test_handler_handles_new_session_without_orchestrator_call() -> None:
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
-    mock_adapter.start_new_session.return_value = "tg:123:abcd1234ef56"
+    mock_adapter.start_new_session = AsyncMock(return_value="tg:123:abcd1234ef56")
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
@@ -411,7 +411,7 @@ async def test_handler_returns_interactive_reply_keyboard_when_pending_ask() -> 
     interactive response with ui_kind=reply_keyboard and combines
     response_text with question.
     """
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
     from assistant.core.orchestrator.models import OrchestratorResult, PendingAskData
 
@@ -485,7 +485,7 @@ async def test_handler_returns_interactive_reply_keyboard_when_pending_ask() -> 
 
 @pytest.mark.asyncio
 async def test_handler_handles_new_session_failure_without_orchestrator_call() -> None:
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -506,7 +506,7 @@ async def test_handler_handles_new_session_failure_without_orchestrator_call() -
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
-    mock_adapter.start_new_session.return_value = None
+    mock_adapter.start_new_session = AsyncMock(return_value=None)
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
@@ -524,7 +524,7 @@ async def test_handler_handles_new_session_failure_without_orchestrator_call() -
 @pytest.mark.asyncio
 async def test_handler_handles_usage_without_orchestrator_call() -> None:
     """Verifies /usage bypasses orchestrator and returns usage stats when service is provided."""
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -582,7 +582,7 @@ async def test_handler_handles_usage_without_orchestrator_call() -> None:
 @pytest.mark.asyncio
 async def test_handler_handles_usage_unavailable_when_no_service() -> None:
     """Verifies /usage returns placeholder when usage service is not configured."""
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -625,7 +625,7 @@ async def test_handler_handles_usage_unavailable_when_no_service() -> None:
 @pytest.mark.asyncio
 async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
     """Invalid/expired ms: callback returns invalid message, does not reach orchestrator."""
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.channels.telegram.models import CallbackQueryMeta
     from assistant.core.events.models import EventSource, EventType
 
@@ -675,7 +675,7 @@ async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
 
 @pytest.mark.asyncio
 async def test_delegation_feedback_handler_triggers_internal_orchestrator_turn() -> None:
-    from assistant.api.main import _build_delegation_feedback_handler
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
     from assistant.core.orchestrator.models import OrchestratorResult
 
     orchestrator = MagicMock()
@@ -712,7 +712,7 @@ async def test_delegation_feedback_handler_triggers_internal_orchestrator_turn()
 
 @pytest.mark.asyncio
 async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram() -> None:
-    from assistant.api.main import _build_delegation_feedback_handler
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
     from assistant.core.orchestrator.models import OrchestratorResult
 
     orchestrator = MagicMock()
@@ -742,7 +742,7 @@ async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram
 
 @pytest.mark.asyncio
 async def test_delegation_feedback_handler_sends_ask_question_when_pending_ask() -> None:
-    from assistant.api.main import _build_delegation_feedback_handler
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
     from assistant.core.orchestrator.models import OrchestratorResult, PendingAskData
 
     pending = PendingAskData(
@@ -798,7 +798,7 @@ async def test_delegation_feedback_handler_sends_ask_question_when_pending_ask()
 @pytest.mark.asyncio
 async def test_notify_system_started_sends_to_known_chats() -> None:
     """_notify_system_started sends 'System started.' to every known Telegram chat."""
-    from assistant.api.main import _notify_system_started
+    from assistant.api.lifespan import _notify_system_started
     from assistant.core.session_context import ActiveSessionContextService
 
     ctx = ActiveSessionContextService()
@@ -821,7 +821,7 @@ async def test_notify_system_started_sends_to_known_chats() -> None:
 @pytest.mark.asyncio
 async def test_notify_system_started_no_sessions_sends_nothing() -> None:
     """_notify_system_started is a no-op when there are no known sessions."""
-    from assistant.api.main import _notify_system_started
+    from assistant.api.lifespan import _notify_system_started
     from assistant.core.session_context import ActiveSessionContextService
 
     ctx = ActiveSessionContextService()
@@ -835,7 +835,7 @@ async def test_notify_system_started_no_sessions_sends_nothing() -> None:
 @pytest.mark.asyncio
 async def test_notify_system_started_skips_non_telegram_contexts() -> None:
     """_notify_system_started ignores context IDs not prefixed with 'telegram:'."""
-    from assistant.api.main import _notify_system_started
+    from assistant.api.lifespan import _notify_system_started
     from assistant.core.session_context import ActiveSessionContextService
 
     ctx = ActiveSessionContextService()
@@ -854,7 +854,7 @@ async def test_notify_system_started_skips_non_telegram_contexts() -> None:
 @pytest.mark.asyncio
 async def test_notify_system_started_continues_after_send_failure() -> None:
     """_notify_system_started swallows send errors and continues to remaining chats."""
-    from assistant.api.main import _notify_system_started
+    from assistant.api.lifespan import _notify_system_started
     from assistant.core.session_context import ActiveSessionContextService
 
     ctx = ActiveSessionContextService()
@@ -879,7 +879,7 @@ async def test_notify_system_started_skips_malformed_context_id() -> None:
     A context ID like 'telegram:not-a-number' must be silently ignored while
     valid entries continue to be notified.
     """
-    from assistant.api.main import _notify_system_started
+    from assistant.api.lifespan import _notify_system_started
     from assistant.core.session_context import ActiveSessionContextService
 
     ctx = ActiveSessionContextService()
@@ -901,7 +901,7 @@ async def test_handler_model_http_error_non_token_limit_returns_friendly_message
     """When ModelHTTPError is NOT a token-limit error (e.g. 403), return a user-friendly message."""
     from pydantic_ai.exceptions import ModelHTTPError
 
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.core.events.models import EventSource, EventType
 
     event = NormalizedEvent(
@@ -953,7 +953,7 @@ async def test_handler_capabilities_request_allowed_mid_session() -> None:
     Regression: /capabilities must return the selection menu even when the session
     already has user messages (mid-session capability switching is allowed after PR #20).
     """
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.channels.telegram.models import MessageType
     from assistant.core.events.models import EventSource, EventType
 
@@ -990,13 +990,10 @@ async def test_handler_capabilities_request_allowed_mid_session() -> None:
     mock_adapter.is_capabilities_request.return_value = True
     mock_adapter.build_capabilities_menu_response = AsyncMock(return_value=expected_menu)
 
-    # Provide a store that contains user messages — guard must NOT block anymore.
-    mock_store = MagicMock()
-
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None, store=mock_store)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None,)
     response = await handler(event)
 
     assert response is not None
@@ -1012,7 +1009,7 @@ async def test_handler_capabilities_callback_allowed_mid_session() -> None:
     menu even when the session already has user messages (mid-session capability
     switching is allowed after PR #20).
     """
-    from assistant.api.main import _build_orchestrator_handler
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
     from assistant.channels.telegram.models import MessageType
     from assistant.core.events.models import EventSource, EventType
 
@@ -1051,13 +1048,10 @@ async def test_handler_capabilities_callback_allowed_mid_session() -> None:
     mock_adapter.handle_capabilities_callback.return_value = "web_search"
     mock_adapter.build_capabilities_menu_response = AsyncMock(return_value=expected_menu)
 
-    # Provide a store that contains user messages — guard must NOT block anymore.
-    mock_store = MagicMock()
-
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None, store=mock_store)
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None,)
     response = await handler(event)
 
     assert response is not None
