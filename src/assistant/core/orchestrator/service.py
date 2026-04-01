@@ -611,7 +611,9 @@ class Orchestrator:
                 and record.turn_id == last_turn_id
             ):
                 tool_name = record.payload.get("tool_name", "")
-                if tool_name and not tool_name.startswith("cap.mcp."):
+                if tool_name and not (
+                    tool_name.startswith("cap.mcp.") or tool_name.startswith("cap_mcp_")
+                ):
                     historical_tools.add(tool_name)
 
         if not historical_tools:

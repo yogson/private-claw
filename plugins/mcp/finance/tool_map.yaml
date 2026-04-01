@@ -335,16 +335,13 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        index:
           type: string
           description: Index or ETF symbol
-        interval:
+        period:
           type: string
-          description: Candle interval
-        limit:
-          type: integer
-          description: Number of data points
-      required: [symbol]
+          description: Period (e.g. 1y, 6mo, 3mo)
+      required: [index]
 
   - tool_name: backtest_buy_hold
     summary: Calculate buy-and-hold returns for stocks, ETFs, or crypto
@@ -359,13 +356,10 @@ tools:
         start_date:
           type: string
           description: Start date (YYYY-MM-DD)
-        end_date:
-          type: string
-          description: End date (YYYY-MM-DD)
-        initial_investment:
+        amount_usd:
           type: number
-          description: Initial investment amount
-      required: [symbol, start_date, end_date]
+          description: Initial investment in USD (default 1000)
+      required: [symbol, start_date]
 
   # ========================================
   # Portfolio Analytics Tools (3)
@@ -412,10 +406,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: compare_sectors
     summary: Compare all 11 S&P 500 sectors ranked by performance
@@ -429,10 +423,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_analyst_ratings
     summary: Get analyst consensus, price target, upgrades/downgrades history
@@ -441,10 +435,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   # ========================================
   # Earnings Tools (2)
@@ -456,7 +450,7 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol (optional for broad calendar)
 
@@ -482,10 +476,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_market_sentiment
     summary: Get VIX, DXY, and 10Y/2Y Treasury yields in one call
@@ -507,13 +501,13 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-        filing_type:
+        form_type:
           type: string
           description: Filing type (10-K, 10-Q, 8-K)
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_insider_trades
     summary: Get Form 4 insider buy/sell filings for any ticker
@@ -522,10 +516,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_company_facts
     summary: Get XBRL financial facts - Revenue, NetIncome, Assets, EPS
@@ -534,10 +528,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_institutional_holdings
     summary: Get top 10 institutional and top 5 mutual fund holders
@@ -546,10 +540,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_short_interest
     summary: Get shares short, days-to-cover, float%, squeeze risk
@@ -558,10 +552,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   # ========================================
   # Treasury & Options Tools (4)
@@ -583,13 +577,13 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-        expiration:
+        expiry:
           type: string
           description: Options expiration date (YYYY-MM-DD)
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_options_flow
     summary: Get put/call ratio, sentiment label, unusual contracts
@@ -598,10 +592,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   # ========================================
   # Advanced Analysis Tools (8)
@@ -618,10 +612,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_insider_sentiment
     summary: Get Form 4 aggregate - net buy/sell, top transactions
@@ -630,10 +624,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_currency_carry
     summary: Get rate differential, spot, carry label, viability
@@ -663,9 +657,9 @@ tools:
         max_pe:
           type: number
           description: Maximum P/E ratio
-        min_yield:
+        min_dividend_yield:
           type: number
-          description: Minimum dividend yield
+          description: Minimum dividend yield (%)
         sector:
           type: string
           description: Sector filter
@@ -677,10 +671,10 @@ tools:
     input_schema:
       type: object
       properties:
-        symbol:
+        ticker:
           type: string
           description: Stock ticker symbol
-      required: [symbol]
+      required: [ticker]
 
   - tool_name: get_economic_surprise_index
     summary: Get ESI proxy - 6-indicator composite for 10 countries
