@@ -14,7 +14,6 @@ from assistant.api.routers import config as config_router
 from assistant.api.routers import health
 from assistant.api.routers import tasks as tasks_router
 
-
 # Load .env before the lifespan starts so env overrides and ASSISTANT_ADMIN_TOKEN
 # are available to bootstrap() and the auth layer.
 load_dotenv()

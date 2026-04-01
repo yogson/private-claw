@@ -1,19 +1,19 @@
 import asyncio
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import AsyncGenerator
 
-from fastapi import FastAPI
 import structlog
+from fastapi import FastAPI
 
 from assistant.agent.adapter_cache import TurnAdapterCache
+from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.deps import set_runtime_config
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
 from assistant.api.question_relay_handler import _build_question_relay_handler
-from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.utils import build_text_channel_response
-from assistant.channels.telegram import TelegramAdapter, NormalizedEvent, ChannelResponse
+from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
 from assistant.channels.telegram.ingestion.factory import build_transcription_service
 from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDownloader
 from assistant.channels.telegram.polling import CancellationRegistry, run_polling
@@ -24,8 +24,12 @@ from assistant.core.capabilities import load_capability_definitions
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session import SessionContextFactory
-from assistant.core.session_context import ActiveSessionContextService, SessionModelContextService, \
-    SessionCapabilityContextService, ActiveSessionContextInterface
+from assistant.core.session_context import (
+    ActiveSessionContextInterface,
+    ActiveSessionContextService,
+    SessionCapabilityContextService,
+    SessionModelContextService,
+)
 from assistant.extensions.mcp.bridge import mcp_pool
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logfire import configure_logfire
@@ -34,7 +38,6 @@ from assistant.store import StoreFacade
 from assistant.store.idempotency import IngressIdempotencyService
 from assistant.subagents.backends import ClaudeCodeBackendAdapter, ClaudeCodeStreamingBackendAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
-
 
 logger = structlog.get_logger(__name__)
 

@@ -670,9 +670,7 @@ class TelegramAdapter:
         context_id = self._build_session_context_id(chat_id)
         session_id = f"tg:{chat_id}:{uuid.uuid4().hex[:12]}"
         if self._session_factory is not None:
-            ctx = await self._session_factory.create(
-                context_id, session_id=session_id
-            )
+            ctx = await self._session_factory.create(context_id, session_id=session_id)
             logger.info(
                 "telegram.adapter.session_new.activated",
                 chat_id=chat_id,
