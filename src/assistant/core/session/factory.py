@@ -63,6 +63,7 @@ class SessionContextFactory:
         self,
         context_id: str,
         session_type: SessionType = SessionType.REGULAR,
+        session_id: str | None = None,
     ) -> SessionContext:
         """
         Create a new session.
@@ -70,11 +71,14 @@ class SessionContextFactory:
         Args:
             context_id: Context identifier (e.g., "telegram:123456")
             session_type: Type of session ("regular" or "long_running")
+            session_id: Optional explicit session ID. When omitted, one is
+                generated from the context_id. Callers that need a specific
+                ID format (e.g., ``tg:{chat_id}:{uuid}``) should pass it here.
 
         Returns:
             A new SessionContext instance (not yet entered)
         """
-        session_id = self._generate_session_id(context_id)
+        session_id = session_id or self._generate_session_id(context_id)
         now = datetime.now(UTC)
 
         metadata = SessionMetadata(

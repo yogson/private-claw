@@ -510,27 +510,31 @@ class TestAdapterSessionResume:
         assert store is not None
         store.clear_session.assert_awaited_once_with(f"tg:{_CHAT_ID}")
 
-    def test_start_new_session_activates_override(self) -> None:
+    @pytest.mark.asyncio
+    async def test_start_new_session_activates_override(self) -> None:
         adapter, _ = self._make_adapter(with_store=True)
         event = _make_event(text="/new")
-        session_id = adapter.start_new_session(event)
+        session_id = await adapter.start_new_session(event)
         assert session_id is not None
         assert session_id.startswith(f"tg:{_CHAT_ID}:")
         assert adapter.get_active_session(_CHAT_ID) == session_id
 
-    def test_start_new_session_missing_chat_returns_none(self) -> None:
+    @pytest.mark.asyncio
+    async def test_start_new_session_missing_chat_returns_none(self) -> None:
         adapter, _ = self._make_adapter(with_store=True)
         event = _make_event(text="/new")
         event = event.model_copy(update={"metadata": {}})
-        assert adapter.start_new_session(event) is None
+        assert await adapter.start_new_session(event) is None
 
-    def test_start_new_session_non_numeric_chat_returns_none(self) -> None:
+    @pytest.mark.asyncio
+    async def test_start_new_session_non_numeric_chat_returns_none(self) -> None:
         adapter, _ = self._make_adapter(with_store=True)
         event = _make_event(text="/new")
         event = event.model_copy(update={"metadata": {"chat_id": "not-a-number"}})
-        assert adapter.start_new_session(event) is None
+        assert await adapter.start_new_session(event) is None
 
-    def test_active_session_persists_across_adapter_restart(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_active_session_persists_across_adapter_restart(self, tmp_path: Path) -> None:
         context_path = tmp_path / "active_session_context.json"
         context = ActiveSessionContextService(context_path)
         config = TelegramChannelConfig(
@@ -543,7 +547,7 @@ class TestAdapterSessionResume:
             config, session_store=_make_store({}), active_session_context=context
         )
         event = _make_event(text="/new")
-        first_session_id = first.start_new_session(event)
+        first_session_id = await first.start_new_session(event)
         assert first_session_id is not None
 
         restarted_context = ActiveSessionContextService(context_path)
@@ -554,7 +558,8 @@ class TestAdapterSessionResume:
         )
         assert restarted.get_active_session(_CHAT_ID) == first_session_id
 
-    def test_clear_active_session_updates_persisted_state(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_clear_active_session_updates_persisted_state(self, tmp_path: Path) -> None:
         context_path = tmp_path / "active_session_context.json"
         config = TelegramChannelConfig(
             enabled=True,
@@ -568,7 +573,7 @@ class TestAdapterSessionResume:
             active_session_context=ActiveSessionContextService(context_path),
         )
         event = _make_event(text="/new")
-        assert first.start_new_session(event) is not None
+        assert await first.start_new_session(event) is not None
         first.clear_active_session(_CHAT_ID)
 
         restarted = TelegramAdapter(

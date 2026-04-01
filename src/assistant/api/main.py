@@ -38,6 +38,7 @@ from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
+from assistant.core.session import SessionContextFactory
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
     ActiveSessionContextService,
@@ -267,7 +268,7 @@ def _build_orchestrator_handler(
                 parse_mode="Markdown",
             )
         if adapter.is_session_new_request(event):
-            session_id = adapter.start_new_session(event)
+            session_id = await adapter.start_new_session(event)
             if session_id is None:
                 return ChannelResponse(
                     response_id=str(uuid.uuid4()),
@@ -801,6 +802,17 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             data_root / "runtime" / "active_capability_context.json"
         )
         capability_definitions = load_capability_definitions(config_dir=runtime_config.config_dir)
+
+        session_factory: SessionContextFactory | None = None
+        if store.session_metadata is not None:
+            session_factory = SessionContextFactory(
+                store=store,
+                active_context=active_session_context,
+                model_context=model_context,
+                capability_context=capability_context,
+                metadata_store=store.session_metadata,
+            )
+
         adapter = TelegramAdapter(
             runtime_config.telegram,
             transcription_service=transcription_service,
@@ -812,14 +824,14 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             capability_definitions=capability_definitions,
             default_capabilities=runtime_config.capabilities.enabled_capabilities,
             capability_context=capability_context,
+            session_factory=session_factory,
         )
         app.state.telegram_adapter = adapter
 
-        streaming_backend = ClaudeCodeStreamingBackendAdapter()
         delegation_coordinator = DelegationCoordinator(
             store=store,
             config=runtime_config,
-            backends=[ClaudeCodeBackendAdapter(), streaming_backend],
+            backends=[ClaudeCodeBackendAdapter(), ClaudeCodeStreamingBackendAdapter()],
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
@@ -832,6 +844,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             memory_retrieval=memory_retrieval,
             delegation_coordinator=delegation_coordinator,
             adapter_cache=adapter_cache,
+            session_factory=session_factory,
         )
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter)

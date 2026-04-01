@@ -1390,3 +1390,112 @@ class TestModelHTTPErrorHandling:
         with pytest.raises(ModelHTTPError) as exc_info:
             await orch.execute_turn(_minimal_event(text="do something"))
         assert exc_info.value.status_code == 429
+
+
+class TestOrchestratorWithSessionFactory:
+    """Tests for Orchestrator integration with SessionContextFactory."""
+
+    @pytest.mark.asyncio
+    async def test_execute_turn_uses_session_context_when_factory_available(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        """When factory finds session metadata, the turn runs inside SessionContext."""
+        from assistant.core.session.metadata import (
+            SessionMetadata,
+            SessionState,
+            SessionStatus,
+            SessionType,
+        )
+
+        now = datetime.now(UTC)
+        metadata = SessionMetadata(
+            session_id="tg:123",
+            context_id="telegram:123",
+            created_at=now,
+            session_type=SessionType.REGULAR,
+        )
+        state = SessionState(
+            status=SessionStatus.ACTIVE,
+            last_activity_at=now,
+            turn_count=2,
+        )
+
+        mock_factory = MagicMock()
+        # resume returns a real-ish SessionContext
+        mock_ctx = MagicMock()
+        mock_ctx.session_id = "tg:123"
+        mock_ctx.increment_turn_count = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_factory.resume = AsyncMock(return_value=mock_ctx)
+        mock_factory.persist_state = AsyncMock(return_value=True)
+
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_factory,
+        )
+        event = _minimal_event()
+        result = await orch.execute_turn(event)
+
+        assert result is not None
+        assert result.text == "Model response"
+        mock_factory.resume.assert_called_once_with("tg:123")
+        mock_ctx.__aenter__.assert_called_once()
+        mock_ctx.__aexit__.assert_called_once()
+        mock_ctx.increment_turn_count.assert_called_once()
+        mock_factory.persist_state.assert_called_once_with(mock_ctx)
+
+    @pytest.mark.asyncio
+    async def test_execute_turn_falls_back_on_session_not_found(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        """Pre-migration sessions (no metadata) fall back to legacy lock path."""
+        from assistant.core.session.interfaces import SessionNotFoundError
+
+        mock_factory = MagicMock()
+        mock_factory.resume = AsyncMock(side_effect=SessionNotFoundError("tg:123"))
+
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_factory,
+        )
+        event = _minimal_event()
+        result = await orch.execute_turn(event)
+
+        assert result is not None
+        assert result.text == "Model response"
+        # Legacy lock path was used
+        mock_store.locks.lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_turn_without_factory_uses_legacy(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+    ) -> None:
+        """Without factory, existing lock-based behavior is unchanged."""
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+        )
+        event = _minimal_event()
+        result = await orch.execute_turn(event)
+
+        assert result is not None
+        assert result.text == "Model response"
+        mock_store.locks.lock.assert_called_once()

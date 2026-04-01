@@ -389,7 +389,7 @@ async def test_handler_handles_new_session_without_orchestrator_call() -> None:
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
-    mock_adapter.start_new_session.return_value = "tg:123:abcd1234ef56"
+    mock_adapter.start_new_session = AsyncMock(return_value="tg:123:abcd1234ef56")
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
@@ -506,7 +506,7 @@ async def test_handler_handles_new_session_failure_without_orchestrator_call() -
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
     mock_adapter.is_memory_confirmation_callback.return_value = False
-    mock_adapter.start_new_session.return_value = None
+    mock_adapter.start_new_session = AsyncMock(return_value=None)
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()

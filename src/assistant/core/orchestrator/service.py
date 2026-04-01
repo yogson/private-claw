@@ -44,6 +44,8 @@ from assistant.core.orchestrator.persistence import (
     persist_turn_outcomes,
     persist_turn_terminal_failed,
 )
+from assistant.core.session.factory import SessionContextFactory
+from assistant.core.session.interfaces import SessionNotFoundError
 from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
 from assistant.memory.retrieval.models import RetrievalQuery
 from assistant.memory.store.models import MemoryType
@@ -96,6 +98,7 @@ class Orchestrator:
         pydantic_ai_adapter: PydanticAITurnAdapter | None = None,
         delegation_coordinator: DelegationCoordinatorInterface | None = None,
         adapter_cache: TurnAdapterCache | None = None,
+        session_factory: SessionContextFactory | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -106,6 +109,7 @@ class Orchestrator:
         self._pydantic_ai_adapter = pydantic_ai_adapter
         self._delegation_coordinator = delegation_coordinator
         self._adapter_cache = adapter_cache
+        self._session_factory = session_factory
         self._session_traces = SessionTraceManager()
 
     async def execute_turn(
@@ -118,6 +122,11 @@ class Orchestrator:
 
         Returns OrchestratorResult on success, None if duplicate (caller
         should not send a response). Raises on lock timeout or provider failure.
+
+        When a ``SessionContextFactory`` is configured, the turn is executed
+        inside a ``SessionContext`` which handles lock acquisition/release and
+        tracks turn count.  Sessions created before the factory was wired
+        (no metadata) fall back to the legacy lock-based path automatically.
         """
         source = event.source.value
         key = self._idempotency.build_key(source, event.event_id)
@@ -128,6 +137,36 @@ class Orchestrator:
             logger.info("orchestrator.duplicate_ignored", event_id=event.event_id, key=key)
             return None
 
+        if self._session_factory is not None:
+            try:
+                ctx = await self._session_factory.resume(event.session_id)
+            except SessionNotFoundError:
+                # Pre-migration session without metadata — use legacy path.
+                return await self._execute_turn_legacy(event, tool_call_notifier)
+
+            try:
+                async with ctx:
+                    result = await self._run_turn(event, tool_call_notifier=tool_call_notifier)
+                    ctx.increment_turn_count()
+                    await self._session_factory.persist_state(ctx)
+                    return result
+            except LockAcquisitionError as exc:
+                logger.warning(
+                    "orchestrator.lock_timeout",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                    error=str(exc),
+                )
+                raise
+
+        return await self._execute_turn_legacy(event, tool_call_notifier)
+
+    async def _execute_turn_legacy(
+        self,
+        event: OrchestratorEvent,
+        tool_call_notifier: "Callable[[str, str], Awaitable[None]] | None" = None,
+    ) -> OrchestratorResult:
+        """Legacy lock-based turn execution (no SessionContext)."""
         lock_key = f"{_LOCK_KEY_PREFIX}{event.session_id}"
         owner = f"{_LOCK_OWNER_PREFIX}{event.trace_id}"
         try:
