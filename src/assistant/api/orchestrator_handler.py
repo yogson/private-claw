@@ -1,19 +1,18 @@
-import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from typing import Any, Callable, Awaitable, cast
+from typing import Any, cast
 
-from pydantic_ai import ModelHTTPError, UnexpectedModelBehavior
 import structlog
+from pydantic_ai import ModelHTTPError, UnexpectedModelBehavior
 
 from assistant.api.utils import build_text_channel_response
-from assistant.channels.telegram import TelegramAdapter, NormalizedEvent, ChannelResponse, MessageType
+from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
 from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.subagents.coordinator import DelegationCoordinator
-
 
 logger = structlog.get_logger(__name__)
 
@@ -98,7 +97,7 @@ def _build_orchestrator_handler(
             return build_text_channel_response(
                 text="Stopped." if cancelled else "Nothing is currently running.",
                 session_id=event.session_id,
-                trace_id=event.trace_id
+                trace_id=event.trace_id,
             )
         if adapter.is_verbose_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
@@ -117,12 +116,12 @@ def _build_orchestrator_handler(
                 return build_text_channel_response(
                     text="Could not start a new session for this chat.",
                     session_id=event.session_id,
-                    trace_id=event.trace_id
+                    trace_id=event.trace_id,
                 )
             return build_text_channel_response(
                 text="Started a new session. Continue your conversation.",
                 session_id=session_id,
-                trace_id=event.trace_id
+                trace_id=event.trace_id,
             )
 
         if adapter.is_session_reset_request(event):
@@ -135,17 +134,14 @@ def _build_orchestrator_handler(
             if usage_service is not None:
                 await usage_service.archive_session_usage(event.session_id, event.user_id)
             cleared = await adapter.reset_session_context(event)
-            return ChannelResponse(
-                response_id=str(uuid.uuid4()),
-                channel="telegram",
-                session_id=event.session_id,
-                trace_id=event.trace_id,
-                message_type=MessageType.TEXT,
+            return build_text_channel_response(
                 text=(
                     "Session context reset. Starting fresh."
                     if cleared
                     else "Session context is already empty."
                 ),
+                session_id=event.session_id,
+                trace_id=event.trace_id,
             )
         if adapter.is_session_resume_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
@@ -160,13 +156,10 @@ def _build_orchestrator_handler(
                     session_id=session_id,
                     trace_id=event.trace_id,
                 )
-            return ChannelResponse(
-                response_id=str(uuid.uuid4()),
-                channel="telegram",
+            return build_text_channel_response(
+                text="Invalid or expired session selection.",
                 session_id=event.session_id,
                 trace_id=event.trace_id,
-                message_type=MessageType.TEXT,
-                text="Invalid or expired session selection.",
             )
         if adapter.is_model_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
@@ -227,7 +220,7 @@ def _build_orchestrator_handler(
             )
             return build_text_channel_response(
                 text=message,
-                session_id=event.session_id,
+                session_id=mem_session_id if ok else event.session_id,
                 trace_id=event.trace_id,
             )
         if event.callback_query is not None and adapter.is_task_callback(event):
