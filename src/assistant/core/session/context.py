@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from assistant.core.session.metadata import SessionMetadata, SessionState, SessionStatus, SessionType
+from assistant.core.session.metadata import (
+    SessionMetadata,
+    SessionState,
+    SessionStatus,
+    SessionType,
+)
 from assistant.store.interfaces import LockAcquisitionError
 from assistant.store.models import SessionRecord
 

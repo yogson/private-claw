@@ -132,9 +132,7 @@ class TestSessionContextFactoryCreate:
         mock_metadata_store: MagicMock,
         mock_active_context: MagicMock,
     ) -> None:
-        ctx = await factory.create(
-            "telegram:12345", session_id="tg:12345:custom_abc"
-        )
+        ctx = await factory.create("telegram:12345", session_id="tg:12345:custom_abc")
 
         assert ctx.session_id == "tg:12345:custom_abc"
         assert ctx.context_id == "telegram:12345"

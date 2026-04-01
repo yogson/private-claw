@@ -993,7 +993,11 @@ async def test_handler_capabilities_request_allowed_mid_session() -> None:
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None,)
+    handler = _build_orchestrator_handler(
+        mock_adapter,
+        mock_orchestrator,
+        None,
+    )
     response = await handler(event)
 
     assert response is not None
@@ -1051,7 +1055,11 @@ async def test_handler_capabilities_callback_allowed_mid_session() -> None:
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
 
-    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None,)
+    handler = _build_orchestrator_handler(
+        mock_adapter,
+        mock_orchestrator,
+        None,
+    )
     response = await handler(event)
 
     assert response is not None

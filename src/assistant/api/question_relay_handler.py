@@ -1,10 +1,9 @@
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
 import structlog
 
 from assistant.channels.telegram import TelegramAdapter
 from assistant.subagents.coordinator import DelegationCoordinator
-
 
 logger = structlog.get_logger(__name__)
 

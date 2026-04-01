@@ -1,9 +1,9 @@
 import json
-from datetime import datetime, UTC
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
-from assistant.channels.telegram import TelegramAdapter, ChannelResponse, MessageType
-from assistant.core.events.models import OrchestratorEvent, EventType, EventSource
+from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
+from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import TaskRecord
 from assistant.subagents.coordinator import DelegationCoordinator
