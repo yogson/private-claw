@@ -181,13 +181,26 @@ class PydanticAITurnAdapter:
         ) as agent_run:
             try:
                 async for node in agent_run:
-                    if isinstance(node, CallToolsNode) and deps.tool_call_notifier is not None:
-                        for part in node.model_response.parts:
-                            if isinstance(part, ToolCallPart):
+                    if isinstance(node, CallToolsNode):
+                        # Stream any text generated alongside tool calls immediately,
+                        # before the tools run, so the user sees it in real time.
+                        if deps.streaming_text_notifier is not None:
+                            text_parts = [
+                                p
+                                for p in node.model_response.parts
+                                if isinstance(p, TextPart) and p.content
+                            ]
+                            if text_parts:
+                                text = "\n\n".join(p.content for p in text_parts).strip()
                                 with contextlib.suppress(Exception):
-                                    await deps.tool_call_notifier(
-                                        part.tool_name, part.args_as_json_str()
-                                    )
+                                    await deps.streaming_text_notifier(text)
+                        if deps.tool_call_notifier is not None:
+                            for part in node.model_response.parts:
+                                if isinstance(part, ToolCallPart):
+                                    with contextlib.suppress(Exception):
+                                        await deps.tool_call_notifier(
+                                            part.tool_name, part.args_as_json_str()
+                                        )
             except asyncio.CancelledError:
                 # Capture whatever messages were processed before cancellation so the
                 # caller can persist them and keep session history intact.
@@ -202,15 +215,9 @@ class PydanticAITurnAdapter:
         response_text = result.output
         new_msgs = result.new_messages()
 
-        # Collect text from intermediate mixed ModelResponses (TextPart + ToolCallPart).
-        # Pydantic AI excludes these from result.output because it treats them as
-        # intermediate steps, but they often contain important reasoning or status that
-        # the user should see.  Prepend them to the final response so nothing is lost.
-        #
-        # Exception: when ask_question completed successfully, pydantic_ai still makes
-        # one final LLM call after the tool returns.  That final response (result.output)
-        # typically echoes the analysis already captured in intermediate_texts, producing
-        # a duplicate.  Discard result.output in that case.
+        # When ask_question completed successfully, pydantic_ai still makes one final
+        # LLM call after the tool returns.  That call's output (result.output) typically
+        # echoes content already visible to the user, producing a duplicate.  Discard it.
         ask_question_asked = any(
             isinstance(part, ToolReturnPart)
             and part.tool_name == ASK_QUESTION_TOOL_NAME
@@ -219,15 +226,26 @@ class PydanticAITurnAdapter:
             if isinstance(msg, ModelRequest)
             for part in msg.parts
         )
+
+        # When streaming_text_notifier is set, intermediate texts were already sent to
+        # the user in real time during the agent loop — do not re-include them in
+        # response_text.  Without the notifier (e.g. tests), fall back to accumulation
+        # so nothing is lost.
+        streaming_active = deps.streaming_text_notifier is not None
         intermediate_texts: list[str] = []
-        for msg in list(new_msgs):
-            if isinstance(msg, ModelResponse):
-                text_parts = [p for p in msg.parts if isinstance(p, TextPart) and p.content]
-                tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
-                if text_parts and tool_parts:
-                    intermediate_texts.append(" ".join(p.content for p in text_parts).strip())
+        if not streaming_active:
+            for msg in list(new_msgs):
+                if isinstance(msg, ModelResponse):
+                    text_parts = [p for p in msg.parts if isinstance(p, TextPart) and p.content]
+                    tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
+                    if text_parts and tool_parts:
+                        intermediate_texts.append(
+                            " ".join(p.content for p in text_parts).strip()
+                        )
+
         if ask_question_asked:
-            response_text = "\n\n".join(intermediate_texts) if intermediate_texts else response_text
+            # Discard result.output (echo); use accumulated intermediate texts if any.
+            response_text = "\n\n".join(intermediate_texts) if intermediate_texts else ""
         elif intermediate_texts:
             if response_text:
                 response_text = "\n\n".join(intermediate_texts) + "\n\n" + response_text

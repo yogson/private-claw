@@ -112,6 +112,7 @@ class Orchestrator:
         self,
         event: OrchestratorEvent,
         tool_call_notifier: "Callable[[str, str], Awaitable[None]] | None" = None,
+        streaming_text_notifier: "Callable[[str], Awaitable[None]] | None" = None,
     ) -> OrchestratorResult | None:
         """
         Execute one turn for the given event.
@@ -136,7 +137,11 @@ class Orchestrator:
         ctx = await self._session_factory.resume(event.session_id)
         try:
             async with ctx:
-                result = await self._run_turn(event, tool_call_notifier=tool_call_notifier)
+                result = await self._run_turn(
+                    event,
+                    tool_call_notifier=tool_call_notifier,
+                    streaming_text_notifier=streaming_text_notifier,
+                )
                 ctx.increment_turn_count()
                 await self._session_factory.persist_state(ctx)
                 return result
@@ -162,6 +167,7 @@ class Orchestrator:
         user_id: str | None = None,
         model_id_override: str | None = None,
         tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
+        streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         effective_config: "RuntimeConfig | None" = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter."""
@@ -231,6 +237,7 @@ class Orchestrator:
             delegation_enqueue_handler=delegation_handler,
             tool_runtime_params=tool_params,
             tool_call_notifier=tool_call_notifier,
+            streaming_text_notifier=streaming_text_notifier,
         )
         try:
             response_text, new_msgs, usage = await adapter.run_turn(
@@ -466,6 +473,7 @@ class Orchestrator:
         self,
         event: OrchestratorEvent,
         tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
+        streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
         user_text = extract_user_text(event)
         attachments = gather_attachments(event)
@@ -529,6 +537,7 @@ class Orchestrator:
                     user_id=event.user_id,
                     model_id_override=event.model_id_override,
                     tool_call_notifier=tool_call_notifier,
+                    streaming_text_notifier=streaming_text_notifier,
                     effective_config=effective_config,
                 )
         finally:

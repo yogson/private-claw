@@ -25,3 +25,10 @@ class TurnDeps:
     )  # per-tool merged params from tools.yaml + capability overrides
     tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None
     """Optional async callback fired before each tool call: (tool_name, args_json) -> None."""
+    streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None
+    """Optional async callback fired with text content generated alongside a tool call.
+
+    Called immediately when the model produces a mixed response (text + tool calls),
+    before the tools run.  When set, intermediate texts are streamed in real-time and
+    excluded from the final response_text returned by run_turn.
+    """

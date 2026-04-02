@@ -286,8 +286,17 @@ def _build_orchestrator_handler(
             notifier = _build_tool_call_notifier(
                 adapter, chat_id, orch_event.session_id, event.trace_id
             )
+        text_notifier = None
+        if chat_id:
+            text_notifier = _build_streaming_text_notifier(
+                adapter, chat_id, orch_event.session_id, event.trace_id
+            )
         try:
-            orch_result = await orchestrator.execute_turn(orch_event, tool_call_notifier=notifier)
+            orch_result = await orchestrator.execute_turn(
+                orch_event,
+                tool_call_notifier=notifier,
+                streaming_text_notifier=text_notifier,
+            )
         except ModelHTTPError as exc:
             if _is_token_limit_error(exc):
                 logger.warning(
@@ -415,6 +424,28 @@ def _build_tool_call_notifier(
         response = build_text_channel_response(
             text=text,
             parse_mode="Markdown",
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+        with suppress(Exception):
+            await adapter.send_response(response, chat_id=chat_id)
+
+    return _notifier
+
+
+def _build_streaming_text_notifier(
+    adapter: TelegramAdapter,
+    chat_id: int,
+    session_id: str,
+    trace_id: str,
+) -> "Callable[[str], Awaitable[None]]":
+    """Build an async notifier that sends intermediate agent text to Telegram immediately."""
+
+    async def _notifier(text: str) -> None:
+        if not text.strip():
+            return
+        response = build_text_channel_response(
+            text=text,
             session_id=session_id,
             trace_id=trace_id,
         )
