@@ -29,13 +29,16 @@ tools:
     input_schema:
       type: object
       properties:
-        from:
+        from_currency:
           type: string
           description: Source currency code (e.g., USD, EUR, GBP)
-        to:
+        to_currency:
           type: string
           description: Target currency code (e.g., EUR, JPY, CNY)
-      required: [from, to]
+        amount:
+          type: number
+          description: Amount to convert (default 1.0)
+      required: [from_currency, to_currency]
 
   - tool_name: convert_currency
     summary: Convert amount to multiple currencies at once
@@ -47,13 +50,13 @@ tools:
         amount:
           type: number
           description: Amount to convert
-        from:
+        from_currency:
           type: string
           description: Source currency code
-        to:
+        to_currencies:
           type: array
           description: List of target currency codes
-      required: [amount, from, to]
+      required: [amount, from_currency, to_currencies]
 
   - tool_name: get_historical_rates
     summary: Get historical exchange rates over a date range
@@ -62,10 +65,10 @@ tools:
     input_schema:
       type: object
       properties:
-        from:
+        from_currency:
           type: string
           description: Source currency code
-        to:
+        to_currency:
           type: string
           description: Target currency code
         start_date:
@@ -74,7 +77,7 @@ tools:
         end_date:
           type: string
           description: End date (YYYY-MM-DD)
-      required: [from, to, start_date, end_date]
+      required: [from_currency, to_currency, start_date]
 
   - tool_name: get_rate_trend
     summary: Get exchange rate trend for the last N days
@@ -83,16 +86,16 @@ tools:
     input_schema:
       type: object
       properties:
-        from:
+        from_currency:
           type: string
           description: Source currency code
-        to:
+        to_currency:
           type: string
           description: Target currency code
         days:
           type: integer
-          description: Number of days for trend analysis
-      required: [from, to]
+          description: Number of days for trend analysis (default 30)
+      required: [from_currency, to_currency]
 
   - tool_name: list_supported_currencies
     summary: List all supported currency codes (~30 major currencies)
