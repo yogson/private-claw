@@ -21,6 +21,7 @@ from pydantic_ai.messages import (
 )
 
 from assistant.agent.ask_question_extractor import _extract_pending_ask_question
+from assistant.agent.constants import ASK_QUESTION_TOOL_NAME
 from assistant.agent.memory_intent_processor import _new_messages_to_plans
 from assistant.agent.message_converters import (
     _llm_messages_to_history,
@@ -205,6 +206,19 @@ class PydanticAITurnAdapter:
         # Pydantic AI excludes these from result.output because it treats them as
         # intermediate steps, but they often contain important reasoning or status that
         # the user should see.  Prepend them to the final response so nothing is lost.
+        #
+        # Exception: when ask_question completed successfully, pydantic_ai still makes
+        # one final LLM call after the tool returns.  That final response (result.output)
+        # typically echoes the analysis already captured in intermediate_texts, producing
+        # a duplicate.  Discard result.output in that case.
+        ask_question_asked = any(
+            isinstance(part, ToolReturnPart)
+            and part.tool_name == ASK_QUESTION_TOOL_NAME
+            and '"question_asked"' in (part.content if isinstance(part.content, str) else "")
+            for msg in new_msgs
+            if isinstance(msg, ModelRequest)
+            for part in msg.parts
+        )
         intermediate_texts: list[str] = []
         for msg in list(new_msgs):
             if isinstance(msg, ModelResponse):
@@ -212,7 +226,9 @@ class PydanticAITurnAdapter:
                 tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
                 if text_parts and tool_parts:
                     intermediate_texts.append(" ".join(p.content for p in text_parts).strip())
-        if intermediate_texts:
+        if ask_question_asked:
+            response_text = "\n\n".join(intermediate_texts) if intermediate_texts else response_text
+        elif intermediate_texts:
             if response_text:
                 response_text = "\n\n".join(intermediate_texts) + "\n\n" + response_text
             else:
