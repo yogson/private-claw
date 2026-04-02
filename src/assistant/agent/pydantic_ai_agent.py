@@ -179,6 +179,7 @@ class PydanticAITurnAdapter:
             model=effective_model or self._model_id,
             model_settings=model_settings,
         ) as agent_run:
+            streamed_texts: list[str] = []
             try:
                 async for node in agent_run:
                     if isinstance(node, CallToolsNode):
@@ -194,6 +195,7 @@ class PydanticAITurnAdapter:
                                 text = "\n\n".join(p.content for p in text_parts).strip()
                                 with contextlib.suppress(Exception):
                                     await deps.streaming_text_notifier(text)
+                                streamed_texts.append(text)
                         if deps.tool_call_notifier is not None:
                             for part in node.model_response.parts:
                                 if isinstance(part, ToolCallPart):
@@ -242,6 +244,13 @@ class PydanticAITurnAdapter:
                         intermediate_texts.append(
                             " ".join(p.content for p in text_parts).strip()
                         )
+
+        # When streaming was active, discard result.output if it duplicates a text that
+        # was already streamed (model echoing its own intermediate response after tools).
+        if streaming_active and response_text and response_text.strip() in {
+            t.strip() for t in streamed_texts
+        }:
+            response_text = ""
 
         if ask_question_asked:
             # Discard result.output (echo); use accumulated intermediate texts if any.
