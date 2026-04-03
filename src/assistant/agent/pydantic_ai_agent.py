@@ -180,11 +180,21 @@ class PydanticAITurnAdapter:
             model_settings=model_settings,
         ) as agent_run:
             streamed_texts: list[str] = []
+            _buffered_text: str | None = None
             try:
                 async for node in agent_run:
                     if isinstance(node, CallToolsNode):
-                        # Stream any text generated alongside tool calls immediately,
-                        # before the tools run, so the user sees it in real time.
+                        # Flush the previously buffered text now that the tools from the
+                        # prior iteration have completed.  This ensures agent messages appear
+                        # *after* the actions they describe rather than before them.
+                        if _buffered_text is not None and deps.streaming_text_notifier is not None:
+                            with contextlib.suppress(Exception):
+                                await deps.streaming_text_notifier(_buffered_text)
+                            streamed_texts.append(_buffered_text)
+                            _buffered_text = None
+
+                        # Buffer any text from this response; it will be flushed once the
+                        # current tool calls complete (next iteration or after the loop).
                         if deps.streaming_text_notifier is not None:
                             text_parts = [
                                 p
@@ -192,10 +202,10 @@ class PydanticAITurnAdapter:
                                 if isinstance(p, TextPart) and p.content
                             ]
                             if text_parts:
-                                text = "\n\n".join(p.content for p in text_parts).strip()
-                                with contextlib.suppress(Exception):
-                                    await deps.streaming_text_notifier(text)
-                                streamed_texts.append(text)
+                                _buffered_text = "\n\n".join(
+                                    p.content for p in text_parts
+                                ).strip()
+
                         if deps.tool_call_notifier is not None:
                             for part in node.model_response.parts:
                                 if isinstance(part, ToolCallPart):
@@ -210,6 +220,13 @@ class PydanticAITurnAdapter:
                 with contextlib.suppress(Exception):
                     partial = list(agent_run.new_messages())
                 raise TurnCancelledWithPartial(_inject_cancellation_results(partial)) from None
+
+            # Flush any text buffered from the last CallToolsNode: those tools have
+            # now completed (loop exited normally).
+            if _buffered_text is not None and deps.streaming_text_notifier is not None:
+                with contextlib.suppress(Exception):
+                    await deps.streaming_text_notifier(_buffered_text)
+                streamed_texts.append(_buffered_text)
 
         result = agent_run.result
         if result is None:
