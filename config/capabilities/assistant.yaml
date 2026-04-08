@@ -14,5 +14,7 @@ tools:
     enabled: true
   - tool_id: tavily_search
     enabled: true
+  - tool_id: tavily_extract
+    enabled: true
   - tool_id: write_markdown_file
     enabled: true

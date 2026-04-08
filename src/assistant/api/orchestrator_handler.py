@@ -393,6 +393,9 @@ def _build_orchestrator_handler(
                         tool_call_id=pending[0].tool_call_id,
                         prompt_text=prompt_text,
                     )
+        if not response_text.strip():
+            # Already sent in full via streaming_text_notifier; nothing left to send.
+            return None
         return build_text_channel_response(
             text=response_text,
             session_id=orch_event.session_id,

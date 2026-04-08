@@ -15,7 +15,7 @@ Tool registration for Pydantic AI agent. Capability-first activation model:
 from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 import structlog
 from pydantic_ai import Tool
@@ -155,13 +155,28 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
                 error=str(exc),
             )
             continue
-        if tool_id == "tavily_search":
-            tool_instance = resolved() if callable(resolved) else None
+        # If the entrypoint is a factory (returns a Tool or None), call it.
+        # Factories signal this by having a return annotation of `Tool | None` or `Any | None`.
+        hints = {}
+        try:
+            hints = get_type_hints(resolved)
+        except Exception:
+            pass
+        return_hint = hints.get("return")
+        is_factory = return_hint is not None and (
+            hasattr(return_hint, "__args__")
+            and any(
+                getattr(a, "__name__", None) == "Tool" or a is type(None)
+                for a in return_hint.__args__
+            )
+        )
+        if is_factory:
+            tool_instance = resolved()
             if tool_instance is None:
                 logger.info(
-                    "provider.tools.tavily_search_skipped",
-                    reason="TAVILY_API_KEY not set",
-                    hint="Set TAVILY_API_KEY to enable web search",
+                    "provider.tools.factory_skipped",
+                    tool_id=tool_id,
+                    reason="factory returned None (likely missing API key)",
                 )
                 continue
             tools.append(cast(AgentTool, tool_instance))

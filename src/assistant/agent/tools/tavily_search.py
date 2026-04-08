@@ -34,7 +34,7 @@ def _is_binary(text: str, sample: int = 500) -> bool:
     chunk = text[:sample]
     if not chunk:
         return False
-    non_printable = sum(1 for c in chunk if ord(c) > 126 or (ord(c) < 32 and c not in "\t\n\r"))
+    non_printable = sum(1 for c in chunk if not c.isprintable() and c not in "\t\n\r")
     return (non_printable / len(chunk)) > _BINARY_THRESHOLD
 
 
@@ -69,7 +69,27 @@ def get_tavily_search_tool() -> Any | None:
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
     ) -> list[TavilySearchResult]:
-        """Searches Tavily for the given query and returns the results."""
+        """Search the web for the given query and return results.
+
+        Use this to find information when you don't have a specific URL.
+        Returns a list of results with title, URL, and a content snippet.
+
+        Args:
+            query: Search query. Use plain keywords — Tavily requires non-operator
+                terms (avoid queries that are only site: or other operators).
+            search_depth: 'basic' (default) is fast and sufficient for most queries — always
+                start with basic. 'advanced' retrieves richer content but costs more;
+                only use if basic results are too shallow. 'fast' and 'ultra-fast'
+                sacrifice quality for speed; rarely needed.
+            topic: 'general' (default)  for most queries; 'news' for current events and
+                recent developments; 'finance' for market and financial data.
+            time_range: Restrict results to a recency window. Use 'day' or 'week'
+                for breaking news, 'month' or 'year' for broader recent context.
+                Omit when recency is not important.
+            include_domains: Restrict results to these domains only. Use when you
+                need a source-specific search (e.g. ['wikipedia.org']).
+            exclude_domains: Exclude these domains from results.
+        """
         try:
             results = await inner(
                 query,

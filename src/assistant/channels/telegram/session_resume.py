@@ -28,6 +28,13 @@ _BUTTON_LABEL_MAX = 64
 
 _CALLBACK_TTL_SECONDS = CALLBACK_TTL_SECONDS
 
+_MARKDOWN_SPECIAL = str.maketrans({c: "" for c in "*_`[]"})
+
+
+def _escape_md(text: str) -> str:
+    """Strip Telegram legacy Markdown special characters from user-supplied text."""
+    return text.translate(_MARKDOWN_SPECIAL)
+
 
 class SessionEntry(BaseModel):
     """Compact user-facing session metadata for resume selection."""
@@ -106,8 +113,10 @@ class SessionResumeService:
         actions: list[ActionButton] = []
         for i, entry in enumerate(entries, 1):
             ts = entry.last_activity.strftime("%Y-%m-%d %H:%M")
-            preview = f" — _{entry.preview_snippet}_" if entry.preview_snippet else ""
-            lines.append(f"{i}. *{entry.label}* ({ts}){preview}")
+            safe_label = _escape_md(entry.label)
+            safe_preview = _escape_md(entry.preview_snippet)
+            preview = f" — _{safe_preview}_" if safe_preview else ""
+            lines.append(f"{i}. *{safe_label}* ({ts}){preview}")
             button_label = f"{i}. {entry.label} ({entry.last_activity.strftime('%m/%d %H:%M')})"
             actions.append(
                 ActionButton(
