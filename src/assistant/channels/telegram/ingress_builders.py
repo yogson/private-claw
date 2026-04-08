@@ -107,6 +107,49 @@ def build_attachment_event(
     )
 
 
+def build_media_group_event(
+    messages: list[dict[str, Any]],
+    user_id: int,
+    session_id: str,
+    event_id: str,
+    trace_id: str,
+    created_at: datetime,
+) -> NormalizedEvent:
+    """Build a single normalized event from all messages in a Telegram media group.
+
+    Each message in the album contributes one AttachmentMeta entry.  The
+    caption from the first message that carries one is used as the event
+    text.  All attachments are placed in both ``attachment`` (the primary
+    field, for backwards compatibility) and ``attachments`` (the full list).
+    """
+    attachments: list[AttachmentMeta] = []
+    caption: str | None = None
+    for msg in messages:
+        if has_document_or_photo(msg):
+            attachments.append(extract_attachment_meta(msg))
+        if caption is None:
+            caption = msg.get("caption") or None
+
+    first = messages[0]
+    chat_id = first.get("chat", {}).get("id", user_id)
+    media_group_id: str = first.get("media_group_id") or event_id
+
+    return NormalizedEvent(
+        event_id=event_id,
+        event_type=EventType.USER_ATTACHMENT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id=session_id,
+        user_id=str(user_id),
+        created_at=created_at,
+        trace_id=trace_id,
+        text=caption,
+        attachment=attachments[0] if attachments else None,
+        attachments=attachments,
+        idempotency_key=f"telegram:mg:{media_group_id}",
+        metadata={"chat_id": chat_id, "media_group_id": media_group_id},
+    )
+
+
 def build_callback_query_event(
     cq: dict[str, Any], user_id: int, event_id: str, trace_id: str
 ) -> NormalizedEvent:

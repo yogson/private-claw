@@ -8,6 +8,7 @@ Telegram is enabled. Reuses TelegramAdapter for normalization and egress.
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from typing import Any
 
 import structlog
 from aiogram import Bot
@@ -17,6 +18,7 @@ from aiogram.types import MenuButtonCommands, Update
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.allowlist import UnauthorizedUserError
 from assistant.channels.telegram.commands import build_bot_commands
+from assistant.channels.telegram.ingestion.media_group import MediaGroupBuffer
 from assistant.channels.telegram.models import ChannelResponse, NormalizedEvent
 from assistant.core.config.schemas import TelegramChannelConfig
 
@@ -96,6 +98,16 @@ async def run_polling(
     # Keep strong references to background tasks so they are not GC'd.
     _background_tasks: set[asyncio.Task[None]] = set()
 
+    async def _on_media_group_ready(messages: list[dict[str, Any]]) -> None:
+        """Flush callback: dispatch a collected media group as one event."""
+        task: asyncio.Task[None] = asyncio.create_task(
+            _process_media_group(adapter, messages, event_handler, cancellation_registry)
+        )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    media_group_buffer = MediaGroupBuffer(flush_callback=_on_media_group_ready)
+
     try:
         while not stop.is_set():
             try:
@@ -125,13 +137,30 @@ async def run_polling(
                 if update.update_id is None:
                     logger.warning("telegram.polling.missing_update_id", update=update)
                     continue
-                # Fire as a task so /stop can be processed concurrently with a
-                # long-running agent turn for the same session.
-                task: asyncio.Task[None] = asyncio.create_task(
-                    _process_update(adapter, update, event_handler, cancellation_registry)
+
+                update_payload = update.model_dump(mode="python", exclude_none=True, by_alias=True)
+                message_payload: dict[str, Any] | None = update_payload.get("message")
+                media_group_id: str | None = (
+                    message_payload.get("media_group_id") if message_payload else None
                 )
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
+
+                if media_group_id is not None and message_payload is not None:
+                    # Buffer this message; the flush callback will fire once no
+                    # new messages for the same group arrive within the window.
+                    buf_task: asyncio.Task[None] = asyncio.create_task(
+                        media_group_buffer.add(media_group_id, message_payload)
+                    )
+                    _background_tasks.add(buf_task)
+                    buf_task.add_done_callback(_background_tasks.discard)
+                else:
+                    # Fire as a task so /stop can be processed concurrently with a
+                    # long-running agent turn for the same session.
+                    task: asyncio.Task[None] = asyncio.create_task(
+                        _process_update(adapter, update, event_handler, cancellation_registry)
+                    )
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
+
                 offset = update.update_id + 1
 
             if config.poll_interval_seconds > 0 and updates:
@@ -165,25 +194,13 @@ async def _configure_bot_commands_menu(bot: Bot) -> None:
         logger.warning("telegram.polling.commands_menu_config_failed", error=str(exc))
 
 
-async def _process_update(
+async def _dispatch_event(
     adapter: TelegramAdapter,
-    update: Update,
+    event: NormalizedEvent,
     event_handler: TelegramEventHandler,
-    cancellation_registry: CancellationRegistry | None = None,
+    cancellation_registry: CancellationRegistry | None,
 ) -> None:
-    """Process a single update: normalize, dispatch, send response."""
-    try:
-        event = await adapter.process_update_async(update)
-    except UnauthorizedUserError as exc:
-        logger.warning("telegram.polling.unauthorized", user_id=exc.user_id)
-        return
-    except Exception:
-        logger.exception("telegram.polling.process_error")
-        return
-
-    if event is None:
-        return
-
+    """Drive a normalized event through the handler and send the response."""
     if event.callback_query is not None:
         await adapter.acknowledge_callback(event.callback_query.callback_id)
 
@@ -232,3 +249,47 @@ async def _process_update(
         await adapter.send_response(response, chat_id=int(chat_id))
     except Exception:
         logger.exception("telegram.polling.send_error", chat_id=chat_id)
+
+
+async def _process_update(
+    adapter: TelegramAdapter,
+    update: Update,
+    event_handler: TelegramEventHandler,
+    cancellation_registry: CancellationRegistry | None = None,
+) -> None:
+    """Process a single update: normalize, dispatch, send response."""
+    try:
+        event = await adapter.process_update_async(update)
+    except UnauthorizedUserError as exc:
+        logger.warning("telegram.polling.unauthorized", user_id=exc.user_id)
+        return
+    except Exception:
+        logger.exception("telegram.polling.process_error")
+        return
+
+    if event is None:
+        return
+
+    await _dispatch_event(adapter, event, event_handler, cancellation_registry)
+
+
+async def _process_media_group(
+    adapter: TelegramAdapter,
+    messages: list[dict[str, Any]],
+    event_handler: TelegramEventHandler,
+    cancellation_registry: CancellationRegistry | None = None,
+) -> None:
+    """Normalize a flushed media group and dispatch the aggregated event."""
+    try:
+        event = await adapter.process_media_group_async(messages)
+    except UnauthorizedUserError as exc:
+        logger.warning("telegram.polling.unauthorized", user_id=exc.user_id)
+        return
+    except Exception:
+        logger.exception("telegram.polling.process_error")
+        return
+
+    if event is None:
+        return
+
+    await _dispatch_event(adapter, event, event_handler, cancellation_registry)

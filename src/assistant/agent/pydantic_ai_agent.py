@@ -202,9 +202,7 @@ class PydanticAITurnAdapter:
                                 if isinstance(p, TextPart) and p.content
                             ]
                             if text_parts:
-                                _buffered_text = "\n\n".join(
-                                    p.content for p in text_parts
-                                ).strip()
+                                _buffered_text = "\n\n".join(p.content for p in text_parts).strip()
 
                         if deps.tool_call_notifier is not None:
                             for part in node.model_response.parts:
@@ -258,15 +256,15 @@ class PydanticAITurnAdapter:
                     text_parts = [p for p in msg.parts if isinstance(p, TextPart) and p.content]
                     tool_parts = [p for p in msg.parts if isinstance(p, ToolCallPart)]
                     if text_parts and tool_parts:
-                        intermediate_texts.append(
-                            " ".join(p.content for p in text_parts).strip()
-                        )
+                        intermediate_texts.append(" ".join(p.content for p in text_parts).strip())
 
         # When streaming was active, discard result.output if it duplicates a text that
         # was already streamed (model echoing its own intermediate response after tools).
-        if streaming_active and response_text and response_text.strip() in {
-            t.strip() for t in streamed_texts
-        }:
+        if (
+            streaming_active
+            and response_text
+            and response_text.strip() in {t.strip() for t in streamed_texts}
+        ):
             response_text = ""
 
         if ask_question_asked:

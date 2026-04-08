@@ -201,6 +201,26 @@ class TelegramAdapter:
             logger.exception("telegram.adapter.process_update_async.error")
             return None
 
+    async def process_media_group_async(
+        self, messages: list[dict[str, Any]]
+    ) -> NormalizedEvent | None:
+        """
+        Normalize a collection of Telegram message dicts from the same media group.
+
+        Called by the polling layer after all messages for an album have been
+        collected by MediaGroupBuffer.  Delegates allowlist / throttle enforcement
+        and event construction to TelegramIngress.normalize_media_group(), then
+        applies any active-session override before returning.
+        """
+        try:
+            event = self._ingress.normalize_media_group(messages)
+            return self._apply_session_context(event)
+        except UnauthorizedUserError:
+            raise
+        except Exception:
+            logger.exception("telegram.adapter.process_media_group_async.error")
+            return None
+
     async def send_response(self, response: ChannelResponse, chat_id: int) -> bool:
         """
         Deliver a ChannelResponse to the specified Telegram chat.

@@ -17,6 +17,7 @@ from assistant.channels.telegram.ingress_builders import (
 from assistant.channels.telegram.ingress_builders import (
     build_attachment_event,
     build_callback_query_event,
+    build_media_group_event,
     build_text_event,
     build_voice_event,
     extract_user_id,
@@ -107,6 +108,70 @@ class TelegramIngress:
             updated_metadata = {**event.metadata, "audit_transcription_failure": failure_reason}
             return event.model_copy(update={"metadata": updated_metadata})
 
+        return event
+
+    def normalize_media_group(self, messages: list[dict[str, Any]]) -> NormalizedEvent | None:
+        """
+        Normalize a list of messages that belong to the same Telegram media group.
+
+        Allowlist and throttle checks are performed once against the sender of
+        the first message.  All attachment metas are merged into a single
+        NormalizedEvent so the LLM receives every file in the album.
+
+        Returns None when the message list is empty or the sender cannot be
+        identified.  Raises UnauthorizedUserError / ThrottledError on policy
+        violations so the caller can handle them identically to normalize().
+        """
+        if not messages:
+            return None
+
+        first = messages[0]
+        user_id = extract_user_id(first)
+        if user_id is None:
+            return None
+
+        pre_trace_id = _get_trace_id() or str(uuid.uuid4())
+
+        try:
+            self._guard.require_allowed(user_id)
+        except UnauthorizedUserError:
+            if self._audit_logger is not None:
+                self._audit_logger.log_ingress_blocked(
+                    user_id=user_id,
+                    reason="not_in_allowlist",
+                    trace_id=pre_trace_id,
+                )
+            raise
+
+        if self._throttle_guard is not None:
+            try:
+                self._throttle_guard.check(user_id, trace_id=pre_trace_id)
+            except ThrottledError as exc:
+                if self._audit_logger is not None:
+                    self._audit_logger.log_ingress_throttled(
+                        user_id=user_id,
+                        count=exc.count,
+                        limit=exc.limit,
+                        trace_id=pre_trace_id,
+                    )
+                raise
+
+        chat_id = first.get("chat", {}).get("id", user_id)
+        session_id = f"tg:{chat_id}"
+        event_id = str(uuid.uuid4())
+        trace_id = _get_trace_id() or event_id
+        created_at = parse_date(first.get("date"))
+
+        event = build_media_group_event(
+            messages, user_id, session_id, event_id, trace_id, created_at
+        )
+
+        if self._audit_logger is not None:
+            self._audit_logger.log_ingress_authorized(
+                user_id=user_id,
+                event_type=event.event_type.value,
+                trace_id=event.trace_id,
+            )
         return event
 
     def _normalize_message(self, message: dict[str, Any]) -> NormalizedEvent | None:

@@ -108,13 +108,16 @@ def extract_raw_text_for_multimodal(event: OrchestratorEvent) -> str | None:
 
 
 def gather_attachments(event: OrchestratorEvent) -> list[AttachmentMeta]:
-    out: list[AttachmentMeta] = []
+    # When a media-group event is built, the first attachment is placed in both
+    # ``attachment`` (backwards-compat singular field) and ``attachments`` (full
+    # list).  Iterating both fields would therefore duplicate the first entry.
+    # Prefer ``attachments`` when it is non-empty; fall back to the singular
+    # field only for legacy single-attachment events.
+    if event.attachments:
+        return [att for att in event.attachments if att.file_id]
     if event.attachment and event.attachment.file_id:
-        out.append(event.attachment)
-    for att in event.attachments or []:
-        if att.file_id:
-            out.append(att)
-    return out
+        return [event.attachment]
+    return []
 
 
 def format_attachment_context(attachments: list[AttachmentMeta]) -> str:
