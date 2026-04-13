@@ -350,7 +350,11 @@ def _build_orchestrator_handler(
         session_id = orch_event.session_id
         response_text = orch_result.text
         if orch_result.pending_webapp_buttons:
-            webapp_text = response_text.strip() or orch_result.pending_webapp_message or ""
+            webapp_text = (
+                response_text.strip()
+                or orch_result.pending_webapp_message
+                or "Tap the button below to start."
+            )
             return build_webapp_button_channel_response(
                 text=webapp_text,
                 session_id=session_id,

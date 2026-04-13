@@ -31,6 +31,8 @@ def _extract_pending_webapp_buttons(
         for req_part in msg.parts:
             if not isinstance(req_part, ToolReturnPart):
                 continue
+            if req_part.tool_name != _START_EXERCISE_TOOL_NAME:
+                continue
             result: dict[str, Any] = _parse_tool_result_content(req_part.content)
             actions = result.get("actions")
             if not isinstance(actions, list):

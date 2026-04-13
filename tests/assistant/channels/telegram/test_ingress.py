@@ -6,7 +6,8 @@ import pytest
 
 from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
 from assistant.channels.telegram.ingress import _VOICE_MISSING_TRANSCRIPT, TelegramIngress
-from assistant.channels.telegram.models import EventType
+from assistant.channels.telegram.ingress_builders import build_web_app_data_event, parse_date
+from assistant.channels.telegram.models import EventSource, EventType
 
 
 def _make_ingress(allowed: list[int] | None = None) -> TelegramIngress:
@@ -216,3 +217,139 @@ class TestAttachmentMessage:
         assert event.attachment.file_id == "doc_md_1"
         assert event.attachment.file_name == "architecture_improvements_exercise.md"
         assert event.attachment.mime_type == "text/markdown"
+
+
+class TestWebAppDataMessage:
+    def _web_app_update(
+        self,
+        user_id: int = 123456,
+        chat_id: int = 123456,
+        message_id: int = 20,
+        data: str = '{"type":"exercise_results","results":[]}',
+        button_text: str = "🃏 Start",
+    ) -> dict:
+        return {
+            "message": {
+                "message_id": message_id,
+                "from": {"id": user_id},
+                "chat": {"id": chat_id},
+                "date": 1700000000,
+                "web_app_data": {
+                    "data": data,
+                    "button_text": button_text,
+                },
+            }
+        }
+
+    def test_web_app_data_routes_to_text_event(self) -> None:
+        """web_app_data message is normalized as USER_TEXT_MESSAGE."""
+        ingress = _make_ingress()
+        event = ingress.normalize(self._web_app_update())
+        assert event is not None
+        assert event.event_type == EventType.USER_TEXT_MESSAGE
+
+    def test_web_app_data_text_contains_payload(self) -> None:
+        """The JSON payload from web_app_data.data becomes event.text."""
+        ingress = _make_ingress()
+        payload = '{"type":"exercise_results","results":[]}'
+        event = ingress.normalize(self._web_app_update(data=payload))
+        assert event is not None
+        assert event.text == payload
+
+    def test_web_app_data_session_and_user(self) -> None:
+        """Session ID and user ID are set correctly from chat/from fields."""
+        ingress = _make_ingress()
+        event = ingress.normalize(self._web_app_update(user_id=123456, chat_id=123456))
+        assert event is not None
+        assert event.user_id == "123456"
+        assert event.session_id == "tg:123456"
+
+    def test_web_app_data_idempotency_key_uses_message_id(self) -> None:
+        """Idempotency key includes the Telegram message_id."""
+        ingress = _make_ingress()
+        event = ingress.normalize(self._web_app_update(message_id=99))
+        assert event is not None
+        assert "99" in (event.idempotency_key or "")
+
+    def test_web_app_data_unknown_user_raises(self) -> None:
+        """Unauthorized user raises UnauthorizedUserError."""
+        ingress = _make_ingress(allowed=[111])
+        with pytest.raises(UnauthorizedUserError):
+            ingress.normalize(self._web_app_update(user_id=999))
+
+    def test_web_app_data_empty_data_gives_none_text(self) -> None:
+        """Empty data field results in event.text being None."""
+        ingress = _make_ingress()
+        event = ingress.normalize(self._web_app_update(data=""))
+        assert event is not None
+        assert event.text is None
+
+
+class TestBuildWebAppDataEvent:
+    def test_build_web_app_data_event_happy_path(self) -> None:
+        """build_web_app_data_event extracts data and sets correct event fields."""
+        message = {
+            "message_id": 42,
+            "from": {"id": 123456},
+            "chat": {"id": 123456},
+            "date": 1700000000,
+            "web_app_data": {
+                "data": '{"type":"exercise_results"}',
+                "button_text": "Start",
+            },
+        }
+        created_at = parse_date(message["date"])
+        event = build_web_app_data_event(
+            message,
+            user_id=123456,
+            session_id="tg:123456",
+            event_id="evt-1",
+            trace_id="trace-1",
+            created_at=created_at,
+        )
+        assert event.event_type == EventType.USER_TEXT_MESSAGE
+        assert event.source == EventSource.TELEGRAM
+        assert event.text == '{"type":"exercise_results"}'
+        assert event.session_id == "tg:123456"
+        assert event.user_id == "123456"
+        assert "42" in event.idempotency_key
+
+    def test_build_web_app_data_event_missing_data_field(self) -> None:
+        """When web_app_data.data is absent, event.text is None."""
+        message = {
+            "message_id": 43,
+            "from": {"id": 123456},
+            "chat": {"id": 123456},
+            "date": 1700000000,
+            "web_app_data": {},
+        }
+        created_at = parse_date(message["date"])
+        event = build_web_app_data_event(
+            message,
+            user_id=123456,
+            session_id="tg:123456",
+            event_id="evt-2",
+            trace_id="trace-2",
+            created_at=created_at,
+        )
+        assert event.text is None
+
+    def test_build_web_app_data_event_metadata_contains_chat_id(self) -> None:
+        """Metadata chat_id is populated from message.chat.id."""
+        message = {
+            "message_id": 44,
+            "from": {"id": 123456},
+            "chat": {"id": 999888},
+            "date": 1700000000,
+            "web_app_data": {"data": "hello"},
+        }
+        created_at = parse_date(message["date"])
+        event = build_web_app_data_event(
+            message,
+            user_id=123456,
+            session_id="tg:999888",
+            event_id="evt-3",
+            trace_id="trace-3",
+            created_at=created_at,
+        )
+        assert event.metadata.get("chat_id") == 999888
