@@ -10,10 +10,10 @@
 
 (function () {
   const RATING_META = [
-    { rating: 0, emoji: '❌', label: 'Again' },
-    { rating: 1, emoji: '⚠️', label: 'Hard'  },
-    { rating: 2, emoji: '✅', label: 'Good'  },
-    { rating: 3, emoji: '⭐', label: 'Easy'  },
+    { rating: 0, emoji: '❌', label: 'Снова'  },
+    { rating: 1, emoji: '⚠️', label: 'Трудно' },
+    { rating: 2, emoji: '✅', label: 'Хорошо' },
+    { rating: 3, emoji: '⭐', label: 'Легко'  },
   ];
 
   function showResults(results, totalWords) {
@@ -69,7 +69,7 @@
     if (tg) {
       tg.MainButton.setText('Отправить результаты');
       tg.MainButton.show();
-      tg.MainButton.onClick(function () {
+      var handler = function () {
         try {
           tg.sendData(JSON.stringify({
             type: 'exercise_results',
@@ -84,7 +84,9 @@
           errEl.textContent = 'Ошибка отправки. Попробуйте снова.';
           document.querySelector('.results-content').appendChild(errEl);
         }
-      });
+      };
+      tg.MainButton.offClick(handler);
+      tg.MainButton.onClick(handler);
     } else {
       // Browser mode — log to console
       console.info('[flashcards] sendData payload:', JSON.stringify({

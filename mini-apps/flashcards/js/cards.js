@@ -28,9 +28,12 @@
   let cardStartTime = 0;
   let onComplete  = null;
   let revealed    = false;
+  let initialized = false;
 
   // ── Init ──────────────────────────────────────────────────────────────
   function initCards(wordList, dir, completeCb) {
+    if (initialized) return;
+    initialized = true;
     words      = wordList;
     direction  = dir || 'forward';
     onComplete = completeCb;

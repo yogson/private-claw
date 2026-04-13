@@ -77,10 +77,10 @@
 
   /**
    * Apply Telegram theme params as CSS variables on :root.
-   * @param {Object} params - Telegram.WebApp.themeParams
+   * @param {Object} themeParams - Telegram.WebApp.themeParams
    */
-  function applyTheme(params) {
-    if (!params) return;
+  function applyTheme(themeParams) {
+    if (!themeParams) return;
     const map = {
       bg_color:            '--tg-theme-bg-color',
       text_color:          '--tg-theme-text-color',
@@ -91,8 +91,8 @@
       secondary_bg_color:  '--tg-theme-secondary-bg-color',
     };
     Object.keys(map).forEach(function (key) {
-      if (params[key]) {
-        document.documentElement.style.setProperty(map[key], params[key]);
+      if (themeParams[key]) {
+        document.documentElement.style.setProperty(map[key], themeParams[key]);
       }
     });
   }
