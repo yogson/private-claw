@@ -12,6 +12,7 @@ from pydantic_ai import RunContext
 
 from assistant.agent.tools.deps import TurnDeps
 from assistant.extensions.language_learning.models import (
+    Gender,
     LearningStatus,
     PartOfSpeech,
     VerbForms,
@@ -79,16 +80,18 @@ async def add_vocabulary(
     if not words:
         return {"status": "rejected_invalid", "reason": "words list cannot be empty"}
 
+    truncated_count = len(words) - _MAX_WORDS_PER_CALL if len(words) > _MAX_WORDS_PER_CALL else 0
     bounded_words = words[:_MAX_WORDS_PER_CALL]
 
     added: list[str] = []
     skipped_duplicates: list[str] = []
     errors: list[str] = []
+    warnings: list[str] = []
 
     for word_input in bounded_words:
         try:
             # Check for duplicate
-            existing = await store.find_duplicate(user_id, word_input.word)
+            existing = await store.find_by_word(user_id, word_input.word)
             if existing is not None:
                 skipped_duplicates.append(word_input.word)
                 logger.info(
@@ -97,6 +100,13 @@ async def add_vocabulary(
                     word=word_input.word,
                 )
                 continue
+
+            # Validate part-of-speech required fields
+            if word_input.part_of_speech == PartOfSpeech.NOUN:
+                if word_input.gender is None or word_input.article is None:
+                    warnings.append(f"⚠️ {word_input.word}: noun without gender/article")
+            elif word_input.part_of_speech == PartOfSpeech.VERB and word_input.verb_forms is None:
+                warnings.append(f"⚠️ {word_input.word}: verb without verb_forms")
 
             # Build VerbForms if provided
             verb_forms = None
@@ -111,8 +121,6 @@ async def add_vocabulary(
                 )
 
             # Build gender enum if provided
-            from assistant.extensions.language_learning.models import Gender
-
             gender = None
             if word_input.gender is not None:
                 try:
@@ -159,6 +167,11 @@ async def add_vocabulary(
         parts.append(f"Duplicates skipped: {', '.join(skipped_duplicates)}.")
     if errors:
         parts.append(f"Errors: {'; '.join(errors)}.")
+    if truncated_count > 0:
+        parts.append(
+            f"{truncated_count} word(s) were over the limit and not processed"
+            " — call again for the rest."
+        )
     if not added and not skipped_duplicates:
         parts.append("No words were added.")
 
@@ -168,6 +181,8 @@ async def add_vocabulary(
         added_count=len(added),
         skipped_count=len(skipped_duplicates),
         error_count=len(errors),
+        truncated_count=truncated_count,
+        warning_count=len(warnings),
     )
     return {
         "status": "ok",
@@ -175,4 +190,6 @@ async def add_vocabulary(
         "added": added,
         "skipped_duplicates": skipped_duplicates,
         "errors": errors,
+        "warnings": warnings,
+        "truncated": truncated_count,
     }

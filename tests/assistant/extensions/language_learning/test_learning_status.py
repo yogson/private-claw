@@ -48,12 +48,27 @@ class TestLearningStatusTransitions:
         assert updated.learning_status == LearningStatus.LEARNING
 
     def test_learning_to_known_when_interval_and_ef_high(self) -> None:
-        # Set up an entry that will reach interval >= 21 after review
-        # With interval=20 and EF=2.5, next interval will be round(20 * 2.5) = 50 >= 21
+        # Set up an entry where BOTH directions will meet the KNOWN threshold after review.
+        # Forward: interval=20 and EF=2.5, next interval will be round(20 * 2.5) = 50 >= 21
+        # Reverse: already at threshold (reverse_interval=21, reverse_easiness_factor=2.5)
         entry = _make_entry(LearningStatus.LEARNING, interval=20, ef=2.5)
-        entry = entry.model_copy(update={"repetitions": 3})
+        entry = entry.model_copy(
+            update={
+                "repetitions": 3,
+                "reverse_interval": 21,
+                "reverse_easiness_factor": 2.5,
+            }
+        )
         updated = SM2Engine.update_entry(entry, rating=3)
         assert updated.learning_status == LearningStatus.KNOWN
+
+    def test_learning_stays_learning_when_only_one_direction_strong(self) -> None:
+        # Forward interval is high but reverse is still 0 — should NOT promote to KNOWN
+        entry = _make_entry(LearningStatus.LEARNING, interval=20, ef=2.5)
+        entry = entry.model_copy(update={"repetitions": 3})
+        # reverse_interval remains 0
+        updated = SM2Engine.update_entry(entry, rating=3)
+        assert updated.learning_status == LearningStatus.LEARNING
 
     def test_known_to_learning_on_poor_rating(self) -> None:
         entry = _make_entry(LearningStatus.KNOWN, interval=30, ef=2.5)

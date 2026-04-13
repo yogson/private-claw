@@ -88,6 +88,10 @@ def _make_suspended_entry(word: str) -> VocabularyEntry:
 
 
 class TestStartExercise:
+    @pytest.fixture(autouse=True)
+    def set_webapp_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VOCABULARY_WEBAPP_URL", "https://test.example.com/exercise")
+
     @pytest.mark.asyncio
     async def test_no_words_due(self, store: VocabularyStore) -> None:
         ctx = _make_ctx(store)
@@ -156,3 +160,14 @@ class TestStartExercise:
         ctx.deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
         result = await start_exercise(ctx)
         assert result["status"] == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_error_when_webapp_url_not_configured(
+        self, store: VocabularyStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("VOCABULARY_WEBAPP_URL", raising=False)
+        await store.add(_make_new_entry("σπίτι"))
+        ctx = _make_ctx(store)
+        result = await start_exercise(ctx)
+        assert result["status"] == "error"
+        assert "WebApp URL is not configured" in result["reason"]

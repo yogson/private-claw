@@ -53,25 +53,25 @@ def _make_entry(
     )
 
 
-class TestFindDuplicate:
+class TestFindByWord:
     @pytest.mark.asyncio
     async def test_find_existing_word(self, store: VocabularyStore) -> None:
         entry = _make_entry("σπίτι")
         await store.add(entry)
-        result = await store.find_duplicate("user-1", "σπίτι")
+        result = await store.find_by_word("user-1", "σπίτι")
         assert result is not None
         assert result.word == "σπίτι"
 
     @pytest.mark.asyncio
-    async def test_find_duplicate_case_insensitive(self, store: VocabularyStore) -> None:
+    async def test_find_by_word_case_insensitive(self, store: VocabularyStore) -> None:
         entry = _make_entry("Σπίτι")
         await store.add(entry)
-        result = await store.find_duplicate("user-1", "σπίτι")
+        result = await store.find_by_word("user-1", "σπίτι")
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_returns_none_for_nonexistent(self, store: VocabularyStore) -> None:
-        result = await store.find_duplicate("user-1", "unknown")
+        result = await store.find_by_word("user-1", "unknown")
         assert result is None
 
 

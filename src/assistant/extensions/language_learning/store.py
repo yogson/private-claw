@@ -392,21 +392,17 @@ class VocabularyStore:
         user_id: str,
         word: str,
     ) -> VocabularyEntry | None:
-        """Find an entry by exact word match."""
+        """Find an entry by word (case-insensitive match on the word field).
+
+        Returns the first entry whose word matches `word` case-insensitively,
+        or None if no matching entry exists.
+        """
         entries = await self._read_user_vocabulary(user_id)
         word_lower = word.lower()
         for entry in entries.values():
             if entry.word.lower() == word_lower:
                 return entry
         return None
-
-    async def find_duplicate(
-        self,
-        user_id: str,
-        word: str,
-    ) -> VocabularyEntry | None:
-        """Find a duplicate entry by word (case-insensitive). Alias for find_by_word."""
-        return await self.find_by_word(user_id, word)
 
     async def clear_user_vocabulary(self, user_id: str) -> int:
         """Delete all vocabulary for a user. Returns count of deleted entries."""

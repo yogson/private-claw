@@ -26,7 +26,6 @@ logger = structlog.get_logger(__name__)
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 30
 _WEBAPP_URL_ENV = "VOCABULARY_WEBAPP_URL"
-_DEFAULT_WEBAPP_URL = "https://example.com/vocabulary-exercise"
 
 
 def _encode_words(words: list[Any]) -> str:
@@ -112,7 +111,18 @@ async def start_exercise(
         return {"status": "error", "reason": f"Failed to encode words: {exc}"}
 
     # Build WebApp URL
-    base_url = os.environ.get(_WEBAPP_URL_ENV, _DEFAULT_WEBAPP_URL).rstrip("/")
+    raw_url = os.environ.get(_WEBAPP_URL_ENV)
+    if raw_url is None:
+        logger.warning(
+            "ext.language_learning.start_exercise",
+            status="misconfigured",
+            reason=f"{_WEBAPP_URL_ENV} environment variable is not set",
+        )
+        return {
+            "status": "error",
+            "reason": "Exercise cannot be started: WebApp URL is not configured.",
+        }
+    base_url = raw_url.rstrip("/")
     webapp_url = f"{base_url}?words={encoded}&dir={direction}"
 
     # Build summary text

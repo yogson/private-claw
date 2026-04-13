@@ -129,6 +129,46 @@ class TestAddVocabulary:
         result = await add_vocabulary(ctx, words)
         assert result["status"] == "ok"
         assert len(result["added"]) == 10  # Max 10
+        assert result["truncated"] == 5
+        assert "5 word(s) were over the limit" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_noun_without_gender_article_has_warning(self, store: VocabularyStore) -> None:
+        ctx = _make_ctx(store)
+        words = [
+            WordInput(
+                word="νερό",
+                transliteration="neró",
+                translation="вода",
+                part_of_speech=PartOfSpeech.NOUN,
+                # No gender or article
+            )
+        ]
+        result = await add_vocabulary(ctx, words)
+        assert result["status"] == "ok"
+        assert "νερό" in result["added"]
+        assert any("νερό" in w and "noun without gender/article" in w for w in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_verb_without_verb_forms_has_warning_and_error(
+        self, store: VocabularyStore
+    ) -> None:
+        ctx = _make_ctx(store)
+        words = [
+            WordInput(
+                word="τρέχω",
+                transliteration="trécho",
+                translation="бежать",
+                part_of_speech=PartOfSpeech.VERB,
+                # No verb_forms — warning is emitted, but the model also rejects the entry
+            )
+        ]
+        result = await add_vocabulary(ctx, words)
+        assert result["status"] == "ok"
+        # The model enforces verb_forms for verbs, so the entry fails to create
+        assert "τρέχω" not in result["added"]
+        assert any("τρέχω" in w and "verb without verb_forms" in w for w in result["warnings"])
+        assert len(result["errors"]) == 1
 
     @pytest.mark.asyncio
     async def test_unavailable_without_store(self) -> None:

@@ -115,12 +115,32 @@ async def search_vocabulary(
 
     formatted = [_format_entry(e) for e in entries]
 
+    # Build filter summary note
+    active_filters: list[str] = []
+    if status is not None:
+        active_filters.append(f"status={status}")
+    if tags:
+        active_filters.append(f"tags={tags!r}")
+    if query:
+        active_filters.append(f"query={query!r}")
+    if active_filters:
+        filter_str = ", ".join(active_filters)
+        note = (
+            f"Showing {len(formatted)} result(s) (filtered by {filter_str}). "
+            f"Results may be fewer than limit when combining query and status/tag filters."
+        )
+    else:
+        note = None
+
     logger.info(
         "ext.language_learning.search_vocabulary",
         result_count=len(formatted),
     )
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
         "count": len(formatted),
         "entries": formatted,
     }
+    if note is not None:
+        result["note"] = note
+    return result

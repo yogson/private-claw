@@ -178,18 +178,20 @@ class SM2Engine:
                 updates["reverse_correct_reviews"] = entry.reverse_correct_reviews + 1
 
         # Apply LearningStatus transitions
-        new_interval = int(
-            updates.get("interval", entry.interval)
-            if direction == CardDirection.FORWARD
-            else updates.get("reverse_interval", entry.reverse_interval)
-        )
-        new_ef = float(
-            updates.get("easiness_factor", entry.easiness_factor)
-            if direction == CardDirection.FORWARD
-            else updates.get("reverse_easiness_factor", entry.reverse_easiness_factor)
-        )
+        # NOTE: Single learning_status covers both directions. A word is KNOWN only when
+        # both directions meet the threshold. TODO: consider per-direction status in future.
+        if direction == CardDirection.FORWARD:
+            fwd_interval = int(updates.get("interval", entry.interval))
+            fwd_ef = float(updates.get("easiness_factor", entry.easiness_factor))
+            rev_interval = entry.reverse_interval
+            rev_ef = entry.reverse_easiness_factor
+        else:
+            fwd_interval = entry.interval
+            fwd_ef = entry.easiness_factor
+            rev_interval = int(updates.get("reverse_interval", entry.reverse_interval))
+            rev_ef = float(updates.get("reverse_easiness_factor", entry.reverse_easiness_factor))
         new_status = SM2Engine.apply_status_transition(
-            entry, rating, direction, new_interval, new_ef
+            entry, rating, fwd_interval, fwd_ef, rev_interval, rev_ef
         )
         updates["learning_status"] = new_status
 
@@ -200,18 +202,31 @@ class SM2Engine:
     def apply_status_transition(
         entry: "VocabularyEntry",
         rating: int,
-        direction: CardDirection,
-        new_interval: int,
-        new_ef: float,
+        fwd_interval: int,
+        fwd_ef: float,
+        rev_interval: int,
+        rev_ef: float,
     ) -> "LearningStatus":
-        """Compute the new LearningStatus after a review."""
+        """Compute the new LearningStatus after a review.
+
+        NOTE: Single learning_status covers both directions. A word is KNOWN only when
+        both directions meet the threshold (interval >= 21 AND EF >= 2.5 for BOTH
+        directions). TODO: consider per-direction status in future.
+        """
         current_status = entry.learning_status
         if current_status == LearningStatus.SUSPENDED:
             return current_status
         if current_status == LearningStatus.NEW:
             return LearningStatus.LEARNING
         if current_status == LearningStatus.LEARNING:
-            if new_interval >= LEARNED_THRESHOLD_DAYS and new_ef >= KNOWN_EF_THRESHOLD:
+            # A word is KNOWN only when BOTH directions meet the threshold
+            both_known = (
+                fwd_interval >= LEARNED_THRESHOLD_DAYS
+                and fwd_ef >= KNOWN_EF_THRESHOLD
+                and rev_interval >= LEARNED_THRESHOLD_DAYS
+                and rev_ef >= KNOWN_EF_THRESHOLD
+            )
+            if both_known:
                 return LearningStatus.KNOWN
             return LearningStatus.LEARNING
         if current_status == LearningStatus.KNOWN:
