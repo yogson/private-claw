@@ -45,6 +45,9 @@ KNOWN_EF_THRESHOLD: float = 2.5
 # Threshold for refresher reviews for KNOWN words (days since last review)
 KNOWN_REFRESHER_DAYS: int = 60
 
+# Ratings that trigger immediate re-review (next_review = now)
+IMMEDIATE_RETRY_RATINGS: frozenset[int] = frozenset({0, 1})
+
 
 @dataclass
 class SM2Result:
@@ -111,7 +114,12 @@ class SM2Engine:
                 # For subsequent repetitions: I(n) = I(n-1) * EF
                 new_interval = round(interval * new_ef)
 
-        next_review = now + timedelta(days=new_interval)
+        # Words rated 0 (Again) or 1 (Hard) are scheduled for immediate re-review
+        # so they appear in the very next exercise session instead of the next day.
+        if rating in IMMEDIATE_RETRY_RATINGS:
+            next_review = now
+        else:
+            next_review = now + timedelta(days=new_interval)
 
         return SM2Result(
             easiness_factor=round(new_ef, 2),

@@ -11,6 +11,7 @@ from assistant.extensions.language_learning.models import (
 )
 from assistant.extensions.language_learning.sm2 import (
     DEFAULT_EASINESS_FACTOR,
+    IMMEDIATE_RETRY_RATINGS,
     LEARNED_THRESHOLD_DAYS,
     MIN_EASINESS_FACTOR,
     SM2Engine,
@@ -100,6 +101,35 @@ class TestSM2Calculate:
     def test_default_ef(self) -> None:
         result = SM2Engine.calculate(rating=2)
         assert result.easiness_factor >= MIN_EASINESS_FACTOR
+
+    def test_again_rating_sets_next_review_to_now(self, base_time: datetime) -> None:
+        """Rating 0 (Again) should schedule immediate re-review."""
+        result = SM2Engine.calculate(rating=0, review_time=base_time)
+        assert result.next_review == base_time
+        assert 0 in IMMEDIATE_RETRY_RATINGS
+
+    def test_hard_rating_sets_next_review_to_now(self, base_time: datetime) -> None:
+        """Rating 1 (Hard) should schedule immediate re-review."""
+        result = SM2Engine.calculate(rating=1, review_time=base_time)
+        assert result.next_review == base_time
+        assert 1 in IMMEDIATE_RETRY_RATINGS
+
+    def test_good_rating_schedules_next_day(self, base_time: datetime) -> None:
+        """Rating 2 (Good) should NOT use immediate retry — normal SM-2 schedule."""
+        result = SM2Engine.calculate(rating=2, review_time=base_time)
+        assert result.next_review > base_time
+
+    def test_easy_rating_schedules_next_day(self, base_time: datetime) -> None:
+        """Rating 3 (Easy) should NOT use immediate retry — normal SM-2 schedule."""
+        result = SM2Engine.calculate(rating=3, review_time=base_time)
+        assert result.next_review > base_time
+
+    def test_immediate_retry_interval_unchanged(self, base_time: datetime) -> None:
+        """SM-2 interval value is preserved even when next_review is set to now."""
+        result = SM2Engine.calculate(rating=0, repetitions=5, interval=30, review_time=base_time)
+        # Interval resets per SM-2, but next_review is immediate
+        assert result.interval == 1
+        assert result.next_review == base_time
 
 
 class TestSM2UpdateEntry:
