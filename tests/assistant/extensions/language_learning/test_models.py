@@ -12,6 +12,7 @@ from assistant.extensions.language_learning.models import (
     CompactWordPayload,
     ExerciseResultPayload,
     Gender,
+    LearningStatus,
     PartOfSpeech,
     VerbForms,
     VocabularyEntry,
@@ -31,9 +32,10 @@ class TestVocabularyEntry:
             part_of_speech=PartOfSpeech.NOUN,
         )
         assert entry.word == "σπίτι"
-        assert entry.easiness_factor == 2.5
-        assert entry.interval == 0
-        assert entry.repetitions == 0
+        assert entry.learning_status == LearningStatus.NEW
+        assert entry.fsrs_card is None
+        assert entry.fsrs_card_reverse is None
+        assert entry.total_reviews == 0
 
     def test_full_entry(self) -> None:
         entry = VocabularyEntry(
@@ -92,16 +94,37 @@ class TestVocabularyEntry:
             )
             assert entry.article == article
 
-    def test_easiness_factor_minimum(self) -> None:
-        with pytest.raises(ValidationError):
-            VocabularyEntry(
-                user_id="user-1",
-                word="test",
-                transliteration="test",
-                translation="test",
-                part_of_speech=PartOfSpeech.NOUN,
-                easiness_factor=1.0,  # Below minimum of 1.3
-            )
+    def test_fsrs_card_defaults_to_none(self) -> None:
+        entry = VocabularyEntry(
+            user_id="user-1",
+            word="test",
+            transliteration="test",
+            translation="test",
+            part_of_speech=PartOfSpeech.NOUN,
+        )
+        assert entry.fsrs_card is None
+        assert entry.fsrs_card_reverse is None
+
+    def test_fsrs_card_can_store_dict(self) -> None:
+        card_data = {
+            "card_id": 123,
+            "state": 2,
+            "step": None,
+            "stability": 10.0,
+            "difficulty": 5.0,
+            "due": datetime.now(UTC).isoformat(),
+            "last_review": datetime.now(UTC).isoformat(),
+        }
+        entry = VocabularyEntry(
+            user_id="user-1",
+            word="test",
+            transliteration="test",
+            translation="test",
+            part_of_speech=PartOfSpeech.NOUN,
+            fsrs_card=card_data,
+        )
+        assert entry.fsrs_card is not None
+        assert entry.fsrs_card["stability"] == 10.0
 
     def test_is_due_forward(self) -> None:
         now = datetime.now(UTC)
@@ -141,38 +164,6 @@ class TestVocabularyEntry:
             reverse_next_review=past,
         )
         assert entry.is_due(CardDirection.REVERSE, now) is True
-
-    def test_get_sm2_fields_forward(self) -> None:
-        entry = VocabularyEntry(
-            user_id="user-1",
-            word="test",
-            transliteration="test",
-            translation="test",
-            part_of_speech=PartOfSpeech.NOUN,
-            easiness_factor=2.7,
-            interval=6,
-            repetitions=2,
-        )
-        fields = entry.get_sm2_fields(CardDirection.FORWARD)
-        assert fields["easiness_factor"] == 2.7
-        assert fields["interval"] == 6
-        assert fields["repetitions"] == 2
-
-    def test_get_sm2_fields_reverse(self) -> None:
-        entry = VocabularyEntry(
-            user_id="user-1",
-            word="test",
-            transliteration="test",
-            translation="test",
-            part_of_speech=PartOfSpeech.NOUN,
-            reverse_easiness_factor=2.3,
-            reverse_interval=10,
-            reverse_repetitions=3,
-        )
-        fields = entry.get_sm2_fields(CardDirection.REVERSE)
-        assert fields["easiness_factor"] == 2.3
-        assert fields["interval"] == 10
-        assert fields["repetitions"] == 3
 
     def test_verb_entry_with_verb_forms(self) -> None:
         verb_forms = VerbForms(

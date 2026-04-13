@@ -2,8 +2,10 @@
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
+from fsrs import State
 
 from assistant.extensions.language_learning.models import (
     CardDirection,
@@ -31,6 +33,26 @@ def base_time() -> datetime:
     return datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
+def _fsrs_card_dict(
+    state: int = State.Learning,
+    stability: float = 2.0,
+    difficulty: float = 5.0,
+    due: datetime | None = None,
+    last_review: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a minimal FSRS CardDict for use in test entries."""
+    now = datetime.now(UTC)
+    return {
+        "card_id": 1,
+        "state": state,
+        "step": None if state == State.Review else 0,
+        "stability": stability,
+        "difficulty": difficulty,
+        "due": (due or now).isoformat(),
+        "last_review": (last_review or now).isoformat() if last_review else None,
+    }
+
+
 def make_entry(
     user_id: str = "user-1",
     word: str = "σπίτι",
@@ -38,6 +60,8 @@ def make_entry(
     tags: list[str] | None = None,
     next_review: datetime | None = None,
     reverse_next_review: datetime | None = None,
+    fsrs_card: dict[str, Any] | None = None,
+    fsrs_card_reverse: dict[str, Any] | None = None,
 ) -> VocabularyEntry:
     now = datetime.now(UTC)
     return VocabularyEntry(
@@ -48,8 +72,10 @@ def make_entry(
         part_of_speech=PartOfSpeech.NOUN,
         article="το",
         tags=tags or [],
-        # Use LEARNING so SM-2 schedule tests remain valid (NEW words are always due)
+        # Use LEARNING so FSRS schedule tests remain valid (NEW words are always due)
         learning_status=LearningStatus.LEARNING,
+        fsrs_card=fsrs_card,
+        fsrs_card_reverse=fsrs_card_reverse,
         next_review=next_review or now,
         reverse_next_review=reverse_next_review or now,
         created_at=now,
@@ -328,8 +354,8 @@ class TestVocabularyStoreReview:
         )
 
         assert updated is not None
-        assert updated.interval == 1
-        assert updated.repetitions == 1
+        assert updated.fsrs_card is not None  # FSRS card state stored
+        assert updated.next_review > base_time  # due date pushed into future
         assert updated.total_reviews == 1
         assert updated.correct_reviews == 1
 
@@ -360,9 +386,9 @@ class TestVocabularyStoreReview:
 
         assert len(updated) == 2
         assert updated[entry1.id] is not None
-        assert updated[entry1.id].total_reviews == 1
+        assert updated[entry1.id].total_reviews == 1  # type: ignore[union-attr]
         assert updated[entry2.id] is not None
-        assert updated[entry2.id].total_reviews == 1
+        assert updated[entry2.id].total_reviews == 1  # type: ignore[union-attr]
 
     @pytest.mark.asyncio
     async def test_process_exercise_results_with_missing(
@@ -395,20 +421,28 @@ class TestVocabularyStoreProgress:
     async def test_get_progress_with_words(
         self, store: VocabularyStore, base_time: datetime
     ) -> None:
-        # New word
+        # New word (no FSRS card data → is_new returns True)
         await store.add(make_entry(word="new", next_review=base_time))
 
-        # Learning word (interval between 1-20)
+        # Learning word (FSRS State.Learning)
         learning = make_entry(word="learning")
         learning = learning.model_copy(
-            update={"interval": 6, "total_reviews": 2, "correct_reviews": 2}
+            update={
+                "fsrs_card": _fsrs_card_dict(State.Learning, stability=2.0),
+                "total_reviews": 2,
+                "correct_reviews": 2,
+            }
         )
         await store.add(learning)
 
-        # Learned word (interval >= 21)
+        # Learned word (FSRS State.Review)
         learned = make_entry(word="learned")
         learned = learned.model_copy(
-            update={"interval": 30, "total_reviews": 10, "correct_reviews": 8}
+            update={
+                "fsrs_card": _fsrs_card_dict(State.Review, stability=30.0),
+                "total_reviews": 10,
+                "correct_reviews": 8,
+            }
         )
         await store.add(learned)
 
@@ -476,12 +510,12 @@ class TestVocabularyStoreVerbEntries:
         retrieved = await store.get("user-1", entry.id)
         assert retrieved is not None
         assert retrieved.verb_forms is not None
-        assert retrieved.verb_forms.present == entry.verb_forms.present
-        assert retrieved.verb_forms.present_tr == entry.verb_forms.present_tr
-        assert retrieved.verb_forms.aorist == entry.verb_forms.aorist
-        assert retrieved.verb_forms.aorist_tr == entry.verb_forms.aorist_tr
-        assert retrieved.verb_forms.future == entry.verb_forms.future
-        assert retrieved.verb_forms.future_tr == entry.verb_forms.future_tr
+        assert retrieved.verb_forms.present == entry.verb_forms.present  # type: ignore[union-attr]
+        assert retrieved.verb_forms.present_tr == entry.verb_forms.present_tr  # type: ignore[union-attr]
+        assert retrieved.verb_forms.aorist == entry.verb_forms.aorist  # type: ignore[union-attr]
+        assert retrieved.verb_forms.aorist_tr == entry.verb_forms.aorist_tr  # type: ignore[union-attr]
+        assert retrieved.verb_forms.future == entry.verb_forms.future  # type: ignore[union-attr]
+        assert retrieved.verb_forms.future_tr == entry.verb_forms.future_tr  # type: ignore[union-attr]
 
     @pytest.mark.asyncio
     async def test_mixed_entries(self, store: VocabularyStore) -> None:

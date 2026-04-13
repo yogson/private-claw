@@ -46,8 +46,8 @@ async def start_exercise(
 ) -> dict[str, Any]:
     """Start a flashcard exercise session. Selects due words and returns an exercise URL.
 
-    Selects words by priority: NEW words first, then LEARNING words due per SM-2 schedule,
-    then KNOWN words as rare refreshers (last reviewed > 60 days ago). SUSPENDED words
+    Selects words by priority: NEW words first, then LEARNING words due per FSRS schedule,
+    then KNOWN words when their FSRS review date is reached. SUSPENDED words
     are never included.
 
     Args:

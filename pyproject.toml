@@ -27,6 +27,7 @@ dependencies = [
     "mem0ai>=0.1.0",
     "logfire>=4.27.0",
     "claude-agent-sdk>=0.1.50",
+    "fsrs>=6.3.1",
 ]
 
 [dependency-groups]

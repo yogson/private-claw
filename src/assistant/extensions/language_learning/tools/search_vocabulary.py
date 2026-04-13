@@ -24,6 +24,11 @@ def _format_entry(entry: Any) -> dict[str, Any]:
     now = datetime.now(UTC)
     is_due = entry.next_review <= now
 
+    # Extract FSRS stability/difficulty when available
+    fsrs_card: dict[str, Any] | None = entry.fsrs_card
+    stability: float | None = fsrs_card.get("stability") if fsrs_card else None
+    difficulty: float | None = fsrs_card.get("difficulty") if fsrs_card else None
+
     result: dict[str, Any] = {
         "id": entry.id,
         "word": entry.word,
@@ -33,8 +38,8 @@ def _format_entry(entry: Any) -> dict[str, Any]:
         "status": str(entry.learning_status),
         "tags": entry.tags,
         "next_review": entry.next_review.isoformat(),
-        "interval_days": entry.interval,
-        "easiness_factor": round(entry.easiness_factor, 2),
+        "stability": round(stability, 2) if stability is not None else None,
+        "difficulty": round(difficulty, 2) if difficulty is not None else None,
         "total_reviews": entry.total_reviews,
         "due_now": is_due,
     }
