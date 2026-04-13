@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Flashcards</title>
+
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <!-- pako.js for gzip decompression -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- Loading / error screen -->
+  <div id="screen-loading" class="screen screen-active">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <p class="loading-text">Загрузка...</p>
+    </div>
+  </div>
+
+  <!-- Exercise screen -->
+  <div id="screen-exercise" class="screen">
+    <!-- Progress bar -->
+    <div id="progress-bar-wrap">
+      <div id="progress-bar"></div>
+    </div>
+
+    <!-- Card counter -->
+    <div id="card-counter" class="card-counter"></div>
+
+    <!-- Card container (flip wrapper) -->
+    <div id="card-scene" class="card-scene">
+      <div id="card" class="card">
+        <div class="card-face card-front" id="card-front"></div>
+        <div class="card-face card-back" id="card-back"></div>
+      </div>
+    </div>
+
+    <!-- Show answer button (visible on question side) -->
+    <div id="btn-show-answer-wrap" class="btn-show-answer-wrap">
+      <button id="btn-show-answer" class="btn-show-answer">Показать ответ</button>
+    </div>
+
+    <!-- Rating buttons (visible on answer side) -->
+    <div id="rating-buttons" class="rating-buttons hidden">
+      <button class="btn-rating btn-again"  data-rating="0">Снова</button>
+      <button class="btn-rating btn-hard"   data-rating="1">Трудно</button>
+      <button class="btn-rating btn-good"   data-rating="2">Хорошо</button>
+      <button class="btn-rating btn-easy"   data-rating="3">Легко</button>
+    </div>
+  </div>
+
+  <!-- Results screen -->
+  <div id="screen-results" class="screen">
+    <div class="results-content">
+      <div class="results-title" id="results-title"></div>
+      <div class="results-breakdown" id="results-breakdown"></div>
+      <div class="results-avg-time" id="results-avg-time"></div>
+    </div>
+  </div>
+
+  <!-- App modules -->
+  <script src="js/decoder.js"></script>
+  <script src="js/cards.js"></script>
+  <script src="js/results.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
