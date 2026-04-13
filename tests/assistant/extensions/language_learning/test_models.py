@@ -206,6 +206,38 @@ class TestVocabularyEntry:
         )
         assert entry.verb_forms is None
 
+    def test_verb_without_verb_forms_raises_error(self) -> None:
+        """Verb entries must have verb_forms."""
+        with pytest.raises(ValidationError, match="verb_forms is required"):
+            VocabularyEntry(
+                user_id="user-1",
+                word="γράφω",
+                transliteration="gráfo",
+                translation="писать",
+                part_of_speech=PartOfSpeech.VERB,
+                # Missing verb_forms - should fail
+            )
+
+    def test_non_verb_with_verb_forms_raises_error(self) -> None:
+        """Non-verb entries must not have verb_forms."""
+        verb_forms = VerbForms(
+            present="γράφω",
+            present_tr="gráfo",
+            aorist="έγραψα",
+            aorist_tr="égrapsa",
+            future="θα γράψω",
+            future_tr="tha grápso",
+        )
+        with pytest.raises(ValidationError, match="verb_forms must be None"):
+            VocabularyEntry(
+                user_id="user-1",
+                word="σπίτι",
+                transliteration="spíti",
+                translation="дом",
+                part_of_speech=PartOfSpeech.NOUN,
+                verb_forms=verb_forms,  # Invalid - nouns shouldn't have verb_forms
+            )
+
 
 class TestVerbForms:
     """Tests for VerbForms model."""
@@ -371,8 +403,8 @@ class TestCompactWordPayload:
         data = compact_vf.model_dump(by_alias=True)
         assert data["p"] == "γράφω"
         assert data["pt"] == "gráfo"
-        assert data["a"] == "έγραψα"
-        assert data["at"] == "égrapsa"
+        assert data["ao"] == "έγραψα"
+        assert data["aot"] == "égrapsa"
         assert data["f"] == "θα γράψω"
         assert data["ft"] == "tha grápso"
 
@@ -397,7 +429,7 @@ class TestCompactWordPayload:
         compact = CompactWordPayload.from_entry(entry)
         data = compact.model_dump(by_alias=True, exclude_none=True)
         assert data["vf"]["p"] == "διαβάζω"
-        assert data["vf"]["a"] == "διάβασα"
+        assert data["vf"]["ao"] == "διάβασα"
         assert data["vf"]["f"] == "θα διαβάσω"
 
 

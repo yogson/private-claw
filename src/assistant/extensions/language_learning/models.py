@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PartOfSpeech(StrEnum):
@@ -102,6 +102,17 @@ class VocabularyEntry(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    @model_validator(mode="after")
+    def validate_verb_forms_consistency(self) -> "VocabularyEntry":
+        """Ensure verb_forms is required for verbs and forbidden for non-verbs."""
+        if self.part_of_speech == PartOfSpeech.VERB:
+            if self.verb_forms is None:
+                raise ValueError("verb_forms is required when part_of_speech is 'verb'")
+        else:
+            if self.verb_forms is not None:
+                raise ValueError("verb_forms must be None when part_of_speech is not 'verb'")
+        return self
+
     def get_sm2_fields(self, direction: CardDirection) -> dict[str, float | int | datetime]:
         """Get SM-2 fields for a specific direction."""
         if direction == CardDirection.FORWARD:
@@ -153,8 +164,8 @@ class CompactVerbForms(BaseModel):
 
     present: str = Field(..., alias="p", description="Present tense")
     present_tr: str = Field(..., alias="pt", description="Present transliteration")
-    aorist: str = Field(..., alias="a", description="Aorist tense")
-    aorist_tr: str = Field(..., alias="at", description="Aorist transliteration")
+    aorist: str = Field(..., alias="ao", description="Aorist tense")
+    aorist_tr: str = Field(..., alias="aot", description="Aorist transliteration")
     future: str = Field(..., alias="f", description="Future tense")
     future_tr: str = Field(..., alias="ft", description="Future transliteration")
 
@@ -166,8 +177,8 @@ class CompactVerbForms(BaseModel):
         return cls(
             p=verb_forms.present,
             pt=verb_forms.present_tr,
-            a=verb_forms.aorist,
-            at=verb_forms.aorist_tr,
+            ao=verb_forms.aorist,
+            aot=verb_forms.aorist_tr,
             f=verb_forms.future,
             ft=verb_forms.future_tr,
         )
