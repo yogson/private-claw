@@ -16,7 +16,11 @@ Rating mapping:
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from assistant.extensions.language_learning.models import CardDirection, VocabularyEntry
+from assistant.extensions.language_learning.models import (
+    CardDirection,
+    LearningStatus,
+    VocabularyEntry,
+)
 
 # Rating to SM-2 quality mapping
 RATING_TO_QUALITY: dict[int, int] = {
@@ -34,6 +38,12 @@ DEFAULT_EASINESS_FACTOR: float = 2.5
 
 # Threshold for "learned" status (interval in days)
 LEARNED_THRESHOLD_DAYS: int = 21
+
+# Threshold for EF to be considered "known"
+KNOWN_EF_THRESHOLD: float = 2.5
+
+# Threshold for refresher reviews for KNOWN words (days since last review)
+KNOWN_REFRESHER_DAYS: int = 60
 
 
 @dataclass
@@ -167,8 +177,63 @@ class SM2Engine:
             if result.was_correct:
                 updates["reverse_correct_reviews"] = entry.reverse_correct_reviews + 1
 
+        # Apply LearningStatus transitions
+        # NOTE: Single learning_status covers both directions. A word is KNOWN only when
+        # both directions meet the threshold. TODO: consider per-direction status in future.
+        if direction == CardDirection.FORWARD:
+            fwd_interval = int(updates.get("interval", entry.interval))
+            fwd_ef = float(updates.get("easiness_factor", entry.easiness_factor))
+            rev_interval = entry.reverse_interval
+            rev_ef = entry.reverse_easiness_factor
+        else:
+            fwd_interval = entry.interval
+            fwd_ef = entry.easiness_factor
+            rev_interval = int(updates.get("reverse_interval", entry.reverse_interval))
+            rev_ef = float(updates.get("reverse_easiness_factor", entry.reverse_easiness_factor))
+        new_status = SM2Engine.apply_status_transition(
+            entry, rating, fwd_interval, fwd_ef, rev_interval, rev_ef
+        )
+        updates["learning_status"] = new_status
+
         # Create new entry with updates
         return entry.model_copy(update=updates)
+
+    @staticmethod
+    def apply_status_transition(
+        entry: "VocabularyEntry",
+        rating: int,
+        fwd_interval: int,
+        fwd_ef: float,
+        rev_interval: int,
+        rev_ef: float,
+    ) -> "LearningStatus":
+        """Compute the new LearningStatus after a review.
+
+        NOTE: Single learning_status covers both directions. A word is KNOWN only when
+        both directions meet the threshold (interval >= 21 AND EF >= 2.5 for BOTH
+        directions). TODO: consider per-direction status in future.
+        """
+        current_status = entry.learning_status
+        if current_status == LearningStatus.SUSPENDED:
+            return current_status
+        if current_status == LearningStatus.NEW:
+            return LearningStatus.LEARNING
+        if current_status == LearningStatus.LEARNING:
+            # A word is KNOWN only when BOTH directions meet the threshold
+            both_known = (
+                fwd_interval >= LEARNED_THRESHOLD_DAYS
+                and fwd_ef >= KNOWN_EF_THRESHOLD
+                and rev_interval >= LEARNED_THRESHOLD_DAYS
+                and rev_ef >= KNOWN_EF_THRESHOLD
+            )
+            if both_known:
+                return LearningStatus.KNOWN
+            return LearningStatus.LEARNING
+        if current_status == LearningStatus.KNOWN:
+            if rating <= 1:
+                return LearningStatus.LEARNING
+            return LearningStatus.KNOWN
+        return current_status
 
     @staticmethod
     def is_learned(entry: VocabularyEntry, direction: CardDirection) -> bool:

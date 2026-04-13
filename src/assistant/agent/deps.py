@@ -32,3 +32,7 @@ class TurnDeps:
     before the tools run.  When set, intermediate texts are streamed in real-time and
     excluded from the final response_text returned by run_turn.
     """
+    user_id: str | None = None
+    """User ID for the current turn (injected from orchestrator)."""
+    vocabulary_store: Any | None = None
+    """VocabularyStore instance for language learning tools (Any to avoid circular import)."""

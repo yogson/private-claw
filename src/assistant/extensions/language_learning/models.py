@@ -23,6 +23,15 @@ class PartOfSpeech(StrEnum):
     OTHER = "other"
 
 
+class LearningStatus(StrEnum):
+    """Learning status for vocabulary entries."""
+
+    NEW = "new"  # Just added, never reviewed
+    LEARNING = "learning"  # Active repetitions in progress
+    KNOWN = "known"  # Confident (interval >= 21d AND EF >= 2.5)
+    SUSPENDED = "suspended"  # Manually excluded by user
+
+
 class Gender(StrEnum):
     """Grammatical gender for nouns."""
 
@@ -79,6 +88,11 @@ class VocabularyEntry(BaseModel):
     example_sentence: str | None = Field(default=None, description="Example in Greek")
     example_translation: str | None = Field(default=None, description="Example translation")
     tags: list[str] = Field(default_factory=list, description="Topical tags")
+
+    # Learning status
+    learning_status: LearningStatus = Field(
+        default=LearningStatus.NEW, description="Current learning status"
+    )
 
     # SM-2 Spaced Repetition fields (forward direction: Greek -> Russian)
     easiness_factor: float = Field(default=2.5, ge=1.3, description="SM-2 easiness factor")

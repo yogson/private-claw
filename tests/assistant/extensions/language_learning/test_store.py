@@ -8,6 +8,7 @@ import pytest
 from assistant.extensions.language_learning.models import (
     CardDirection,
     CardResult,
+    LearningStatus,
     PartOfSpeech,
     VerbForms,
     VocabularyEntry,
@@ -47,6 +48,8 @@ def make_entry(
         part_of_speech=PartOfSpeech.NOUN,
         article="το",
         tags=tags or [],
+        # Use LEARNING so SM-2 schedule tests remain valid (NEW words are always due)
+        learning_status=LearningStatus.LEARNING,
         next_review=next_review or now,
         reverse_next_review=reverse_next_review or now,
         created_at=now,

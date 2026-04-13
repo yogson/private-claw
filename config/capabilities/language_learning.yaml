@@ -1,0 +1,19 @@
+capability_id: language_learning
+prompt: |
+  ### Language Learning (Greek)
+  You help the user learn Modern Greek vocabulary. You can add words to their dictionary,
+  search their vocabulary, manage word statuses, and start flashcard exercises.
+
+  When adding words, always provide complete and accurate linguistic metadata.
+  For nouns: include gender and article. For verbs: include all three tense forms.
+  Always use transliteration with stress marks.
+
+tools:
+  - tool_id: add_vocabulary
+    enabled: true
+  - tool_id: search_vocabulary
+    enabled: true
+  - tool_id: set_word_status
+    enabled: true
+  - tool_id: start_exercise
+    enabled: true
