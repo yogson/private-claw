@@ -188,6 +188,34 @@ class TestTelegramEgresSend:
         assert markup.keyboard[0][0].text == "A"
         assert markup.keyboard[1][0].text == "B"
 
+    def test_reply_keyboard_with_webapp_url_uses_webapp_info(self) -> None:
+        egress = TelegramEgress(bot_token="12345:tok")
+        response = ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id="tg:123",
+            trace_id="trace-4",
+            message_type=MessageType.INTERACTIVE,
+            text="Start exercise:",
+            ui_kind="reply_keyboard",
+            actions=[
+                ActionButton(
+                    label="🃏 Начать упражнение",
+                    callback_id="start_exercise",
+                    callback_data="",
+                    web_app_url="https://private-claw.pages.dev?words=abc&dir=forward",
+                ),
+            ],
+        )
+        markup = egress._build_reply_markup(response)
+        assert markup is not None
+        assert hasattr(markup, "keyboard")
+        assert len(markup.keyboard) == 1
+        btn = markup.keyboard[0][0]
+        assert btn.text == "🃏 Начать упражнение"
+        assert btn.web_app is not None
+        assert btn.web_app.url == "https://private-claw.pages.dev?words=abc&dir=forward"
+
     def test_split_text_prefers_newline_boundary(self) -> None:
         egress = TelegramEgress(bot_token="12345:tok")
         text = ("A" * 4090) + "\n" + ("B" * 100)

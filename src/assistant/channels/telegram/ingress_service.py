@@ -20,6 +20,7 @@ from assistant.channels.telegram.ingress_builders import (
     build_media_group_event,
     build_text_event,
     build_voice_event,
+    build_web_app_data_event,
     extract_user_id,
     has_document_or_photo,
     parse_date,
@@ -215,6 +216,10 @@ class TelegramIngress:
             event = build_voice_event(message, user_id, session_id, event_id, trace_id, created_at)
         elif has_document_or_photo(message):
             event = build_attachment_event(
+                message, user_id, session_id, event_id, trace_id, created_at
+            )
+        elif "web_app_data" in message:
+            event = build_web_app_data_event(
                 message, user_id, session_id, event_id, trace_id, created_at
             )
         else:

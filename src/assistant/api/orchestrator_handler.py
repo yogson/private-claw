@@ -5,7 +5,7 @@ from typing import Any, cast
 import structlog
 from pydantic_ai import ModelHTTPError, UnexpectedModelBehavior
 
-from assistant.api.utils import build_text_channel_response
+from assistant.api.utils import build_text_channel_response, build_webapp_button_channel_response
 from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
 from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
@@ -349,6 +349,14 @@ def _build_orchestrator_handler(
             return None
         session_id = orch_event.session_id
         response_text = orch_result.text
+        if orch_result.pending_webapp_buttons:
+            webapp_text = response_text.strip() or orch_result.pending_webapp_message or ""
+            return build_webapp_button_channel_response(
+                text=webapp_text,
+                session_id=session_id,
+                trace_id=event.trace_id,
+                buttons=orch_result.pending_webapp_buttons,
+            )
         if orch_result.pending_ask is not None:
             prompt_text = orch_result.pending_ask.question
             if response_text.strip():

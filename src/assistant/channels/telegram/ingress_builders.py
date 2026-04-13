@@ -150,6 +150,32 @@ def build_media_group_event(
     )
 
 
+def build_web_app_data_event(
+    message: dict[str, Any],
+    user_id: int,
+    session_id: str,
+    event_id: str,
+    trace_id: str,
+    created_at: datetime,
+) -> NormalizedEvent:
+    """Build a normalized text event from a Telegram WebApp data submission."""
+    chat_id = message.get("chat", {}).get("id", user_id)
+    web_app_data = message.get("web_app_data", {})
+    data_text: str = web_app_data.get("data", "")
+    return NormalizedEvent(
+        event_id=event_id,
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id=session_id,
+        user_id=str(user_id),
+        created_at=created_at,
+        trace_id=trace_id,
+        text=data_text or None,
+        idempotency_key=f"telegram:{message.get('message_id', event_id)}",
+        metadata={"chat_id": chat_id, "message_id": message.get("message_id")},
+    )
+
+
 def build_callback_query_event(
     cq: dict[str, Any], user_id: int, event_id: str, trace_id: str
 ) -> NormalizedEvent:

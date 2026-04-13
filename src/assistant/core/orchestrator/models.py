@@ -25,3 +25,5 @@ class OrchestratorResult:
 
     text: str
     pending_ask: PendingAskData | None = None
+    pending_webapp_buttons: list[dict[str, str]] | None = None
+    pending_webapp_message: str | None = None
