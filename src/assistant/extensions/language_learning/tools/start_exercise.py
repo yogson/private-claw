@@ -155,4 +155,12 @@ async def start_exercise(
         },
         "direction": direction,
         "message": message,
+        "actions": [
+            {
+                "label": "🃏 Начать упражнение",
+                "web_app_url": webapp_url,
+                "callback_id": "start_exercise",
+                "callback_data": "",
+            }
+        ],
     }

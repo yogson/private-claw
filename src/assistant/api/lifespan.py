@@ -30,6 +30,7 @@ from assistant.core.session_context import (
     SessionCapabilityContextService,
     SessionModelContextService,
 )
+from assistant.extensions.language_learning import VocabularyStore
 from assistant.extensions.mcp.bridge import mcp_pool
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logfire import configure_logfire
@@ -143,6 +144,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
+        vocabulary_store = VocabularyStore(vocabulary_dir=data_root / "vocabulary")
         orchestrator = Orchestrator(
             store=store,
             config=runtime_config,
@@ -153,6 +155,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             delegation_coordinator=delegation_coordinator,
             adapter_cache=adapter_cache,
             session_factory=session_factory,
+            vocabulary_store=vocabulary_store,
         )
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter)

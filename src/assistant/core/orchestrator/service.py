@@ -24,6 +24,7 @@ from assistant.agent.pydantic_ai_agent import (
 )
 from assistant.agent.tools import build_tool_runtime_params
 from assistant.agent.tools.registry import collect_enabled_tool_ids
+from assistant.agent.webapp_button_extractor import _extract_pending_webapp_buttons
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -430,6 +431,11 @@ class Orchestrator:
         pending_ask = _extract_pending_ask_question(
             new_msgs, session_id=session_id, turn_id=turn_id
         )
+        _webapp_result = _extract_pending_webapp_buttons(new_msgs)
+        pending_webapp_buttons: list[dict[str, str]] | None = None
+        pending_webapp_message: str | None = None
+        if _webapp_result is not None:
+            pending_webapp_buttons, pending_webapp_message = _webapp_result
         initial_persisted = False
         try:
             await persist_turn_initial(
@@ -454,7 +460,12 @@ class Orchestrator:
                 turn_id=turn_id,
                 outcomes=outcomes,
             )
-            return OrchestratorResult(text=response_text, pending_ask=pending_ask)
+            return OrchestratorResult(
+                text=response_text,
+                pending_ask=pending_ask,
+                pending_webapp_buttons=pending_webapp_buttons,
+                pending_webapp_message=pending_webapp_message,
+            )
         except Exception:
             if initial_persisted:
                 await persist_turn_terminal_failed(

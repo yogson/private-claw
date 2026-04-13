@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    WebAppInfo,
 )
 
 from assistant.channels.telegram.formatter import format_markdown_for_telegram
@@ -210,23 +211,34 @@ class TelegramEgress:
         if response.message_type != MessageType.INTERACTIVE or not response.actions:
             return None
         if response.ui_kind == "reply_keyboard":
-            keyboard: list[list[KeyboardButton]] = [
-                [KeyboardButton(text=action.label)] for action in response.actions
-            ]
+            keyboard: list[list[KeyboardButton]] = []
+            for action in response.actions:
+                if action.web_app_url:
+                    btn = KeyboardButton(
+                        text=action.label,
+                        web_app=WebAppInfo(url=action.web_app_url),
+                    )
+                else:
+                    btn = KeyboardButton(text=action.label)
+                keyboard.append([btn])
             return ReplyKeyboardMarkup(
                 keyboard=keyboard,
                 resize_keyboard=True,
                 one_time_keyboard=True,
             )
-        inline_buttons: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
+        inline_buttons: list[list[InlineKeyboardButton]] = []
+        for action in response.actions:
+            if action.web_app_url:
+                btn = InlineKeyboardButton(
+                    text=action.label,
+                    web_app=WebAppInfo(url=action.web_app_url),
+                )
+            else:
+                btn = InlineKeyboardButton(
                     text=action.label,
                     callback_data=action.callback_data,
                 )
-            ]
-            for action in response.actions
-        ]
+            inline_buttons.append([btn])
         return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
     @staticmethod

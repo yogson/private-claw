@@ -68,6 +68,7 @@ class ActionButton(BaseModel):
     callback_id: str
     callback_data: str
     style: str | None = None
+    web_app_url: str | None = None
 
 
 class ChannelResponse(BaseModel):
