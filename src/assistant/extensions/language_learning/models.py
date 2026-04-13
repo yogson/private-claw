@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PartOfSpeech(StrEnum):
@@ -44,6 +44,17 @@ class ExerciseType(StrEnum):
     FLASHCARDS = "flashcards"
 
 
+class VerbForms(BaseModel):
+    """Greek verb conjugation forms (1st person singular)."""
+
+    present: str = Field(..., min_length=1, description="Present tense (Ενεστώτας): γράφω")
+    present_tr: str = Field(..., min_length=1, description="Present transliteration: gráfo")
+    aorist: str = Field(..., min_length=1, description="Aorist/Past tense (Αόριστος): έγραψα")
+    aorist_tr: str = Field(..., min_length=1, description="Aorist transliteration: égrapsa")
+    future: str = Field(..., min_length=1, description="Future tense (Μέλλοντας): θα γράψω")
+    future_tr: str = Field(..., min_length=1, description="Future transliteration: tha grápso")
+
+
 class VocabularyEntry(BaseModel):
     """A vocabulary entry with SM-2 spaced repetition metadata."""
 
@@ -61,6 +72,9 @@ class VocabularyEntry(BaseModel):
     gender: Gender | None = Field(default=None, description="Noun gender (m/f/n)")
     article: Annotated[str | None, Field(pattern=r"^(ο|η|το)$")] = Field(
         default=None, description="Greek article for nouns"
+    )
+    verb_forms: VerbForms | None = Field(
+        default=None, description="Verb conjugation forms (present/aorist/future)"
     )
     example_sentence: str | None = Field(default=None, description="Example in Greek")
     example_translation: str | None = Field(default=None, description="Example translation")
@@ -87,6 +101,17 @@ class VocabularyEntry(BaseModel):
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def validate_verb_forms_consistency(self) -> "VocabularyEntry":
+        """Ensure verb_forms is required for verbs and forbidden for non-verbs."""
+        if self.part_of_speech == PartOfSpeech.VERB:
+            if self.verb_forms is None:
+                raise ValueError("verb_forms is required when part_of_speech is 'verb'")
+        else:
+            if self.verb_forms is not None:
+                raise ValueError("verb_forms must be None when part_of_speech is not 'verb'")
+        return self
 
     def get_sm2_fields(self, direction: CardDirection) -> dict[str, float | int | datetime]:
         """Get SM-2 fields for a specific direction."""
@@ -134,6 +159,31 @@ class ExerciseResultPayload(BaseModel):
     results: list[CardResult]
 
 
+class CompactVerbForms(BaseModel):
+    """Compact verb forms for Mini App URL encoding."""
+
+    present: str = Field(..., alias="p", description="Present tense")
+    present_tr: str = Field(..., alias="pt", description="Present transliteration")
+    aorist: str = Field(..., alias="ao", description="Aorist tense")
+    aorist_tr: str = Field(..., alias="aot", description="Aorist transliteration")
+    future: str = Field(..., alias="f", description="Future tense")
+    future_tr: str = Field(..., alias="ft", description="Future transliteration")
+
+    model_config = {"populate_by_name": True}
+
+    @classmethod
+    def from_verb_forms(cls, verb_forms: VerbForms) -> "CompactVerbForms":
+        """Create compact verb forms from VerbForms."""
+        return cls(
+            p=verb_forms.present,
+            pt=verb_forms.present_tr,
+            ao=verb_forms.aorist,
+            aot=verb_forms.aorist_tr,
+            f=verb_forms.future,
+            ft=verb_forms.future_tr,
+        )
+
+
 class CompactWordPayload(BaseModel):
     """Compact word payload for Mini App URL encoding."""
 
@@ -142,6 +192,9 @@ class CompactWordPayload(BaseModel):
     transliteration: str = Field(..., alias="t", description="Latin transliteration")
     translation: str = Field(..., alias="tr", description="Russian translation")
     article: str | None = Field(default=None, alias="a", description="Greek article")
+    verb_forms: CompactVerbForms | None = Field(
+        default=None, alias="vf", description="Verb conjugation forms"
+    )
     example_sentence: str | None = Field(default=None, alias="ex", description="Example")
     example_translation: str | None = Field(default=None, alias="et", description="Example trans")
 
@@ -150,12 +203,17 @@ class CompactWordPayload(BaseModel):
     @classmethod
     def from_entry(cls, entry: VocabularyEntry) -> "CompactWordPayload":
         """Create a compact payload from a vocabulary entry."""
+        compact_vf = None
+        if entry.verb_forms is not None:
+            compact_vf = CompactVerbForms.from_verb_forms(entry.verb_forms)
+
         return cls(
             id=entry.id,
             w=entry.word,
             t=entry.transliteration,
             tr=entry.translation,
             a=entry.article,
+            vf=compact_vf,
             ex=entry.example_sentence,
             et=entry.example_translation,
         )

@@ -9,6 +9,7 @@ from assistant.extensions.language_learning.models import (
     CardDirection,
     CardResult,
     PartOfSpeech,
+    VerbForms,
     VocabularyEntry,
 )
 from assistant.extensions.language_learning.store import VocabularyStore
@@ -45,6 +46,38 @@ def make_entry(
         translation=translation,
         part_of_speech=PartOfSpeech.NOUN,
         article="το",
+        tags=tags or [],
+        next_review=next_review or now,
+        reverse_next_review=reverse_next_review or now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def make_verb_entry(
+    user_id: str = "user-1",
+    word: str = "γράφω",
+    translation: str = "писать",
+    tags: list[str] | None = None,
+    next_review: datetime | None = None,
+    reverse_next_review: datetime | None = None,
+) -> VocabularyEntry:
+    now = datetime.now(UTC)
+    verb_forms = VerbForms(
+        present="γράφω",
+        present_tr="gráfo",
+        aorist="έγραψα",
+        aorist_tr="égrapsa",
+        future="θα γράψω",
+        future_tr="tha grápso",
+    )
+    return VocabularyEntry(
+        user_id=user_id,
+        word=word,
+        transliteration="gráfo",
+        translation=translation,
+        part_of_speech=PartOfSpeech.VERB,
+        verb_forms=verb_forms,
         tags=tags or [],
         next_review=next_review or now,
         reverse_next_review=reverse_next_review or now,
@@ -385,6 +418,88 @@ class TestVocabularyStoreProgress:
         assert progress.total_reviews == 12
         assert progress.correct_reviews == 10
         assert progress.accuracy_percent == pytest.approx(83.3, 0.1)
+
+
+class TestVocabularyStoreVerbEntries:
+    """Tests for verb entries with verb forms."""
+
+    @pytest.mark.asyncio
+    async def test_add_verb_entry(self, store: VocabularyStore) -> None:
+        entry = make_verb_entry()
+        created = await store.add(entry)
+        assert created.id == entry.id
+        assert created.word == "γράφω"
+        assert created.verb_forms is not None
+        assert created.verb_forms.present == "γράφω"
+        assert created.verb_forms.aorist == "έγραψα"
+        assert created.verb_forms.future == "θα γράψω"
+
+    @pytest.mark.asyncio
+    async def test_get_verb_entry(self, store: VocabularyStore) -> None:
+        entry = make_verb_entry()
+        await store.add(entry)
+        retrieved = await store.get("user-1", entry.id)
+        assert retrieved is not None
+        assert retrieved.verb_forms is not None
+        assert retrieved.verb_forms.present == "γράφω"
+        assert retrieved.verb_forms.aorist_tr == "égrapsa"
+
+    @pytest.mark.asyncio
+    async def test_update_verb_entry(self, store: VocabularyStore) -> None:
+        entry = make_verb_entry()
+        await store.add(entry)
+
+        # Update verb forms
+        new_verb_forms = VerbForms(
+            present="διαβάζω",
+            present_tr="diavázo",
+            aorist="διάβασα",
+            aorist_tr="diávasa",
+            future="θα διαβάσω",
+            future_tr="tha diaváso",
+        )
+        updated_entry = entry.model_copy(update={"word": "διαβάζω", "verb_forms": new_verb_forms})
+        result = await store.update(updated_entry)
+        assert result.verb_forms is not None
+        assert result.verb_forms.present == "διαβάζω"
+
+    @pytest.mark.asyncio
+    async def test_verb_entry_serialization_round_trip(self, store: VocabularyStore) -> None:
+        """Ensure verb forms survive serialization to/from JSON."""
+        entry = make_verb_entry()
+        await store.add(entry)
+
+        # Read from store (triggers deserialization)
+        retrieved = await store.get("user-1", entry.id)
+        assert retrieved is not None
+        assert retrieved.verb_forms is not None
+        assert retrieved.verb_forms.present == entry.verb_forms.present
+        assert retrieved.verb_forms.present_tr == entry.verb_forms.present_tr
+        assert retrieved.verb_forms.aorist == entry.verb_forms.aorist
+        assert retrieved.verb_forms.aorist_tr == entry.verb_forms.aorist_tr
+        assert retrieved.verb_forms.future == entry.verb_forms.future
+        assert retrieved.verb_forms.future_tr == entry.verb_forms.future_tr
+
+    @pytest.mark.asyncio
+    async def test_mixed_entries(self, store: VocabularyStore) -> None:
+        """Test store with both noun and verb entries."""
+        noun = make_entry(word="σπίτι")
+        verb = make_verb_entry(word="γράφω")
+
+        await store.add(noun)
+        await store.add(verb)
+
+        entries = await store.list_entries("user-1")
+        assert len(entries) == 2
+
+        # Find each entry
+        noun_entry = next((e for e in entries if e.word == "σπίτι"), None)
+        verb_entry = next((e for e in entries if e.word == "γράφω"), None)
+
+        assert noun_entry is not None
+        assert noun_entry.verb_forms is None
+        assert verb_entry is not None
+        assert verb_entry.verb_forms is not None
 
 
 class TestVocabularyStoreUtilities:

@@ -8,10 +8,12 @@ from pydantic import ValidationError
 from assistant.extensions.language_learning.models import (
     CardDirection,
     CardResult,
+    CompactVerbForms,
     CompactWordPayload,
     ExerciseResultPayload,
     Gender,
     PartOfSpeech,
+    VerbForms,
     VocabularyEntry,
     VocabularyProgress,
 )
@@ -172,6 +174,109 @@ class TestVocabularyEntry:
         assert fields["interval"] == 10
         assert fields["repetitions"] == 3
 
+    def test_verb_entry_with_verb_forms(self) -> None:
+        verb_forms = VerbForms(
+            present="γράφω",
+            present_tr="gráfo",
+            aorist="έγραψα",
+            aorist_tr="égrapsa",
+            future="θα γράψω",
+            future_tr="tha grápso",
+        )
+        entry = VocabularyEntry(
+            user_id="user-1",
+            word="γράφω",
+            transliteration="gráfo",
+            translation="писать",
+            part_of_speech=PartOfSpeech.VERB,
+            verb_forms=verb_forms,
+        )
+        assert entry.verb_forms is not None
+        assert entry.verb_forms.present == "γράφω"
+        assert entry.verb_forms.aorist == "έγραψα"
+        assert entry.verb_forms.future == "θα γράψω"
+
+    def test_noun_entry_without_verb_forms(self) -> None:
+        entry = VocabularyEntry(
+            user_id="user-1",
+            word="σπίτι",
+            transliteration="spíti",
+            translation="дом",
+            part_of_speech=PartOfSpeech.NOUN,
+        )
+        assert entry.verb_forms is None
+
+    def test_verb_without_verb_forms_raises_error(self) -> None:
+        """Verb entries must have verb_forms."""
+        with pytest.raises(ValidationError, match="verb_forms is required"):
+            VocabularyEntry(
+                user_id="user-1",
+                word="γράφω",
+                transliteration="gráfo",
+                translation="писать",
+                part_of_speech=PartOfSpeech.VERB,
+                # Missing verb_forms - should fail
+            )
+
+    def test_non_verb_with_verb_forms_raises_error(self) -> None:
+        """Non-verb entries must not have verb_forms."""
+        verb_forms = VerbForms(
+            present="γράφω",
+            present_tr="gráfo",
+            aorist="έγραψα",
+            aorist_tr="égrapsa",
+            future="θα γράψω",
+            future_tr="tha grápso",
+        )
+        with pytest.raises(ValidationError, match="verb_forms must be None"):
+            VocabularyEntry(
+                user_id="user-1",
+                word="σπίτι",
+                transliteration="spíti",
+                translation="дом",
+                part_of_speech=PartOfSpeech.NOUN,
+                verb_forms=verb_forms,  # Invalid - nouns shouldn't have verb_forms
+            )
+
+
+class TestVerbForms:
+    """Tests for VerbForms model."""
+
+    def test_valid_verb_forms(self) -> None:
+        verb_forms = VerbForms(
+            present="γράφω",
+            present_tr="gráfo",
+            aorist="έγραψα",
+            aorist_tr="égrapsa",
+            future="θα γράψω",
+            future_tr="tha grápso",
+        )
+        assert verb_forms.present == "γράφω"
+        assert verb_forms.present_tr == "gráfo"
+        assert verb_forms.aorist == "έγραψα"
+        assert verb_forms.aorist_tr == "égrapsa"
+        assert verb_forms.future == "θα γράψω"
+        assert verb_forms.future_tr == "tha grápso"
+
+    def test_verb_forms_min_length_validation(self) -> None:
+        with pytest.raises(ValidationError):
+            VerbForms(
+                present="",  # Empty string - should fail
+                present_tr="gráfo",
+                aorist="έγραψα",
+                aorist_tr="égrapsa",
+                future="θα γράψω",
+                future_tr="tha grápso",
+            )
+
+    def test_verb_forms_required_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            VerbForms(
+                present="γράφω",
+                present_tr="gráfo",
+                # Missing aorist fields
+            )
+
 
 class TestCardResult:
     """Tests for CardResult model."""
@@ -243,6 +348,33 @@ class TestCompactWordPayload:
         assert compact.translation == "дом"
         assert compact.article == "το"
         assert compact.example_sentence == "Το σπίτι είναι μεγάλο."
+        assert compact.verb_forms is None
+
+    def test_from_entry_with_verb_forms(self) -> None:
+        verb_forms = VerbForms(
+            present="γράφω",
+            present_tr="gráfo",
+            aorist="έγραψα",
+            aorist_tr="égrapsa",
+            future="θα γράψω",
+            future_tr="tha grápso",
+        )
+        entry = VocabularyEntry(
+            id="verb-123",
+            user_id="user-1",
+            word="γράφω",
+            transliteration="gráfo",
+            translation="писать",
+            part_of_speech=PartOfSpeech.VERB,
+            verb_forms=verb_forms,
+        )
+        compact = CompactWordPayload.from_entry(entry)
+        assert compact.id == "verb-123"
+        assert compact.word == "γράφω"
+        assert compact.verb_forms is not None
+        assert compact.verb_forms.present == "γράφω"
+        assert compact.verb_forms.aorist == "έγραψα"
+        assert compact.verb_forms.future == "θα γράψω"
 
     def test_compact_aliases(self) -> None:
         compact = CompactWordPayload(
@@ -257,6 +389,48 @@ class TestCompactWordPayload:
         assert data["w"] == "σπίτι"
         assert data["t"] == "spíti"
         assert data["tr"] == "дом"
+
+    def test_compact_verb_forms_aliases(self) -> None:
+        verb_forms = VerbForms(
+            present="γράφω",
+            present_tr="gráfo",
+            aorist="έγραψα",
+            aorist_tr="égrapsa",
+            future="θα γράψω",
+            future_tr="tha grápso",
+        )
+        compact_vf = CompactVerbForms.from_verb_forms(verb_forms)
+        data = compact_vf.model_dump(by_alias=True)
+        assert data["p"] == "γράφω"
+        assert data["pt"] == "gráfo"
+        assert data["ao"] == "έγραψα"
+        assert data["aot"] == "égrapsa"
+        assert data["f"] == "θα γράψω"
+        assert data["ft"] == "tha grápso"
+
+    def test_compact_word_payload_with_verb_forms_serialization(self) -> None:
+        verb_forms = VerbForms(
+            present="διαβάζω",
+            present_tr="diavázo",
+            aorist="διάβασα",
+            aorist_tr="diávasa",
+            future="θα διαβάσω",
+            future_tr="tha diaváso",
+        )
+        entry = VocabularyEntry(
+            id="verb-456",
+            user_id="user-1",
+            word="διαβάζω",
+            transliteration="diavázo",
+            translation="читать",
+            part_of_speech=PartOfSpeech.VERB,
+            verb_forms=verb_forms,
+        )
+        compact = CompactWordPayload.from_entry(entry)
+        data = compact.model_dump(by_alias=True, exclude_none=True)
+        assert data["vf"]["p"] == "διαβάζω"
+        assert data["vf"]["ao"] == "διάβασα"
+        assert data["vf"]["f"] == "θα διαβάσω"
 
 
 class TestVocabularyProgress:
