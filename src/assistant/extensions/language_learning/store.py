@@ -9,13 +9,14 @@ File location: data/vocabulary/{user_id}.json
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from assistant.extensions.language_learning.models import (
     CardDirection,
     CardResult,
+    LearningStatus,
     VocabularyEntry,
     VocabularyProgress,
 )
@@ -140,10 +141,11 @@ class VocabularyStore:
         self,
         user_id: str,
         tags: list[str] | None = None,
+        status: LearningStatus | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[VocabularyEntry]:
-        """List vocabulary entries with optional tag filtering."""
+        """List vocabulary entries with optional tag and status filtering."""
         entries = await self._read_user_vocabulary(user_id)
 
         result = [e for e in entries.values()]
@@ -152,6 +154,10 @@ class VocabularyStore:
         if tags:
             tag_set = set(tags)
             result = [e for e in result if tag_set.intersection(e.tags)]
+
+        # Filter by status if specified
+        if status is not None:
+            result = [e for e in result if e.learning_status == status]
 
         # Sort by created_at descending (newest first)
         result.sort(key=lambda e: e.created_at, reverse=True)
@@ -204,29 +210,59 @@ class VocabularyStore:
         direction: CardDirection = CardDirection.FORWARD,
         as_of: datetime | None = None,
     ) -> list[VocabularyEntry]:
-        """Get words due for review."""
+        """Get words due for review, respecting LearningStatus."""
         entries = await self._read_user_vocabulary(user_id)
         check_time = as_of or datetime.now(UTC)
 
-        due: list[VocabularyEntry] = []
+        new_words: list[VocabularyEntry] = []
+        due_words: list[VocabularyEntry] = []
+        refresher_words: list[VocabularyEntry] = []
+
         for entry in entries.values():
+            # Skip SUSPENDED
+            if entry.learning_status == LearningStatus.SUSPENDED:
+                continue
+
             # Filter by tags if specified
             if tags:
                 tag_set = set(tags)
                 if not tag_set.intersection(entry.tags):
                     continue
 
-            # Check if due for the specified direction
-            if entry.is_due(direction, check_time):
-                due.append(entry)
+            if entry.learning_status == LearningStatus.NEW:
+                # NEW words always have high priority
+                new_words.append(entry)
+            elif entry.learning_status == LearningStatus.KNOWN:
+                # KNOWN words only as refresher if last review > 60 days ago
+                interval = (
+                    entry.interval if direction == CardDirection.FORWARD else entry.reverse_interval
+                )
+                next_rev = (
+                    entry.next_review
+                    if direction == CardDirection.FORWARD
+                    else entry.reverse_next_review
+                )
+                last_review_date = next_rev - timedelta(days=interval)
+                days_since_review = (check_time - last_review_date).days
+                if days_since_review >= 60:
+                    refresher_words.append(entry)
+            else:
+                # LEARNING: include per SM-2 schedule
+                if entry.is_due(direction, check_time):
+                    due_words.append(entry)
 
-        # Sort by next_review (oldest first) to prioritize overdue words
+        # Sort each group
+        new_words.sort(key=lambda e: e.created_at)
         if direction == CardDirection.FORWARD:
-            due.sort(key=lambda e: e.next_review)
+            due_words.sort(key=lambda e: e.next_review)
+            refresher_words.sort(key=lambda e: e.next_review)
         else:
-            due.sort(key=lambda e: e.reverse_next_review)
+            due_words.sort(key=lambda e: e.reverse_next_review)
+            refresher_words.sort(key=lambda e: e.reverse_next_review)
 
-        return due[:limit]
+        # Combine: NEW first, then due LEARNING, then refresher KNOWN
+        combined = new_words + due_words + refresher_words
+        return combined[:limit]
 
     async def update_after_review(
         self,
@@ -363,6 +399,14 @@ class VocabularyStore:
             if entry.word.lower() == word_lower:
                 return entry
         return None
+
+    async def find_duplicate(
+        self,
+        user_id: str,
+        word: str,
+    ) -> VocabularyEntry | None:
+        """Find a duplicate entry by word (case-insensitive). Alias for find_by_word."""
+        return await self.find_by_word(user_id, word)
 
     async def clear_user_vocabulary(self, user_id: str) -> int:
         """Delete all vocabulary for a user. Returns count of deleted entries."""

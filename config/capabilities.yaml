@@ -6,4 +6,5 @@
 enabled_capabilities:
   - assistant
   - delegation_coding
+  - language_learning
 denied_capabilities: []

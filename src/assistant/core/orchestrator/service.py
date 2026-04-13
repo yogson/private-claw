@@ -95,6 +95,7 @@ class Orchestrator:
         pydantic_ai_adapter: PydanticAITurnAdapter | None = None,
         delegation_coordinator: DelegationCoordinatorInterface | None = None,
         adapter_cache: TurnAdapterCache | None = None,
+        vocabulary_store: Any | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -107,6 +108,7 @@ class Orchestrator:
         self._adapter_cache = adapter_cache
         self._session_factory = session_factory
         self._session_traces = SessionTraceManager()
+        self._vocabulary_store = vocabulary_store
 
     async def execute_turn(
         self,
@@ -238,6 +240,8 @@ class Orchestrator:
             tool_runtime_params=tool_params,
             tool_call_notifier=tool_call_notifier,
             streaming_text_notifier=streaming_text_notifier,
+            user_id=user_id,
+            vocabulary_store=self._vocabulary_store,
         )
         try:
             response_text, new_msgs, usage = await adapter.run_turn(

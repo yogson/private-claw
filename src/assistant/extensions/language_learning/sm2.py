@@ -16,7 +16,11 @@ Rating mapping:
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from assistant.extensions.language_learning.models import CardDirection, VocabularyEntry
+from assistant.extensions.language_learning.models import (
+    CardDirection,
+    LearningStatus,
+    VocabularyEntry,
+)
 
 # Rating to SM-2 quality mapping
 RATING_TO_QUALITY: dict[int, int] = {
@@ -34,6 +38,12 @@ DEFAULT_EASINESS_FACTOR: float = 2.5
 
 # Threshold for "learned" status (interval in days)
 LEARNED_THRESHOLD_DAYS: int = 21
+
+# Threshold for EF to be considered "known"
+KNOWN_EF_THRESHOLD: float = 2.5
+
+# Threshold for refresher reviews for KNOWN words (days since last review)
+KNOWN_REFRESHER_DAYS: int = 60
 
 
 @dataclass
@@ -167,8 +177,48 @@ class SM2Engine:
             if result.was_correct:
                 updates["reverse_correct_reviews"] = entry.reverse_correct_reviews + 1
 
+        # Apply LearningStatus transitions
+        new_interval = int(
+            updates.get("interval", entry.interval)
+            if direction == CardDirection.FORWARD
+            else updates.get("reverse_interval", entry.reverse_interval)
+        )
+        new_ef = float(
+            updates.get("easiness_factor", entry.easiness_factor)
+            if direction == CardDirection.FORWARD
+            else updates.get("reverse_easiness_factor", entry.reverse_easiness_factor)
+        )
+        new_status = SM2Engine.apply_status_transition(
+            entry, rating, direction, new_interval, new_ef
+        )
+        updates["learning_status"] = new_status
+
         # Create new entry with updates
         return entry.model_copy(update=updates)
+
+    @staticmethod
+    def apply_status_transition(
+        entry: "VocabularyEntry",
+        rating: int,
+        direction: CardDirection,
+        new_interval: int,
+        new_ef: float,
+    ) -> "LearningStatus":
+        """Compute the new LearningStatus after a review."""
+        current_status = entry.learning_status
+        if current_status == LearningStatus.SUSPENDED:
+            return current_status
+        if current_status == LearningStatus.NEW:
+            return LearningStatus.LEARNING
+        if current_status == LearningStatus.LEARNING:
+            if new_interval >= LEARNED_THRESHOLD_DAYS and new_ef >= KNOWN_EF_THRESHOLD:
+                return LearningStatus.KNOWN
+            return LearningStatus.LEARNING
+        if current_status == LearningStatus.KNOWN:
+            if rating <= 1:
+                return LearningStatus.LEARNING
+            return LearningStatus.KNOWN
+        return current_status
 
     @staticmethod
     def is_learned(entry: VocabularyEntry, direction: CardDirection) -> bool:
