@@ -1,0 +1,454 @@
+/* ============================================================
+   Telegram theme CSS variables with browser fallbacks
+   ============================================================ */
+:root {
+  --tg-theme-bg-color: #ffffff;
+  --tg-theme-text-color: #000000;
+  --tg-theme-hint-color: #999999;
+  --tg-theme-link-color: #2481cc;
+  --tg-theme-button-color: #2481cc;
+  --tg-theme-button-text-color: #ffffff;
+  --tg-theme-secondary-bg-color: #f5f5f5;
+}
+
+/* ============================================================
+   Reset & base
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+  background-color: var(--tg-theme-bg-color);
+  color: var(--tg-theme-text-color);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ============================================================
+   Screens
+   ============================================================ */
+.screen {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.screen-active {
+  display: flex;
+}
+
+/* ============================================================
+   Loading screen
+   ============================================================ */
+#screen-loading {
+  justify-content: center;
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading-text {
+  color: var(--tg-theme-hint-color);
+  font-size: 1rem;
+}
+
+/* Spinner */
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid var(--tg-theme-secondary-bg-color);
+  border-top-color: var(--tg-theme-button-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error state inside loading screen */
+.error-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.error-icon {
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.error-message {
+  font-size: 1rem;
+  color: var(--tg-theme-text-color);
+  max-width: 320px;
+}
+
+/* Warning banner for browser mode */
+.browser-warning {
+  background: #fff3cd;
+  color: #856404;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  text-align: center;
+  width: 100%;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+}
+
+/* ============================================================
+   Exercise screen
+   ============================================================ */
+#screen-exercise {
+  padding-top: 0;
+  gap: 0;
+}
+
+/* Progress bar */
+#progress-bar-wrap {
+  width: 100%;
+  height: 4px;
+  background: var(--tg-theme-secondary-bg-color);
+  flex-shrink: 0;
+}
+
+#progress-bar {
+  height: 100%;
+  background: var(--tg-theme-button-color);
+  width: 0%;
+  transition: width 0.4s ease;
+}
+
+/* Card counter */
+.card-counter {
+  width: 100%;
+  max-width: 480px;
+  padding: 10px 20px 0;
+  text-align: right;
+  font-size: 0.85rem;
+  color: var(--tg-theme-hint-color);
+  flex-shrink: 0;
+}
+
+/* Card scene (3-D perspective wrapper) */
+.card-scene {
+  width: 100%;
+  max-width: 480px;
+  padding: 12px 20px;
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  perspective: 1000px;
+}
+
+/* Card itself */
+.card {
+  width: 100%;
+  min-height: 260px;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.45s ease;
+  cursor: pointer;
+}
+
+.card.flipped {
+  transform: rotateY(180deg);
+}
+
+/* Card faces */
+.card-face {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-height: 260px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  background: var(--tg-theme-secondary-bg-color);
+  border-radius: 16px;
+  padding: 28px 24px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.card-back {
+  transform: rotateY(180deg);
+  justify-content: flex-start;
+  padding-top: 24px;
+}
+
+/* ---- Card typography ---- */
+
+/* Primary word (big Greek or big Russian) */
+.word-primary {
+  font-size: 2.5rem;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.2;
+  color: var(--tg-theme-text-color);
+  word-break: break-word;
+}
+
+/* Transliteration */
+.word-transliteration {
+  font-size: 1.1rem;
+  color: var(--tg-theme-hint-color);
+  font-style: italic;
+  text-align: center;
+}
+
+/* Translation (big on back) */
+.word-translation {
+  font-size: 2rem;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1.25;
+  color: var(--tg-theme-text-color);
+  word-break: break-word;
+}
+
+/* Small label shown at top of back side */
+.back-top-label {
+  font-size: 1rem;
+  color: var(--tg-theme-hint-color);
+  text-align: center;
+  width: 100%;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(128,128,128,0.15);
+  margin-bottom: 4px;
+}
+
+/* Verb forms table */
+.verb-forms {
+  width: 100%;
+  margin-top: 12px;
+  border-top: 1px solid rgba(128,128,128,0.15);
+  padding-top: 12px;
+}
+
+.verb-forms-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tg-theme-hint-color);
+  margin-bottom: 8px;
+}
+
+.verb-form-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.verb-form-label {
+  font-size: 0.82rem;
+  color: var(--tg-theme-hint-color);
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+.verb-form-value {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--tg-theme-text-color);
+  text-align: right;
+}
+
+.verb-form-trans {
+  font-size: 0.82rem;
+  color: var(--tg-theme-hint-color);
+  font-style: italic;
+  text-align: right;
+}
+
+/* Example sentence */
+.example-block {
+  width: 100%;
+  margin-top: 12px;
+  border-top: 1px solid rgba(128,128,128,0.15);
+  padding-top: 12px;
+}
+
+.example-greek {
+  font-size: 0.92rem;
+  color: var(--tg-theme-text-color);
+  margin-bottom: 4px;
+  font-style: italic;
+}
+
+.example-russian {
+  font-size: 0.88rem;
+  color: var(--tg-theme-hint-color);
+  font-style: italic;
+}
+
+/* ============================================================
+   Show answer button
+   ============================================================ */
+.btn-show-answer-wrap {
+  width: 100%;
+  max-width: 480px;
+  padding: 0 20px 16px;
+  flex-shrink: 0;
+}
+
+.btn-show-answer {
+  width: 100%;
+  min-height: 48px;
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color);
+  border: none;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn-show-answer:active {
+  opacity: 0.8;
+}
+
+/* ============================================================
+   Rating buttons
+   ============================================================ */
+.rating-buttons {
+  width: 100%;
+  max-width: 480px;
+  padding: 0 20px 20px;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rating-buttons.hidden {
+  display: none;
+}
+
+.btn-rating {
+  flex: 1;
+  min-height: 48px;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.btn-rating:active {
+  opacity: 0.85;
+  transform: scale(0.97);
+}
+
+.btn-again { background: #ff4444; }
+.btn-hard  { background: #ff8c00; }
+.btn-good  { background: #4a90d9; }
+.btn-easy  { background: #27ae60; }
+
+/* ============================================================
+   Results screen
+   ============================================================ */
+#screen-results {
+  justify-content: center;
+  padding: 24px 20px 80px;  /* bottom padding for MainButton */
+}
+
+.results-content {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.results-title {
+  font-size: 1.8rem;
+  font-weight: 700;
+  text-align: center;
+  color: var(--tg-theme-text-color);
+}
+
+.results-breakdown {
+  width: 100%;
+  background: var(--tg-theme-secondary-bg-color);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.results-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1rem;
+}
+
+.results-row-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--tg-theme-text-color);
+}
+
+.results-row-count {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--tg-theme-text-color);
+}
+
+.results-avg-time {
+  font-size: 0.95rem;
+  color: var(--tg-theme-hint-color);
+  text-align: center;
+}
+
+/* ============================================================
+   Utility
+   ============================================================ */
+.hidden {
+  display: none !important;
+}
+
+.w-full {
+  width: 100%;
+}
