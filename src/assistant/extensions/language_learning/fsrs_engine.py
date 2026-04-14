@@ -59,6 +59,7 @@ class FSRSEngine:
         rating: int,
         direction: CardDirection = CardDirection.FORWARD,
         review_time: datetime | None = None,
+        time_ms: int | None = None,
     ) -> VocabularyEntry:
         """Update a vocabulary entry after a review using FSRS.
 
@@ -70,6 +71,8 @@ class FSRSEngine:
             rating: User rating (0=Again, 1=Hard, 2=Good, 3=Easy).
             direction: Which direction was reviewed.
             review_time: Time of review (defaults to now UTC).
+            time_ms: Response time in milliseconds, forwarded to the FSRS scheduler
+                as ``review_duration`` (py-fsrs accepts milliseconds as int).
 
         Returns:
             New VocabularyEntry with updated FSRS parameters.
@@ -81,8 +84,12 @@ class FSRSEngine:
         fsrs_rating = RATING_MAP[rating]
 
         card = FSRSEngine.get_card(entry, direction)
-        new_card, _ = _scheduler.review_card(card, fsrs_rating, review_datetime=now)
+        new_card, _ = _scheduler.review_card(
+            card, fsrs_rating, review_datetime=now, review_duration=time_ms
+        )
 
+        # Hard (1) means the user recalled the word with difficulty, which counts as a
+        # successful (though difficult) recall in our system.  Only Again (0) means failure.
         was_correct = rating >= 1  # Again (0) counts as incorrect
 
         updates: dict[str, Any] = {"updated_at": now}
@@ -137,6 +144,10 @@ class FSRSEngine:
             return LearningStatus.LEARNING
 
         if current == LearningStatus.LEARNING:
+            # If fsrs_card is None for a direction, get_card() returns a fresh Card whose
+            # state is State.Learning — so the word hasn't been reviewed in that direction
+            # yet and cannot be considered learned.  Both cards must reach State.Review
+            # (i.e. graduate from the learning phase) before the word is promoted to KNOWN.
             both_graduated = fwd_card.state == State.Review and rev_card.state == State.Review
             return LearningStatus.KNOWN if both_graduated else LearningStatus.LEARNING
 

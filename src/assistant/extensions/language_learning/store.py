@@ -233,7 +233,9 @@ class VocabularyStore:
                 # NEW words always have high priority
                 new_words.append(entry)
             elif entry.learning_status == LearningStatus.KNOWN:
-                # KNOWN words: include when FSRS schedules them (due date reached)
+                # KNOWN words now follow FSRS scheduling instead of the old 60-day idle
+                # rule: they are included only when the FSRS algorithm determines they are
+                # due, based on the computed stability and elapsed time.
                 if entry.is_due(direction, check_time):
                     refresher_words.append(entry)
             else:
@@ -295,7 +297,9 @@ class VocabularyStore:
                     updated[result.word_id] = None
                     continue
 
-                updated_entry = FSRSEngine.update_entry(entry, result.rating, result.direction, now)
+                updated_entry = FSRSEngine.update_entry(
+                    entry, result.rating, result.direction, now, result.time_ms
+                )
                 entries[result.word_id] = updated_entry
                 updated[result.word_id] = updated_entry
 
@@ -322,6 +326,10 @@ class VocabularyStore:
         last_review: datetime | None = None
 
         for entry in entries.values():
+            # Exclude suspended words from active learning metrics
+            if entry.learning_status == LearningStatus.SUSPENDED:
+                continue
+
             # Count by FSRS learning stage
             if FSRSEngine.is_learned(entry, direction):
                 learned += 1

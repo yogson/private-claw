@@ -28,7 +28,7 @@ class LearningStatus(StrEnum):
 
     NEW = "new"  # Just added, never reviewed
     LEARNING = "learning"  # Active repetitions in progress
-    KNOWN = "known"  # Confident (interval >= 21d AND EF >= 2.5)
+    KNOWN = "known"  # FSRS card has reached Review state in both directions
     SUSPENDED = "suspended"  # Manually excluded by user
 
 

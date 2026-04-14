@@ -63,7 +63,6 @@ def _make_learning_entry(word: str, due: bool = True) -> VocabularyEntry:
         translation="тест",
         part_of_speech=PartOfSpeech.NOUN,
         learning_status=LearningStatus.LEARNING,
-        interval=6,
         next_review=next_review,
         reverse_next_review=next_review,
         created_at=now,

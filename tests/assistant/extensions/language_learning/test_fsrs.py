@@ -1,5 +1,6 @@
 """Tests for the FSRS spaced repetition engine."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -48,6 +49,40 @@ def _review_card_state(
         "due": last_review.isoformat(),
         "last_review": last_review.isoformat(),
     }
+
+
+class TestIsDue:
+    """Tests for VocabularyEntry.is_due() — verifies due / not-due logic."""
+
+    def test_card_not_due_when_future_review_date(
+        self, new_entry: VocabularyEntry, base_time: datetime
+    ) -> None:
+        """A card with a due date in the future must NOT be considered due."""
+        future = base_time + timedelta(days=7)
+        entry = new_entry.model_copy(update={"next_review": future, "reverse_next_review": future})
+        assert not entry.is_due(CardDirection.FORWARD, as_of=base_time)
+        assert not entry.is_due(CardDirection.REVERSE, as_of=base_time)
+
+    def test_card_is_due_when_past_review_date(
+        self, new_entry: VocabularyEntry, base_time: datetime
+    ) -> None:
+        """A card whose due date has passed must be considered due."""
+        past = base_time - timedelta(hours=1)
+        entry = new_entry.model_copy(update={"next_review": past, "reverse_next_review": past})
+        assert entry.is_due(CardDirection.FORWARD, as_of=base_time)
+        assert entry.is_due(CardDirection.REVERSE, as_of=base_time)
+
+    def test_not_due_card_excluded_from_due_words(
+        self, new_entry: VocabularyEntry, base_time: datetime
+    ) -> None:
+        """A card whose due date is in the future should be treated as not-due."""
+        future = base_time + timedelta(days=3)
+        entry = new_entry.model_copy(update={"next_review": future, "reverse_next_review": future})
+        # Simulate the check performed by get_due_words: the card must NOT appear due
+        check_time = base_time
+        assert not entry.is_due(CardDirection.FORWARD, as_of=check_time)
+        # Once time has moved past the due date it becomes due
+        assert entry.is_due(CardDirection.FORWARD, as_of=future)
 
 
 class TestFSRSEngineGetCard:
@@ -138,6 +173,33 @@ class TestFSRSEngineUpdateEntry:
         for rating in range(4):
             result = FSRSEngine.update_entry(new_entry, rating=rating, review_time=base_time)
             assert result.total_reviews == 1
+
+    def test_json_serialization_roundtrip(
+        self, new_entry: VocabularyEntry, base_time: datetime
+    ) -> None:
+        """Verify no data loss through to_dict → JSON → from_dict roundtrip."""
+        # Review a card to get non-trivial FSRS state
+        updated = FSRSEngine.update_entry(new_entry, rating=2, review_time=base_time)
+        assert updated.fsrs_card is not None
+
+        # Serialize the FSRS card dict to JSON and back
+        json_str = json.dumps(updated.fsrs_card)
+        restored_dict = json.loads(json_str)
+        restored_card = Card.from_dict(restored_dict)  # type: ignore[arg-type]
+        original_card = Card.from_dict(updated.fsrs_card)  # type: ignore[arg-type]
+
+        # Verify all card state is preserved through the roundtrip
+        assert restored_card.state == original_card.state
+        assert restored_card.stability == original_card.stability
+        assert restored_card.difficulty == original_card.difficulty
+        assert restored_card.due == original_card.due
+
+        # Re-review the card using the restored state to verify no data loss
+        entry_with_restored = updated.model_copy(update={"fsrs_card": restored_dict})
+        t2 = base_time + timedelta(minutes=10)
+        re_reviewed = FSRSEngine.update_entry(entry_with_restored, rating=2, review_time=t2)
+        assert re_reviewed.total_reviews == 2
+        assert re_reviewed.correct_reviews == 2
 
 
 class TestFSRSEngineClassification:
