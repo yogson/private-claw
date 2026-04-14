@@ -4,6 +4,7 @@ Component ID: CMP_EXT_LANGUAGE_LEARNING
 Language learning extension for vocabulary management and spaced repetition.
 """
 
+from assistant.extensions.language_learning.fsrs_engine import FSRSEngine
 from assistant.extensions.language_learning.models import (
     CardDirection,
     CardResult,
@@ -14,7 +15,6 @@ from assistant.extensions.language_learning.models import (
     VocabularyEntry,
     VocabularyProgress,
 )
-from assistant.extensions.language_learning.sm2 import SM2Engine
 from assistant.extensions.language_learning.store import VocabularyStore
 
 __all__ = [
@@ -22,9 +22,9 @@ __all__ = [
     "CardResult",
     "ExerciseResultPayload",
     "ExerciseType",
+    "FSRSEngine",
     "LearningStatus",
     "PartOfSpeech",
-    "SM2Engine",
     "VocabularyEntry",
     "VocabularyProgress",
     "VocabularyStore",

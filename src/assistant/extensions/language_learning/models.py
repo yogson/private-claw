@@ -6,7 +6,7 @@ Pydantic models for vocabulary entries and exercise payloads.
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -28,7 +28,7 @@ class LearningStatus(StrEnum):
 
     NEW = "new"  # Just added, never reviewed
     LEARNING = "learning"  # Active repetitions in progress
-    KNOWN = "known"  # Confident (interval >= 21d AND EF >= 2.5)
+    KNOWN = "known"  # FSRS card has reached Review state in both directions
     SUSPENDED = "suspended"  # Manually excluded by user
 
 
@@ -65,7 +65,7 @@ class VerbForms(BaseModel):
 
 
 class VocabularyEntry(BaseModel):
-    """A vocabulary entry with SM-2 spaced repetition metadata."""
+    """A vocabulary entry with FSRS spaced repetition metadata."""
 
     # Identity
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -94,16 +94,18 @@ class VocabularyEntry(BaseModel):
         default=LearningStatus.NEW, description="Current learning status"
     )
 
-    # SM-2 Spaced Repetition fields (forward direction: Greek -> Russian)
-    easiness_factor: float = Field(default=2.5, ge=1.3, description="SM-2 easiness factor")
-    interval: int = Field(default=0, ge=0, description="Days until next review")
-    repetitions: int = Field(default=0, ge=0, description="Consecutive correct recalls")
+    # FSRS card state — forward direction (Greek → Russian)
+    # Stored as the dict returned by Card.to_dict(); None for words not yet reviewed.
+    fsrs_card: dict[str, Any] | None = Field(
+        default=None, description="FSRS Card state for forward direction"
+    )
+    # Scheduled next review date (kept in sync with fsrs_card.due after each review)
     next_review: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    # SM-2 fields for reverse direction (Russian -> Greek)
-    reverse_easiness_factor: float = Field(default=2.5, ge=1.3)
-    reverse_interval: int = Field(default=0, ge=0)
-    reverse_repetitions: int = Field(default=0, ge=0)
+    # FSRS card state — reverse direction (Russian → Greek)
+    fsrs_card_reverse: dict[str, Any] | None = Field(
+        default=None, description="FSRS Card state for reverse direction"
+    )
     reverse_next_review: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Stats
@@ -126,26 +128,6 @@ class VocabularyEntry(BaseModel):
             if self.verb_forms is not None:
                 raise ValueError("verb_forms must be None when part_of_speech is not 'verb'")
         return self
-
-    def get_sm2_fields(self, direction: CardDirection) -> dict[str, float | int | datetime]:
-        """Get SM-2 fields for a specific direction."""
-        if direction == CardDirection.FORWARD:
-            return {
-                "easiness_factor": self.easiness_factor,
-                "interval": self.interval,
-                "repetitions": self.repetitions,
-                "next_review": self.next_review,
-                "total_reviews": self.total_reviews,
-                "correct_reviews": self.correct_reviews,
-            }
-        return {
-            "easiness_factor": self.reverse_easiness_factor,
-            "interval": self.reverse_interval,
-            "repetitions": self.reverse_repetitions,
-            "next_review": self.reverse_next_review,
-            "total_reviews": self.reverse_total_reviews,
-            "correct_reviews": self.reverse_correct_reviews,
-        }
 
     def is_due(self, direction: CardDirection, as_of: datetime | None = None) -> bool:
         """Check if word is due for review in the specified direction."""
@@ -238,9 +220,9 @@ class VocabularyProgress(BaseModel):
 
     user_id: str
     total_words: int = 0
-    words_learned: int = 0  # Words with interval >= 21 days
-    words_learning: int = 0  # Words with 0 < interval < 21
-    words_new: int = 0  # Words with interval = 0
+    words_learned: int = 0  # Words in FSRS Review state (both directions)
+    words_learning: int = 0  # Words in FSRS Learning/Relearning state
+    words_new: int = 0  # Words never reviewed in this direction
     total_reviews: int = 0
     correct_reviews: int = 0
     accuracy_percent: float = 0.0

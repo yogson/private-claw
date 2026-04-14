@@ -3,7 +3,7 @@ Component ID: CMP_EXT_LANGUAGE_LEARNING
 
 Process exercise results tool for the language learning agent.
 Accepts the JSON payload sent by the Mini App via web_app_data and applies
-SM-2 spaced-repetition updates to the user's vocabulary store.
+FSRS spaced-repetition updates to the user's vocabulary store.
 """
 
 import json

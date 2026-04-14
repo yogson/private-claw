@@ -1,7 +1,7 @@
 """
 Component ID: CMP_EXT_LANGUAGE_LEARNING
 
-JSON file-based vocabulary store with SM-2 spaced repetition support.
+JSON file-based vocabulary store with FSRS spaced repetition support.
 
 Storage pattern: one JSON file per user containing all vocabulary entries.
 File location: data/vocabulary/{user_id}.json
@@ -9,10 +9,11 @@ File location: data/vocabulary/{user_id}.json
 
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from assistant.extensions.language_learning.fsrs_engine import FSRSEngine
 from assistant.extensions.language_learning.models import (
     CardDirection,
     CardResult,
@@ -20,12 +21,11 @@ from assistant.extensions.language_learning.models import (
     VocabularyEntry,
     VocabularyProgress,
 )
-from assistant.extensions.language_learning.sm2 import SM2Engine
 from assistant.store.filesystem.atomic import atomic_write_text, ensure_directory
 
 
 class VocabularyStore:
-    """JSON file-based vocabulary store with SM-2 spaced repetition."""
+    """JSON file-based vocabulary store with FSRS spaced repetition."""
 
     def __init__(self, vocabulary_dir: Path) -> None:
         self._vocabulary_dir = vocabulary_dir
@@ -233,21 +233,13 @@ class VocabularyStore:
                 # NEW words always have high priority
                 new_words.append(entry)
             elif entry.learning_status == LearningStatus.KNOWN:
-                # KNOWN words only as refresher if last review > 60 days ago
-                interval = (
-                    entry.interval if direction == CardDirection.FORWARD else entry.reverse_interval
-                )
-                next_rev = (
-                    entry.next_review
-                    if direction == CardDirection.FORWARD
-                    else entry.reverse_next_review
-                )
-                last_review_date = next_rev - timedelta(days=interval)
-                days_since_review = (check_time - last_review_date).days
-                if days_since_review >= 60:
+                # KNOWN words now follow FSRS scheduling instead of the old 60-day idle
+                # rule: they are included only when the FSRS algorithm determines they are
+                # due, based on the computed stability and elapsed time.
+                if entry.is_due(direction, check_time):
                     refresher_words.append(entry)
             else:
-                # LEARNING: include per SM-2 schedule
+                # LEARNING: include per FSRS schedule
                 if entry.is_due(direction, check_time):
                     due_words.append(entry)
 
@@ -272,7 +264,7 @@ class VocabularyStore:
         direction: CardDirection = CardDirection.FORWARD,
         review_time: datetime | None = None,
     ) -> VocabularyEntry | None:
-        """Update a word's SM-2 parameters after review."""
+        """Update a word's FSRS parameters after review."""
         lock = self._get_lock(user_id)
         async with lock:
             entries = await self._read_user_vocabulary(user_id)
@@ -280,8 +272,7 @@ class VocabularyStore:
             if entry is None:
                 return None
 
-            # Apply SM-2 update
-            updated_entry = SM2Engine.update_entry(entry, rating, direction, review_time)
+            updated_entry = FSRSEngine.update_entry(entry, rating, direction, review_time)
             entries[word_id] = updated_entry
             await self._write_user_vocabulary(user_id, entries)
             return updated_entry
@@ -306,8 +297,9 @@ class VocabularyStore:
                     updated[result.word_id] = None
                     continue
 
-                # Apply SM-2 update
-                updated_entry = SM2Engine.update_entry(entry, result.rating, result.direction, now)
+                updated_entry = FSRSEngine.update_entry(
+                    entry, result.rating, result.direction, now, result.time_ms
+                )
                 entries[result.word_id] = updated_entry
                 updated[result.word_id] = updated_entry
 
@@ -334,10 +326,14 @@ class VocabularyStore:
         last_review: datetime | None = None
 
         for entry in entries.values():
-            # Count by learning stage
-            if SM2Engine.is_learned(entry, direction):
+            # Exclude suspended words from active learning metrics
+            if entry.learning_status == LearningStatus.SUSPENDED:
+                continue
+
+            # Count by FSRS learning stage
+            if FSRSEngine.is_learned(entry, direction):
                 learned += 1
-            elif SM2Engine.is_learning(entry, direction):
+            elif FSRSEngine.is_learning(entry, direction):
                 learning += 1
             else:
                 new += 1

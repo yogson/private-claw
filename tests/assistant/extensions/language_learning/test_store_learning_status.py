@@ -31,7 +31,6 @@ def base_time() -> datetime:
 def _make_entry(
     word: str = "σπίτι",
     status: LearningStatus = LearningStatus.NEW,
-    interval: int = 0,
     next_review: datetime | None = None,
     tags: list[str] | None = None,
 ) -> VocabularyEntry:
@@ -43,8 +42,6 @@ def _make_entry(
         translation="тест",
         part_of_speech=PartOfSpeech.NOUN,
         learning_status=status,
-        interval=interval,
-        easiness_factor=2.5,
         next_review=next_review or now,
         reverse_next_review=next_review or now,
         tags=tags or [],
@@ -120,34 +117,24 @@ class TestGetDueWordsWithLearningStatus:
         assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_known_words_included_as_refresher_after_60_days(
+    async def test_known_words_included_when_due(
         self, store: VocabularyStore, base_time: datetime
     ) -> None:
-        # KNOWN word: last reviewed 70 days ago (interval=7, next_review = last_review + 7)
-        # last_review = base_time - 70 days
-        # next_review = last_review + interval = base_time - 70 + 7 = base_time - 63
-        interval = 7
-        last_review = base_time - timedelta(days=70)
-        next_review = last_review + timedelta(days=interval)
-        entry = _make_entry(
-            "known_word", status=LearningStatus.KNOWN, interval=interval, next_review=next_review
-        )
+        # KNOWN word whose FSRS due date has arrived
+        past = base_time - timedelta(days=1)
+        entry = _make_entry("known_word", status=LearningStatus.KNOWN, next_review=past)
         await store.add(entry)
         result = await store.get_due_words("user-1", as_of=base_time)
         assert len(result) == 1
         assert result[0].word == "known_word"
 
     @pytest.mark.asyncio
-    async def test_known_words_not_included_before_60_days(
+    async def test_known_words_not_included_when_not_due(
         self, store: VocabularyStore, base_time: datetime
     ) -> None:
-        # KNOWN word: last reviewed 30 days ago
-        interval = 7
-        last_review = base_time - timedelta(days=30)
-        next_review = last_review + timedelta(days=interval)
-        entry = _make_entry(
-            "known_word", status=LearningStatus.KNOWN, interval=interval, next_review=next_review
-        )
+        # KNOWN word whose FSRS due date has not yet arrived
+        future = base_time + timedelta(days=10)
+        entry = _make_entry("known_word", status=LearningStatus.KNOWN, next_review=future)
         await store.add(entry)
         result = await store.get_due_words("user-1", as_of=base_time)
         assert len(result) == 0
