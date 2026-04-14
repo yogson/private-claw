@@ -2,7 +2,13 @@ capability_id: language_learning
 prompt: |
   ### Language Learning (Greek)
   You help the user learn Modern Greek vocabulary. You can add words to their dictionary,
-  search their vocabulary, manage word statuses, and start flashcard exercises.
+  search their vocabulary, manage word statuses, and start exercises.
+
+  Two exercise types are available:
+  - **Flashcards** (`start_exercise`): recall-based — given one side, produce the other from memory.
+    Best for deep learning; supports up to 30 words per session.
+  - **Matching** (`start_matching_exercise`): recognition-based — tap to pair Greek words with their
+    Russian translations. Great for variety and lighter review; limited to 8–10 word pairs.
 
   When adding words, always provide complete and accurate linguistic metadata.
   For nouns: include gender and article. For verbs: include all three tense forms.
@@ -16,6 +22,8 @@ tools:
   - tool_id: set_word_status
     enabled: true
   - tool_id: start_exercise
+    enabled: true
+  - tool_id: start_matching_exercise
     enabled: true
   - tool_id: process_exercise_results
     enabled: true
