@@ -154,13 +154,19 @@
     var selectedState = wordStates[selectedIdx];
     if (selectedState.matched) return;
 
-    // Evaluate match: right tile's idx must equal selected left idx
+    // Evaluate match: same index (exact) OR same translation value (synonym)
     if (idx === selectedIdx) {
       // ✅ Correct match
       handleCorrectMatch(selectedIdx);
     } else {
-      // ❌ Wrong match
-      handleWrongMatch(selectedIdx, idx);
+      var norm = function (s) { return (s || '').trim().toLowerCase(); };
+      if (norm(selectedState.rightText) === norm(state.rightText)) {
+        // ✅ Synonym match — both pairs share the same translation
+        handleSynonymMatch(selectedIdx, idx);
+      } else {
+        // ❌ Wrong match
+        handleWrongMatch(selectedIdx, idx);
+      }
     }
   }
 
@@ -216,6 +222,66 @@
       hideSelectedIndicator();
       animating = false;
     });
+  }
+
+  function handleSynonymMatch(leftIdx, synonymIdx) {
+    // leftIdx:    the selected left word index
+    // synonymIdx: the tapped right tile's word index (same translation, different word)
+    var stateA = wordStates[leftIdx];
+    var stateB = wordStates[synonymIdx];
+    var now    = Date.now();
+
+    // Resolve the selected word
+    stateA.attempts += 1;
+    stateA.matched   = true;
+    var timeMsA = stateA.startTime ? (now - stateA.startTime) : 0;
+    var ratingA = stateA.attempts === 1 ? 3 : stateA.attempts === 2 ? 1 : 0;
+    stateA.result = {
+      word_id:   stateA.word.id,
+      rating:    ratingA,
+      time_ms:   timeMsA,
+      direction: direction,
+    };
+
+    // Auto-resolve the synonym word (inherits any prior wrong attempts it may have)
+    stateB.attempts += 1;
+    stateB.matched   = true;
+    var timeMsB = stateB.startTime ? (now - stateB.startTime) : 0;
+    var ratingB = stateB.attempts === 1 ? 3 : stateB.attempts === 2 ? 1 : 0;
+    stateB.result = {
+      word_id:   stateB.word.id,
+      rating:    ratingB,
+      time_ms:   timeMsB,
+      direction: direction,
+    };
+
+    // Flash all four tiles green:
+    //   left[leftIdx]   + right[synonymIdx]  (the visually tapped pair)
+    //   left[synonymIdx] + right[leftIdx]    (the mirror pair)
+    var tiles = [
+      getTileByIdx('left',  leftIdx),
+      getTileByIdx('right', synonymIdx),
+      getTileByIdx('left',  synonymIdx),
+      getTileByIdx('right', leftIdx),
+    ];
+    tiles.forEach(function (t) {
+      if (t) { t.classList.remove('selected'); t.classList.add('correct'); }
+    });
+    setTimeout(function () {
+      tiles.forEach(function (t) {
+        if (t) { t.classList.remove('correct', 'selected'); t.classList.add('matched'); }
+      });
+    }, 500);
+
+    matchedCount += 2;
+    selectedIdx = null;
+    hideSelectedIndicator();
+    updateCounter();
+    updateProgress();
+
+    if (matchedCount === totalWords) {
+      finishGame();
+    }
   }
 
   // ── Visual helpers ────────────────────────────────────────────────────
