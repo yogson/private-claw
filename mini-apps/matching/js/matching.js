@@ -38,6 +38,7 @@
   let timerInterval = null;
   let startTime     = null;
   let initialized   = false;
+  let animating     = false; // guard flag: blocks taps during wrong-match flash
 
   // ── Init ──────────────────────────────────────────────────────────────
   function initMatching(wordList, dir, completeCb) {
@@ -76,9 +77,8 @@
     // Render columns
     renderColumns(rightOrder);
 
-    // Start timer on first render (not on first tap, for consistency)
-    startTime = Date.now();
-    startTimer();
+    // Timer starts on first tap (see onLeftTap) to avoid penalising slow
+    // devices or users who read the words before starting.
 
     // Update header
     updateCounter();
@@ -130,6 +130,12 @@
 
     selectedIdx = idx;
 
+    // Start the global timer on the very first tap
+    if (startTime === null) {
+      startTime = Date.now();
+      startTimer();
+    }
+
     // Start timing this word on first tap
     if (state.startTime === null) {
       state.startTime = Date.now();
@@ -141,6 +147,7 @@
 
   function onRightTap(idx) {
     if (selectedIdx === null) return; // nothing selected
+    if (animating) return;            // block taps during wrong-match flash
     var state = wordStates[idx];
     if (state.matched) return;
 
@@ -199,11 +206,15 @@
     var state = wordStates[leftIdx];
     state.attempts += 1;
 
+    // Set guard to block any further taps during the 500ms flash animation
+    animating = true;
+
     // Flash red on both tiles
     flashWrongTiles(leftIdx, rightIdx, function () {
       deselectLeft(leftIdx);
       selectedIdx = null;
       hideSelectedIndicator();
+      animating = false;
     });
   }
 

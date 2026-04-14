@@ -3,7 +3,7 @@
  * Renders the results screen and sends data back to Telegram.
  *
  * Public API:
- *   showResults(results, totalMs)
+ *   showMatchingResults(results, totalMs)
  *   - results:  Array of { word_id, rating, time_ms, direction }
  *   - totalMs:  Total elapsed milliseconds for the whole exercise
  */

@@ -5,9 +5,6 @@ Start exercise tool for the language learning agent.
 Selects due words, encodes them as CompactWordPayload, and builds a WebApp URL.
 """
 
-import base64
-import gzip
-import json
 import os
 from typing import Any
 
@@ -17,25 +14,15 @@ from pydantic_ai import RunContext
 from assistant.agent.tools.deps import TurnDeps
 from assistant.extensions.language_learning.models import (
     CardDirection,
-    CompactWordPayload,
     LearningStatus,
 )
+from assistant.extensions.language_learning.tools._encoding import encode_words
 
 logger = structlog.get_logger(__name__)
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 30
 _WEBAPP_URL_ENV = "VOCABULARY_WEBAPP_URL"
-
-
-def _encode_words(words: list[Any]) -> str:
-    """Encode words as CompactWordPayload list → JSON → gzip → base64url."""
-    payloads = [
-        CompactWordPayload.from_entry(w).model_dump(by_alias=True, exclude_none=True) for w in words
-    ]
-    json_bytes = json.dumps(payloads, ensure_ascii=False).encode("utf-8")
-    compressed = gzip.compress(json_bytes, compresslevel=9)
-    return base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
 
 
 async def start_exercise(
@@ -105,7 +92,7 @@ async def start_exercise(
 
     # Encode words
     try:
-        encoded = _encode_words(selected)
+        encoded = encode_words(selected)
     except Exception as exc:
         logger.warning("ext.language_learning.start_exercise", encode_error=str(exc))
         return {"status": "error", "reason": f"Failed to encode words: {exc}"}
