@@ -1,8 +1,9 @@
 """
 Component ID: CMP_EXT_LANGUAGE_LEARNING
 
-Start exercise tool for the language learning agent.
-Selects due words, encodes them as CompactWordPayload, and builds a WebApp URL.
+Start matching exercise tool for the language learning agent.
+Selects a small set of due words, encodes them as CompactWordPayload, and builds
+a WebApp URL pointing to the matching mini-app.
 """
 
 import os
@@ -20,18 +21,22 @@ from assistant.extensions.language_learning.tools._encoding import encode_words
 
 logger = structlog.get_logger(__name__)
 
-_DEFAULT_LIMIT = 20
-_MAX_LIMIT = 30
-_WEBAPP_URL_ENV = "VOCABULARY_WEBAPP_URL"
+# Matching works best with fewer items on screen at once
+_DEFAULT_LIMIT = 8
+_MAX_LIMIT = 10
+_WEBAPP_URL_ENV = "MATCHING_WEBAPP_URL"
 
 
-async def start_exercise(
+async def start_matching_exercise(
     ctx: RunContext[TurnDeps],
     direction: str = "forward",
     limit: int = _DEFAULT_LIMIT,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Start a flashcard exercise session. Selects due words and returns an exercise URL.
+    """Start a word-translation matching exercise. Selects due words and returns an exercise URL.
+
+    Shows Greek words and their Russian translations in two columns; the user taps
+    to match each pair. Works best with 8–10 words so the screen remains readable.
 
     Selects words by priority: NEW words first, then LEARNING words due per FSRS schedule,
     then KNOWN words when their FSRS review date is reached. SUSPENDED words
@@ -39,13 +44,13 @@ async def start_exercise(
 
     Args:
         direction: Card direction — 'forward' (Greek→Russian) or 'reverse' (Russian→Greek).
-        limit: Maximum number of words to include (max 30).
+        limit: Maximum number of words to include (max 10, default 8).
         tags: Optional tag filter to restrict the word pool.
     """
     user_id = ctx.deps.user_id
     store = ctx.deps.vocabulary_store
     if user_id is None or store is None:
-        logger.warning("ext.language_learning.start_exercise", status="unavailable")
+        logger.warning("ext.language_learning.start_matching_exercise", status="unavailable")
         return {"status": "unavailable", "reason": "language learning not configured"}
 
     # Validate direction
@@ -57,10 +62,11 @@ async def start_exercise(
             "reason": f"Invalid direction '{direction}'. Use 'forward' or 'reverse'.",
         }
 
-    bounded_limit = max(1, min(limit, _MAX_LIMIT))
+    # Minimum of 2: a single-pair matching game is nonsensical
+    bounded_limit = max(2, min(limit, _MAX_LIMIT))
 
     logger.info(
-        "ext.language_learning.start_exercise",
+        "ext.language_learning.start_matching_exercise",
         direction=direction,
         limit=bounded_limit,
         tags=tags or [],
@@ -74,11 +80,11 @@ async def start_exercise(
             direction=card_direction,
         )
     except Exception as exc:
-        logger.warning("ext.language_learning.start_exercise", error=str(exc))
+        logger.warning("ext.language_learning.start_matching_exercise", error=str(exc))
         return {"status": "error", "reason": str(exc)}
 
     if not selected:
-        logger.info("ext.language_learning.start_exercise", status="no_words_due")
+        logger.info("ext.language_learning.start_matching_exercise", status="no_words_due")
         return {
             "status": "no_words_due",
             "message": "No words due for review right now. Great job keeping up!",
@@ -94,20 +100,20 @@ async def start_exercise(
     try:
         encoded = encode_words(selected)
     except Exception as exc:
-        logger.warning("ext.language_learning.start_exercise", encode_error=str(exc))
+        logger.warning("ext.language_learning.start_matching_exercise", encode_error=str(exc))
         return {"status": "error", "reason": f"Failed to encode words: {exc}"}
 
     # Build WebApp URL
     raw_url = os.environ.get(_WEBAPP_URL_ENV)
     if raw_url is None:
         logger.warning(
-            "ext.language_learning.start_exercise",
+            "ext.language_learning.start_matching_exercise",
             status="misconfigured",
             reason=f"{_WEBAPP_URL_ENV} environment variable is not set",
         )
         return {
             "status": "error",
-            "reason": "Exercise cannot be started: WebApp URL is not configured.",
+            "reason": "Exercise cannot be started: Matching WebApp URL is not configured.",
         }
     base_url = raw_url.rstrip("/")
     webapp_url = f"{base_url}?words={encoded}&dir={direction}"
@@ -121,10 +127,13 @@ async def start_exercise(
     if refresher_count:
         breakdown_parts.append(f"{refresher_count} refresher")
     breakdown_str = " + ".join(breakdown_parts) if breakdown_parts else str(len(selected))
-    message = f"Exercise ready: {len(selected)} words ({breakdown_str}). Tap the button to start!"
+    message = (
+        f"Matching exercise ready: {len(selected)} word pairs ({breakdown_str}). "
+        "Tap the button to start!"
+    )
 
     logger.info(
-        "ext.language_learning.start_exercise",
+        "ext.language_learning.start_matching_exercise",
         status="ready",
         word_count=len(selected),
         new_count=new_count,
@@ -144,9 +153,9 @@ async def start_exercise(
         "message": message,
         "actions": [
             {
-                "label": "🃏 Начать упражнение",
+                "label": "🔤 Начать сопоставление",
                 "web_app_url": webapp_url,
-                "callback_id": "start_exercise",
+                "callback_id": "start_matching_exercise",
                 "callback_data": "",
             }
         ],
