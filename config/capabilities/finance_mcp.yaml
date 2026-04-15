@@ -65,6 +65,10 @@ prompt: |
   - Stock tickers use standard symbols (AAPL, MSFT, GOOGL, etc.)
   - Crypto symbols use Binance convention (BTC, ETH, SOL, etc.)
 
+  **CRITICAL - Correct Parameter Names:**
+  - `get_exchange_rate`: use `from_currency` and `to_currency` (NOT `from`/`to` — those are Python reserved words and will cause errors)
+  - `get_commodity_price(commodity="gold")`: ALWAYS provide the `commodity` argument; to get ALL commodities use `get_commodity_prices()` with no args
+
 tools:
   # Forex Tools
   - tool_id: cap.mcp.finance.get_exchange_rate
