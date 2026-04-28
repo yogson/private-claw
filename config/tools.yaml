@@ -109,10 +109,6 @@ tools:
     entrypoint: assistant.extensions.language_learning.tools.start_exercise:start_exercise
     enabled: true
 
-  - tool_id: process_exercise_results
-    entrypoint: assistant.extensions.language_learning.tools.process_exercise_results:process_exercise_results
-    enabled: true
-
   - tool_id: start_matching_exercise
     entrypoint: assistant.extensions.language_learning.tools.start_matching_exercise:start_matching_exercise
     enabled: true

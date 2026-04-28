@@ -25,5 +25,3 @@ tools:
     enabled: true
   - tool_id: start_matching_exercise
     enabled: true
-  - tool_id: process_exercise_results
-    enabled: true

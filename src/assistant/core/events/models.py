@@ -19,6 +19,7 @@ class EventType(StrEnum):
     USER_CALLBACK_QUERY = "user_callback_query"
     SCHEDULER_TRIGGER = "scheduler_trigger"
     SYSTEM_CONTROL_EVENT = "system_control_event"
+    EXERCISE_RESULTS = "exercise_results"
 
 
 class EventSource(StrEnum):

@@ -2,6 +2,7 @@
 Unit tests for TelegramIngress.
 """
 
+import json
 import pytest
 
 from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
@@ -241,12 +242,21 @@ class TestWebAppDataMessage:
             }
         }
 
-    def test_web_app_data_routes_to_text_event(self) -> None:
-        """web_app_data message is normalized as USER_TEXT_MESSAGE."""
+    def test_web_app_data_non_exercise_type_routes_to_text_event(self) -> None:
+        """web_app_data with a non-exercise-results type is normalized as USER_TEXT_MESSAGE."""
+        ingress = _make_ingress()
+        event = ingress.normalize(
+            self._web_app_update(data='{"type":"other_action","value":"x"}')
+        )
+        assert event is not None
+        assert event.event_type == EventType.USER_TEXT_MESSAGE
+
+    def test_web_app_data_exercise_results_routes_to_exercise_results_event(self) -> None:
+        """web_app_data with type=exercise_results is normalized as EXERCISE_RESULTS."""
         ingress = _make_ingress()
         event = ingress.normalize(self._web_app_update())
         assert event is not None
-        assert event.event_type == EventType.USER_TEXT_MESSAGE
+        assert event.event_type == EventType.EXERCISE_RESULTS
 
     def test_web_app_data_text_contains_payload(self) -> None:
         """The JSON payload from web_app_data.data becomes event.text."""
@@ -307,7 +317,7 @@ class TestBuildWebAppDataEvent:
             trace_id="trace-1",
             created_at=created_at,
         )
-        assert event.event_type == EventType.USER_TEXT_MESSAGE
+        assert event.event_type == EventType.EXERCISE_RESULTS
         assert event.source == EventSource.TELEGRAM
         assert event.text == '{"type":"exercise_results"}'
         assert event.session_id == "tg:123456"
@@ -353,3 +363,46 @@ class TestBuildWebAppDataEvent:
             created_at=created_at,
         )
         assert event.metadata.get("chat_id") == 999888
+
+
+class TestBuildWebAppDataEventExerciseResultsDetection:
+    def _build_event(self, data: str) -> object:
+        message = {
+            "message_id": 60,
+            "from": {"id": 123456},
+            "chat": {"id": 123456},
+            "date": 1700000000,
+            "web_app_data": {"data": data, "button_text": "Start"},
+        }
+        created_at = parse_date(message["date"])
+        return build_web_app_data_event(
+            message, 123456, "tg:123456", "evt-60", "trace-60", created_at
+        )
+
+    def test_exercise_results_payload_creates_exercise_results_event(self) -> None:
+        """JSON with type=exercise_results produces an EXERCISE_RESULTS event."""
+        data = json.dumps(
+            {
+                "type": "exercise_results",
+                "results": [{"word_id": "abc", "rating": 3, "direction": "forward"}],
+            }
+        )
+        event = self._build_event(data)
+        assert event.event_type == EventType.EXERCISE_RESULTS
+
+    def test_exercise_results_event_preserves_raw_json_in_text(self) -> None:
+        """Raw JSON string is still accessible via event.text."""
+        data = json.dumps({"type": "exercise_results", "results": []})
+        event = self._build_event(data)
+        assert event.text == data
+
+    def test_non_exercise_type_creates_text_event(self) -> None:
+        """JSON with a different type stays USER_TEXT_MESSAGE."""
+        data = json.dumps({"type": "start_game", "level": 1})
+        event = self._build_event(data)
+        assert event.event_type == EventType.USER_TEXT_MESSAGE
+
+    def test_invalid_json_creates_text_event(self) -> None:
+        """Non-parseable data stays USER_TEXT_MESSAGE."""
+        event = self._build_event("this is not { json }")
+        assert event.event_type == EventType.USER_TEXT_MESSAGE

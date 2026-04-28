@@ -70,31 +70,11 @@
     var tg = window.Telegram && window.Telegram.WebApp;
 
     if (tg) {
-      tg.MainButton.setText('Отправить результаты');
+      tg.MainButton.setText('Готово');
       tg.MainButton.show();
-      var handler = function () {
-        try {
-          tg.sendData(JSON.stringify({
-            type: 'exercise_results',
-            results: results,
-          }));
-        } catch (e) {
-          console.error('sendData failed:', e);
-          var errEl = document.createElement('div');
-          errEl.style.cssText =
-            'color:#ff4444;font-size:0.85rem;text-align:center;margin-top:8px;';
-          errEl.textContent = 'Ошибка отправки. Попробуйте снова.';
-          document.querySelector('.results-content').appendChild(errEl);
-        }
-      };
-      tg.MainButton.offClick(handler);
-      tg.MainButton.onClick(handler);
-    } else {
-      // Browser mode — log to console
-      console.info('[matching] sendData payload:', JSON.stringify({
-        type: 'exercise_results',
-        results: results,
-      }));
+      tg.MainButton.onClick(function () {
+        tg.close();
+      });
     }
   }
 

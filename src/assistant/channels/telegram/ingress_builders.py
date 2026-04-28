@@ -4,6 +4,7 @@ Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 Telegram ingress helper builders for normalized events and attachment metadata.
 """
 
+import json as _json
 import mimetypes
 from datetime import UTC, datetime
 from typing import Any
@@ -158,13 +159,28 @@ def build_web_app_data_event(
     trace_id: str,
     created_at: datetime,
 ) -> NormalizedEvent:
-    """Build a normalized text event from a Telegram WebApp data submission."""
+    """Build a normalized event from a Telegram WebApp data submission.
+
+    Payloads with ``type == "exercise_results"`` produce an EXERCISE_RESULTS
+    event so the handler can process them directly without LLM involvement.
+    All other payloads fall back to USER_TEXT_MESSAGE.
+    """
     chat_id = message.get("chat", {}).get("id", user_id)
     web_app_data = message.get("web_app_data", {})
     data_text: str = web_app_data.get("data", "")
+
+    event_type = EventType.USER_TEXT_MESSAGE
+    if data_text:
+        try:
+            parsed = _json.loads(data_text)
+            if isinstance(parsed, dict) and parsed.get("type") == "exercise_results":
+                event_type = EventType.EXERCISE_RESULTS
+        except (ValueError, TypeError):
+            pass
+
     return NormalizedEvent(
         event_id=event_id,
-        event_type=EventType.USER_TEXT_MESSAGE,
+        event_type=event_type,
         source=EventSource.TELEGRAM,
         session_id=session_id,
         user_id=str(user_id),

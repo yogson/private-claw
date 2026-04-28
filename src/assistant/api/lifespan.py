@@ -179,6 +179,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             usage_service=usage_service,
             cancellation_registry=cancellation_registry,
             verbose_state=verbose_state,
+            vocabulary_store=vocabulary_store,
         )
 
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:

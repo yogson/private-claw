@@ -1,17 +1,22 @@
+import json as _json
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any, cast
 
 import structlog
+from pydantic import ValidationError
 from pydantic_ai import ModelHTTPError, UnexpectedModelBehavior
 
 from assistant.api.utils import build_text_channel_response, build_webapp_button_channel_response
 from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
+from assistant.channels.telegram.models import EventType
 from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
+from assistant.extensions.language_learning.models import ExerciseResultPayload
+from assistant.extensions.language_learning.store import VocabularyStore
 from assistant.subagents.coordinator import DelegationCoordinator
 
 logger = structlog.get_logger(__name__)
@@ -25,6 +30,7 @@ def _build_orchestrator_handler(
     usage_service: Any = None,
     cancellation_registry: CancellationRegistry | None = None,
     verbose_state: VerboseStateService | None = None,
+    vocabulary_store: VocabularyStore | None = None,
 ) -> Callable[[NormalizedEvent], Awaitable[ChannelResponse | None]]:
     mapper = NormalizedEventMapper()
 
@@ -281,6 +287,9 @@ def _build_orchestrator_handler(
                 trace_id=event.trace_id,
             )
 
+        if event.event_type == EventType.EXERCISE_RESULTS:
+            return await _handle_exercise_results(event, vocabulary_store)
+
         orch_event = mapper.map(event)
         chat_id = int(event.metadata.get("chat_id", 0))
         model_override = adapter.get_model_override(chat_id) if chat_id else None
@@ -478,6 +487,68 @@ def _build_streaming_text_notifier(
             await adapter.send_response(response, chat_id=chat_id)
 
     return _notifier
+
+
+async def _handle_exercise_results(
+    event: NormalizedEvent,
+    vocabulary_store: VocabularyStore | None,
+) -> ChannelResponse:
+    """Process exercise results directly, without LLM involvement."""
+    if vocabulary_store is None:
+        return build_text_channel_response(
+            text="Ошибка: хранилище словаря недоступно.",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+
+    try:
+        raw = _json.loads(event.text or "")
+        payload = ExerciseResultPayload.model_validate(raw)
+    except (ValueError, TypeError):
+        return build_text_channel_response(
+            text="Ошибка: неверный формат данных (невалидный JSON).",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+    except ValidationError as exc:
+        return build_text_channel_response(
+            text=f"Ошибка: неверная схема данных. {exc}",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+
+    try:
+        updated = await vocabulary_store.process_exercise_results(
+            user_id=event.user_id,
+            results=payload.results,
+        )
+    except Exception as exc:
+        logger.error(
+            "exercise_results.direct.store_error",
+            error=str(exc),
+            trace_id=event.trace_id,
+        )
+        return build_text_channel_response(
+            text=f"Ошибка при сохранении результатов: {exc}",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+
+    updated_count = sum(1 for v in updated.values() if v is not None)
+    return build_text_channel_response(
+        text=_plural_updated(updated_count),
+        session_id=event.session_id,
+        trace_id=event.trace_id,
+    )
+
+
+def _plural_updated(n: int) -> str:
+    mod10, mod100 = n % 10, n % 100
+    if mod10 == 1 and mod100 != 11:
+        return f"Обновлено {n} слово"
+    if 2 <= mod10 <= 4 and (mod100 < 10 or mod100 >= 20):
+        return f"Обновлено {n} слова"
+    return f"Обновлено {n} слов"
 
 
 def _is_token_limit_error(exc: ModelHTTPError) -> bool:
