@@ -95,6 +95,7 @@ tools:
   - tool_id: add_vocabulary
     entrypoint: assistant.extensions.language_learning.tools.add_vocabulary:add_vocabulary
     enabled: true
+    max_retries: 1
 
   - tool_id: search_vocabulary
     entrypoint: assistant.extensions.language_learning.tools.search_vocabulary:search_vocabulary

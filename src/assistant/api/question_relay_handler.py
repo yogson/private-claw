@@ -26,7 +26,7 @@ def _build_question_relay_handler(
                 task_id=task_id,
                 session_id=session_id,
             )
-            return
+            raise ValueError(f"Cannot relay question: no chat_id for session {session_id!r}")
 
         response = adapter.build_delegation_question_response(
             chat_id=chat_id,

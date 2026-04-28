@@ -46,6 +46,16 @@ def _build_orchestrator_handler(
                     session_id=event.session_id,
                     trace_id=event.trace_id,
                 )
+            logger.warning(
+                "delegation.answer.submit_failed_unexpected",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+            )
+            return build_text_channel_response(
+                text="Could not deliver your answer to the task. Please try again.",
+                session_id=event.session_id,
+                trace_id=event.trace_id,
+            )
         # Route inline-keyboard button taps for delegation question options.
         if event.callback_query is not None and adapter.is_delegation_question_callback(event):
             resolution = adapter.consume_delegation_question_callback(event)
@@ -339,8 +349,8 @@ def _build_orchestrator_handler(
             )
             return build_text_channel_response(
                 text=(
-                    "The assistant tried to use a tool that is not currently available. "
-                    "Please re-enable the required capability or start a fresh session."
+                    "The assistant encountered a tool error and could not complete the request. "
+                    "Please try again, or start a fresh session if the problem persists."
                 ),
                 session_id=orch_event.session_id,
                 trace_id=event.trace_id,

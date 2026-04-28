@@ -163,6 +163,7 @@ class ToolDefinition(BaseModel):
     tool_id: str
     entrypoint: str
     enabled: bool = True
+    max_retries: int = Field(default=0, ge=0)
     default_params: ToolDefaultParams | None = None
 
     @field_validator("entrypoint")

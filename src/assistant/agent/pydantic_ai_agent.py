@@ -190,7 +190,7 @@ class PydanticAITurnAdapter:
                         if _buffered_text is not None and deps.streaming_text_notifier is not None:
                             with contextlib.suppress(Exception):
                                 await deps.streaming_text_notifier(_buffered_text)
-                            streamed_texts.append(_buffered_text)
+                                streamed_texts.append(_buffered_text)
                             _buffered_text = None
 
                         # Buffer any text from this response; it will be flushed once the
@@ -224,7 +224,7 @@ class PydanticAITurnAdapter:
             if _buffered_text is not None and deps.streaming_text_notifier is not None:
                 with contextlib.suppress(Exception):
                     await deps.streaming_text_notifier(_buffered_text)
-                streamed_texts.append(_buffered_text)
+                    streamed_texts.append(_buffered_text)
 
         result = agent_run.result
         if result is None:

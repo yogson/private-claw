@@ -132,7 +132,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             async def _prompt_iter() -> AsyncGenerator[dict[str, Any], None]:
                 yield {
                     "type": "user",
-                    "session_id": request.task_id,
+                    "session_id": "",
                     "message": {"role": "user", "content": f"Task objective:\n{prompt}"},
                     "parent_tool_use_id": None,
                 }
@@ -145,7 +145,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                         if msg.result:
                             output_parts.append(msg.result)
 
-            task = asyncio.ensure_future(_run_query())
+            task = asyncio.create_task(_run_query())
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=request.timeout_seconds)
             except TimeoutError:
