@@ -187,7 +187,12 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
                 continue
             tools.append(cast(AgentTool, tool_instance))
         else:
-            tools.append(Tool(cast(ToolFuncEither[TurnDeps, ...], resolved), max_retries=definition.max_retries))
+            tools.append(
+                Tool(
+                    cast(ToolFuncEither[TurnDeps, ...], resolved),
+                    max_retries=definition.max_retries,
+                )
+            )
 
     if mcp_ids:
         bridge = McpBridge(config)

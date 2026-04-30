@@ -39,8 +39,7 @@ def _make_event(
 
 def _valid_payload(word_ids: list[str]) -> str:
     results = [
-        {"word_id": wid, "rating": 3, "time_ms": 1000, "direction": "forward"}
-        for wid in word_ids
+        {"word_id": wid, "rating": 3, "time_ms": 1000, "direction": "forward"} for wid in word_ids
     ]
     return json.dumps({"type": "exercise_results", "results": results})
 
@@ -126,9 +125,7 @@ class TestExerciseResultsDirectProcessing:
         store = VocabularyStore(tmp_path / "vocab")
         handler, _ = _make_handler(store)
 
-        event = _make_event(
-            text=_valid_payload(["00000000-0000-0000-0000-000000000000"])
-        )
+        event = _make_event(text=_valid_payload(["00000000-0000-0000-0000-000000000000"]))
         response = await handler(event)
 
         assert response is not None
@@ -149,9 +146,7 @@ class TestExerciseResultsDirectProcessing:
     async def test_schema_mismatch_returns_error_without_llm(self) -> None:
         """JSON with wrong structure returns error; LLM not invoked."""
         handler, orchestrator = _make_handler()
-        event = _make_event(
-            text=json.dumps({"type": "exercise_results", "results": "not-a-list"})
-        )
+        event = _make_event(text=json.dumps({"type": "exercise_results", "results": "not-a-list"}))
         response = await handler(event)
 
         assert response is not None
@@ -162,9 +157,7 @@ class TestExerciseResultsDirectProcessing:
     async def test_no_vocabulary_store_returns_error(self) -> None:
         """When vocabulary_store is None, return error without calling LLM."""
         handler, orchestrator = _make_handler(vocabulary_store=None)
-        event = _make_event(
-            text=_valid_payload(["00000000-0000-0000-0000-000000000001"])
-        )
+        event = _make_event(text=_valid_payload(["00000000-0000-0000-0000-000000000001"]))
         response = await handler(event)
 
         assert response is not None
@@ -175,13 +168,9 @@ class TestExerciseResultsDirectProcessing:
     async def test_store_exception_returns_error(self) -> None:
         """When store raises, return error response without calling LLM."""
         mock_store = MagicMock()
-        mock_store.process_exercise_results = AsyncMock(
-            side_effect=RuntimeError("disk full")
-        )
+        mock_store.process_exercise_results = AsyncMock(side_effect=RuntimeError("disk full"))
         handler, orchestrator = _make_handler(mock_store)
-        event = _make_event(
-            text=_valid_payload(["00000000-0000-0000-0000-000000000001"])
-        )
+        event = _make_event(text=_valid_payload(["00000000-0000-0000-0000-000000000001"]))
         response = await handler(event)
 
         assert response is not None

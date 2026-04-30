@@ -3,6 +3,7 @@ Unit tests for TelegramIngress.
 """
 
 import json
+
 import pytest
 
 from assistant.channels.telegram.allowlist import AllowlistGuard, UnauthorizedUserError
@@ -245,9 +246,7 @@ class TestWebAppDataMessage:
     def test_web_app_data_non_exercise_type_routes_to_text_event(self) -> None:
         """web_app_data with a non-exercise-results type is normalized as USER_TEXT_MESSAGE."""
         ingress = _make_ingress()
-        event = ingress.normalize(
-            self._web_app_update(data='{"type":"other_action","value":"x"}')
-        )
+        event = ingress.normalize(self._web_app_update(data='{"type":"other_action","value":"x"}'))
         assert event is not None
         assert event.event_type == EventType.USER_TEXT_MESSAGE
 

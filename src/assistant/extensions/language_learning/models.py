@@ -230,3 +230,54 @@ class VocabularyProgress(BaseModel):
     due_today_reverse: int = 0
     streak_days: int = 0
     last_review_date: datetime | None = None
+
+
+class FillBlanksBlank(BaseModel):
+    """A single blank position in a fill-in-the-blanks sentence."""
+
+    position: int = Field(..., ge=0, description="Zero-based blank index in the template")
+    word_id: str = Field(..., description="ID of the word that fills this blank")
+
+
+class FillBlanksSentence(BaseModel):
+    """A sentence template with one or more blanks."""
+
+    id: str = Field(..., description="Unique sentence identifier (e.g. 's1')")
+    template: str = Field(..., description="Sentence with ___ placeholders for each blank")
+    transliteration: str | None = Field(default=None, description="Transliteration of the template")
+    translation: str | None = Field(default=None, description="Translation of the full sentence")
+    blanks: list[FillBlanksBlank] = Field(
+        ..., description="Ordered list of blank positions and word IDs"
+    )
+
+
+class FillBlanksWordItem(BaseModel):
+    """A word chip in the fill-in-the-blanks word bank."""
+
+    id: str = Field(..., description="Word ID matching VocabularyEntry.id")
+    word: str = Field(..., description="Greek word to display on the chip")
+    transliteration: str = Field(..., description="Latin transliteration")
+
+
+class FillBlanksPayload(BaseModel):
+    """Exercise payload for the fill-in-the-blanks mini-app."""
+
+    type: str = Field(default="fill_blanks")
+    sentences: list[FillBlanksSentence]
+    word_bank: list[FillBlanksWordItem]
+
+
+class FillBlanksResult(BaseModel):
+    """Result for a single word placement in fill-in-the-blanks exercise."""
+
+    word_id: str = Field(..., description="ID of the word that was placed")
+    correct: bool = Field(..., description="True if placed in the correct blank")
+    time_ms: int | None = Field(default=None, ge=0, description="Time to place in milliseconds")
+
+
+class FillBlanksResultPayload(BaseModel):
+    """Payload received from the fill-in-the-blanks mini-app via sendData()."""
+
+    type: str = Field(default="fill_blanks_results")
+    direction: CardDirection = Field(default=CardDirection.FORWARD)
+    results: list[FillBlanksResult]

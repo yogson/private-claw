@@ -20,6 +20,7 @@ class EventType(StrEnum):
     SCHEDULER_TRIGGER = "scheduler_trigger"
     SYSTEM_CONTROL_EVENT = "system_control_event"
     EXERCISE_RESULTS = "exercise_results"
+    FILL_BLANKS_RESULTS = "fill_blanks_results"
 
 
 class EventSource(StrEnum):

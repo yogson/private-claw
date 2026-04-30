@@ -400,6 +400,64 @@ class VocabularyStore:
                 return entry
         return None
 
+    async def get_words(
+        self,
+        user_id: str,
+        tags: list[str] | None = None,
+        pos: list[str] | None = None,
+        limit: int = 5,
+        order_by: str = "random",
+        min_stability: float | None = None,
+        max_stability: float | None = None,
+    ) -> list[VocabularyEntry]:
+        """Fetch a filtered, sorted slice of vocabulary for exercise building.
+
+        Args:
+            tags: Optional tag filter; entries must match at least one tag.
+            pos: Optional part-of-speech filter (e.g. ["verb", "noun"]).
+            limit: Maximum number of entries to return.
+            order_by: Sort order — "random", "newest", "oldest",
+                      "least_learned" (lowest FSRS stability first),
+                      "most_learned" (highest FSRS stability first).
+            min_stability: Only include entries with FSRS stability >= value.
+            max_stability: Only include entries with FSRS stability <= value.
+        """
+        import random as _random
+
+        entries = await self._read_user_vocabulary(user_id)
+        result = list(entries.values())
+
+        if tags:
+            tag_set = set(tags)
+            result = [e for e in result if tag_set.intersection(e.tags)]
+
+        if pos:
+            pos_set = {p.lower() for p in pos}
+            result = [e for e in result if e.part_of_speech.value in pos_set]
+
+        def _stability(e: VocabularyEntry) -> float:
+            if e.fsrs_card and isinstance(e.fsrs_card.get("stability"), (int, float)):
+                return float(e.fsrs_card["stability"])
+            return 0.0
+
+        if min_stability is not None:
+            result = [e for e in result if _stability(e) >= min_stability]
+        if max_stability is not None:
+            result = [e for e in result if _stability(e) <= max_stability]
+
+        if order_by == "random":
+            _random.shuffle(result)
+        elif order_by == "newest":
+            result.sort(key=lambda e: e.created_at, reverse=True)
+        elif order_by == "oldest":
+            result.sort(key=lambda e: e.created_at)
+        elif order_by == "least_learned":
+            result.sort(key=_stability)
+        elif order_by == "most_learned":
+            result.sort(key=_stability, reverse=True)
+
+        return result[:limit]
+
     async def clear_user_vocabulary(self, user_id: str) -> int:
         """Delete all vocabulary for a user. Returns count of deleted entries."""
         lock = self._get_lock(user_id)

@@ -173,8 +173,12 @@ def build_web_app_data_event(
     if data_text:
         try:
             parsed = _json.loads(data_text)
-            if isinstance(parsed, dict) and parsed.get("type") == "exercise_results":
-                event_type = EventType.EXERCISE_RESULTS
+            if isinstance(parsed, dict):
+                payload_type = parsed.get("type")
+                if payload_type == "exercise_results":
+                    event_type = EventType.EXERCISE_RESULTS
+                elif payload_type == "fill_blanks_results":
+                    event_type = EventType.FILL_BLANKS_RESULTS
         except (ValueError, TypeError):
             pass
 

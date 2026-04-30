@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Fill in the Blanks</title>
+
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <!-- pako.js for gzip decompression -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- Loading / error screen -->
+  <div id="screen-loading" class="screen screen-active">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <p class="loading-text">Загрузка...</p>
+    </div>
+  </div>
+
+  <!-- Exercise screen -->
+  <div id="screen-exercise" class="screen">
+    <div id="progress-bar-wrap">
+      <div id="progress-bar"></div>
+    </div>
+
+    <div id="sentence-counter" class="sentence-counter"></div>
+
+    <!-- Sentences area (one at a time) -->
+    <div id="sentences-area" class="sentences-area"></div>
+
+    <!-- Word bank chips -->
+    <div id="word-bank" class="word-bank"></div>
+
+    <!-- Check / Next buttons -->
+    <div class="action-bar">
+      <button id="btn-check" class="btn-action btn-check">Проверить</button>
+      <button id="btn-next" class="btn-action btn-next hidden">Далее</button>
+    </div>
+  </div>
+
+  <!-- Results screen -->
+  <div id="screen-results" class="screen">
+    <div class="results-content">
+      <div class="results-title" id="results-title"></div>
+      <div class="results-breakdown" id="results-breakdown"></div>
+    </div>
+  </div>
+
+  <!-- App modules -->
+  <script src="js/decoder.js"></script>
+  <script src="js/fill_blanks.js"></script>
+  <script src="js/results.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>

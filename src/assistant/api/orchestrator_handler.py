@@ -15,7 +15,11 @@ from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
-from assistant.extensions.language_learning.models import ExerciseResultPayload
+from assistant.extensions.language_learning.models import (
+    CardResult,
+    ExerciseResultPayload,
+    FillBlanksResultPayload,
+)
 from assistant.extensions.language_learning.store import VocabularyStore
 from assistant.subagents.coordinator import DelegationCoordinator
 
@@ -290,6 +294,9 @@ def _build_orchestrator_handler(
         if event.event_type == EventType.EXERCISE_RESULTS:
             return await _handle_exercise_results(event, vocabulary_store)
 
+        if event.event_type == EventType.FILL_BLANKS_RESULTS:
+            return await _handle_fill_blanks_results(event, vocabulary_store)
+
         orch_event = mapper.map(event)
         chat_id = int(event.metadata.get("chat_id", 0))
         model_override = adapter.get_model_override(chat_id) if chat_id else None
@@ -525,6 +532,71 @@ async def _handle_exercise_results(
     except Exception as exc:
         logger.error(
             "exercise_results.direct.store_error",
+            error=str(exc),
+            trace_id=event.trace_id,
+        )
+        return build_text_channel_response(
+            text=f"Ошибка при сохранении результатов: {exc}",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+
+    updated_count = sum(1 for v in updated.values() if v is not None)
+    return build_text_channel_response(
+        text=_plural_updated(updated_count),
+        session_id=event.session_id,
+        trace_id=event.trace_id,
+    )
+
+
+async def _handle_fill_blanks_results(
+    event: NormalizedEvent,
+    vocabulary_store: VocabularyStore | None,
+) -> ChannelResponse:
+    """Process fill-in-the-blanks results directly, without LLM involvement."""
+    if vocabulary_store is None:
+        return build_text_channel_response(
+            text="Ошибка: хранилище словаря недоступно.",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+
+    try:
+        raw = _json.loads(event.text or "")
+        payload = FillBlanksResultPayload.model_validate(raw)
+    except (ValueError, TypeError):
+        return build_text_channel_response(
+            text="Ошибка: неверный формат данных (невалидный JSON).",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+    except ValidationError as exc:
+        return build_text_channel_response(
+            text=f"Ошибка: неверная схема данных. {exc}",
+            session_id=event.session_id,
+            trace_id=event.trace_id,
+        )
+
+    # Convert fill-blanks results to CardResult objects:
+    # correct placement → Good (2), incorrect → Again (0)
+    card_results = [
+        CardResult(
+            word_id=r.word_id,
+            rating=2 if r.correct else 0,
+            time_ms=r.time_ms,
+            direction=payload.direction,
+        )
+        for r in payload.results
+    ]
+
+    try:
+        updated = await vocabulary_store.process_exercise_results(
+            user_id=event.user_id,
+            results=card_results,
+        )
+    except Exception as exc:
+        logger.error(
+            "fill_blanks_results.direct.store_error",
             error=str(exc),
             trace_id=event.trace_id,
         )
