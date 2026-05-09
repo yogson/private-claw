@@ -539,8 +539,11 @@ class Orchestrator:
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 # Check if compaction is needed before building messages.
-                if await self._should_compact_session(session_id):
-                    await self._compact_session(session_id, event.trace_id, event.user_id)
+                compact_records = await self._should_compact_session(session_id)
+                if compact_records is not None:
+                    await self._compact_session(
+                        session_id, event.trace_id, event.user_id, records=compact_records
+                    )
                     records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 messages = records_to_messages(records)
@@ -676,21 +679,35 @@ class Orchestrator:
             f"Please re-enable the required capability before continuing."
         )
 
-    async def _should_compact_session(self, session_id: str) -> bool:
-        """Check whether the session needs compaction based on token usage and turn count."""
+    async def _should_compact_session(self, session_id: str) -> list[SessionRecord] | None:
+        """Check whether the session needs compaction based on token usage and turn count.
+
+        Returns the loaded session records when compaction is needed, or ``None`` otherwise.
+        This avoids a redundant ``read_session`` call inside ``_compact_session``.
+        """
         if not self._compaction_config.enabled or self._compaction_service is None:
-            return False
-        total_tokens = await calculate_session_total_tokens(self._store.sessions, session_id)
-        if total_tokens < self._compaction_config.token_threshold:
-            return False
-        # Also check minimum turn count.
+            return None
         records = await self._store.sessions.read_session(session_id)
+        total_tokens = await calculate_session_total_tokens(
+            self._store.sessions, session_id, records=records
+        )
+        if total_tokens < self._compaction_config.token_threshold:
+            return None
+        # Also check minimum turn count.
         turn_ids = {
             r.turn_id for r in records if r.turn_id and not r.turn_id.startswith("compaction-")
         }
-        return len(turn_ids) >= self._compaction_config.min_turns_before_compact
+        if len(turn_ids) >= self._compaction_config.min_turns_before_compact:
+            return records
+        return None
 
-    async def _compact_session(self, session_id: str, trace_id: str, user_id: str | None) -> None:
+    async def _compact_session(
+        self,
+        session_id: str,
+        trace_id: str,
+        user_id: str | None,
+        records: list[SessionRecord] | None = None,
+    ) -> None:
         """Compact session by summarizing and clearing history.
 
         Preserves system prompt records (constructed by capabilities) and all
@@ -699,7 +716,8 @@ class Orchestrator:
         if self._compaction_service is None:
             return
 
-        records = await self._store.sessions.read_session(session_id)
+        if records is None:
+            records = await self._store.sessions.read_session(session_id)
 
         # Collect existing compaction summary records.
         previous_summaries = [

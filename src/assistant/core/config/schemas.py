@@ -295,7 +295,6 @@ class CompactionConfig(BaseModel):
     summarizer_model_id: str = "claude-haiku-4-5"
     summarizer_max_tokens: int = Field(default=2048, ge=256)
     min_turns_before_compact: int = Field(default=5, ge=2)
-    preserve_last_n_turns: int = Field(default=2, ge=0)
     max_compactions: int = Field(default=3, ge=1, le=3)
 
 
