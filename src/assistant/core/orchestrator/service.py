@@ -749,8 +749,16 @@ class Orchestrator:
         # Collect ALL system prompt records (capabilities constructs the system prompt).
         system_records = [r for r in records if r.record_type == SessionRecordType.SYSTEM_MESSAGE]
 
-        # Generate summary from full history.
-        messages = records_to_messages(records)
+        # Generate summary from raw chat only — exclude prior compaction summaries
+        # (re-summarizing them causes drift) and system messages (the summarizer
+        # has its own system prompt).
+        chat_records = [
+            r
+            for r in records
+            if r.record_type
+            not in (SessionRecordType.COMPACTION_SUMMARY, SessionRecordType.SYSTEM_MESSAGE)
+        ]
+        messages = records_to_messages(chat_records)
         try:
             summary = await self._compaction_service.summarize(messages, trace_id)
         except Exception as exc:

@@ -350,6 +350,45 @@ class TestCompactSession:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_summarizer_input_excludes_prior_summaries_and_system(self) -> None:
+        """The summarizer must receive raw chat only — no prior COMPACTION_SUMMARY
+        records (which would cause re-summarization and drift) and no SYSTEM_MESSAGE
+        records (the summarizer has its own system prompt)."""
+        prior_summary = "[System Context Summary]\n[Session Compacted - Pass 1]\n\nOld stuff."
+        records = [
+            _system(0),
+            _compaction_summary(1, content=prior_summary, turn_id="compaction-1"),
+            _rec(
+                sequence=2,
+                turn_id="t1",
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": "m-2", "content": "fresh user turn"},
+            ),
+            _assistant_with_usage(3, turn_id="t1"),
+            _terminal(4, turn_id="t1"),
+        ]
+        orch = _build_orchestrator(records)
+
+        await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
+
+        summarize_mock = orch._compaction_service.summarize  # noqa: SLF001
+        summarize_mock.assert_awaited_once()
+        passed_messages = summarize_mock.call_args[0][0]
+
+        def _flatten(msg: object) -> str:
+            text = getattr(msg, "content", "") or ""
+            for block in getattr(msg, "content_blocks", None) or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text += "\n" + block.get("text", "")
+            return text
+
+        joined = "\n".join(_flatten(m) for m in passed_messages)
+        assert "[Session Compacted - Pass 1]" not in joined
+        assert "[System Context Summary]" not in joined
+        assert "system prompt" not in joined
+        assert "fresh user turn" in joined
+
+    @pytest.mark.asyncio
     async def test_returns_false_on_summarize_failure(self) -> None:
         """_compact_session returns False when summarize raises (graceful fallback)."""
         records = [
