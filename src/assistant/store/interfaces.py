@@ -158,6 +158,17 @@ class SessionStoreInterface(ABC):
         """Delete all persisted context for a session. Returns True when removed."""
 
     @abstractmethod
+    async def replace_session(self, session_id: str, records: list[SessionRecord]) -> None:
+        """Atomically replace all records in a session.
+
+        Writes *records* to a temporary file first, then atomically renames it
+        over the real session file.  This guarantees that:
+        - If the write fails, the old session data is untouched.
+        - No concurrent coroutine can observe a partially-written state.
+        The entire operation is performed while holding the session lock.
+        """
+
+    @abstractmethod
     async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
         """
         Reconstruct model-facing history for context assembly.

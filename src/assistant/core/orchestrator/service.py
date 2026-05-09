@@ -751,9 +751,6 @@ class Orchestrator:
                     trace_id=trace_id,
                 )
 
-        # Clear session.
-        await self._store.sessions.clear_session(session_id)
-
         # Build new summary record.
         now = datetime.now(UTC)
         compaction_pass = len(previous_summaries) + 1
@@ -771,9 +768,11 @@ class Orchestrator:
             },
         )
 
-        # Re-insert: system_records + previous_summaries + new summary.
+        # Atomically replace session: system_records + previous_summaries + new summary.
+        # Using replace_session avoids the gap between clear_session and append where
+        # data could be lost (disk error) or corrupted (concurrent writes).
         records_to_restore = system_records + previous_summaries + [new_summary_record]
-        await self._store.sessions.append(records_to_restore)
+        await self._store.sessions.replace_session(session_id, records_to_restore)
 
         logger.info(
             "orchestrator.session_compacted",

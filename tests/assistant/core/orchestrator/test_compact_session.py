@@ -133,6 +133,7 @@ def _build_orchestrator(
     store.sessions.read_session = AsyncMock(return_value=list(session_records))
     store.sessions.clear_session = AsyncMock(return_value=True)
     store.sessions.append = AsyncMock()
+    store.sessions.replace_session = AsyncMock()
 
     idempotency = MagicMock()
     session_factory = MagicMock()
@@ -234,8 +235,8 @@ class TestCompactSession:
             call_args = mock_logger.warning.call_args
             assert "compaction_limit_reached" in call_args[0][0]
 
-        # Session must NOT have been cleared
-        orch._store.sessions.clear_session.assert_not_called()  # noqa: SLF001
+        # Session must NOT have been replaced
+        orch._store.sessions.replace_session.assert_not_called()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_happy_path_preserves_system_and_summaries(self) -> None:
@@ -252,13 +253,12 @@ class TestCompactSession:
 
         await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
 
-        # Session should have been cleared
-        orch._store.sessions.clear_session.assert_awaited_once_with("s1")  # noqa: SLF001
-
-        # Verify the records restored via append
-        append_call = orch._store.sessions.append  # noqa: SLF001
-        append_call.assert_awaited_once()
-        restored = append_call.call_args[0][0]
+        # Session should have been atomically replaced (not clear + append)
+        orch._store.sessions.clear_session.assert_not_called()  # noqa: SLF001
+        replace_call = orch._store.sessions.replace_session  # noqa: SLF001
+        replace_call.assert_awaited_once()
+        assert replace_call.call_args[0][0] == "s1"
+        restored = replace_call.call_args[0][1]
 
         restored_types = [r.record_type for r in restored]
 
@@ -298,8 +298,8 @@ class TestCompactSession:
 
         await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
 
-        orch._store.sessions.clear_session.assert_awaited_once()  # noqa: SLF001
-        restored = orch._store.sessions.append.call_args[0][0]  # noqa: SLF001
+        orch._store.sessions.replace_session.assert_awaited_once()  # noqa: SLF001
+        restored = orch._store.sessions.replace_session.call_args[0][1]  # noqa: SLF001
 
         # system + 1 new summary
         assert len(restored) == 2
@@ -316,7 +316,7 @@ class TestCompactSession:
 
         await orch._compact_session("s1", "trace-1", "user-1")  # noqa: SLF001
 
-        orch._store.sessions.clear_session.assert_not_called()  # noqa: SLF001
+        orch._store.sessions.replace_session.assert_not_called()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_loads_records_when_not_passed(self) -> None:
@@ -331,4 +331,4 @@ class TestCompactSession:
         await orch._compact_session("s1", "trace-1", None)  # noqa: SLF001
 
         orch._store.sessions.read_session.assert_awaited_once_with("s1")  # noqa: SLF001
-        orch._store.sessions.clear_session.assert_awaited_once()  # noqa: SLF001
+        orch._store.sessions.replace_session.assert_awaited_once()  # noqa: SLF001
