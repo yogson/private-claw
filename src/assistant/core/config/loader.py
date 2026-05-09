@@ -16,6 +16,7 @@ from assistant.core.config.env_utils import apply_env_overrides
 from assistant.core.config.schemas import (
     AppConfig,
     CapabilitiesPolicyConfig,
+    CompactionConfig,
     McpServersConfig,
     MemoryConfig,
     ModelConfig,
@@ -44,7 +45,11 @@ _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
     "scheduler": ("scheduler.yaml", SchedulerConfig, "ASSISTANT_SCHEDULER"),
     "store": ("store.yaml", StoreConfig, "ASSISTANT_STORE"),
     "memory": ("memory.yaml", MemoryConfig, "ASSISTANT_MEMORY"),
+    "compaction": ("compaction.yaml", CompactionConfig, "ASSISTANT_COMPACTION"),
 }
+
+# Domains that default silently when config file is absent.
+_OPTIONAL_DOMAINS: set[str] = {"compaction"}
 
 
 class ConfigLoadError(Exception):
@@ -77,12 +82,23 @@ class ConfigLoader:
         """Load all config domains and return aggregated RuntimeConfig.
 
         Raises ConfigLoadError with an actionable report on any validation failure.
+        Optional domains (e.g. compaction) silently default when config file is absent.
         """
         errors: list[str] = []
         domains: dict[str, Any] = {}
         for domain_name, (filename, schema_cls, env_prefix) in _DOMAIN_MAP.items():
-            obj, _ = self._load_domain(filename, schema_cls, env_prefix, errors)
-            domains[domain_name] = obj
+            if domain_name in _OPTIONAL_DOMAINS:
+                optional_errors: list[str] = []
+                obj, _ = self._load_domain(filename, schema_cls, env_prefix, optional_errors)
+                # If the only error is a missing file, use defaults silently.
+                if obj is None and all("not found" in e for e in optional_errors):
+                    obj = schema_cls()
+                elif optional_errors:
+                    errors.extend(optional_errors)
+                domains[domain_name] = obj
+            else:
+                obj, _ = self._load_domain(filename, schema_cls, env_prefix, errors)
+                domains[domain_name] = obj
 
         if errors:
             raise ConfigLoadError(

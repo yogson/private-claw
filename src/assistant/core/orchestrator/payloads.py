@@ -316,6 +316,11 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                         )
                     )
             i = j
+        elif record.record_type == SessionRecordType.COMPACTION_SUMMARY:
+            content = record.payload.get("content", "")
+            if content:
+                messages.append(LLMMessage(role=MessageRole.USER, content=content))
+            i += 1
         elif record.record_type == SessionRecordType.ASSISTANT_TOOL_CALL:
             blocks = []
             j = i

@@ -5,6 +5,7 @@ Orchestrator service executing turn lifecycle with persistence and idempotency.
 """
 
 import asyncio
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -25,9 +26,10 @@ from assistant.agent.pydantic_ai_agent import (
 from assistant.agent.tools import build_tool_runtime_params
 from assistant.agent.tools.registry import collect_enabled_tool_ids
 from assistant.agent.webapp_button_extractor import _extract_pending_webapp_buttons
-from assistant.core.config.schemas import RuntimeConfig
+from assistant.core.config.schemas import CompactionConfig, RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
+from assistant.core.orchestrator.compaction import ChatCompactionService
 from assistant.core.orchestrator.memory import apply_approved_memory_intents
 from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.payloads import (
@@ -45,6 +47,7 @@ from assistant.core.orchestrator.persistence import (
     persist_turn_outcomes,
     persist_turn_terminal_failed,
 )
+from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.core.session.factory import SessionContextFactory
 from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
 from assistant.memory.retrieval.models import RetrievalQuery
@@ -59,6 +62,7 @@ from assistant.store.interfaces import LockAcquisitionError, StoreFacadeInterfac
 from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
+    SystemMessageScope,
     TurnTerminalStatus,
 )
 from assistant.subagents.interfaces import DelegationCoordinatorInterface
@@ -97,6 +101,7 @@ class Orchestrator:
         delegation_coordinator: DelegationCoordinatorInterface | None = None,
         adapter_cache: TurnAdapterCache | None = None,
         vocabulary_store: Any | None = None,
+        usage_service: Any | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -110,6 +115,14 @@ class Orchestrator:
         self._session_factory = session_factory
         self._session_traces = SessionTraceManager()
         self._vocabulary_store = vocabulary_store
+        self._usage_service = usage_service
+        self._compaction_config: CompactionConfig = config.compaction
+        self._compaction_service: ChatCompactionService | None = None
+        if self._compaction_config.enabled:
+            self._compaction_service = ChatCompactionService(
+                model_id=self._compaction_config.summarizer_model_id,
+                max_tokens=self._compaction_config.summarizer_max_tokens,
+            )
 
     async def execute_turn(
         self,
@@ -524,6 +537,15 @@ class Orchestrator:
         try:
             with self._session_traces.session_trace(session_id, turn_id):
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
+
+                # Check if compaction is needed before building messages.
+                compact_records = await self._should_compact_session(session_id)
+                if compact_records is not None:
+                    await self._compact_session(
+                        session_id, event.trace_id, event.user_id, records=compact_records
+                    )
+                    records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
+
                 messages = records_to_messages(records)
 
                 # Preemptive check: if the most-recent turn's history references
@@ -655,4 +677,108 @@ class Orchestrator:
             f"\u26a0\ufe0f Your session history references tools that are not currently active: "
             f"{tools_str}. "
             f"Please re-enable the required capability before continuing."
+        )
+
+    async def _should_compact_session(self, session_id: str) -> list[SessionRecord] | None:
+        """Check whether the session needs compaction based on token usage and turn count.
+
+        Returns the loaded session records when compaction is needed, or ``None`` otherwise.
+        This avoids a redundant ``read_session`` call inside ``_compact_session``.
+        """
+        if not self._compaction_config.enabled or self._compaction_service is None:
+            return None
+        records = await self._store.sessions.read_session(session_id)
+        total_tokens = await calculate_session_total_tokens(
+            self._store.sessions, session_id, records=records
+        )
+        if total_tokens < self._compaction_config.token_threshold:
+            return None
+        # Also check minimum turn count.
+        turn_ids = {
+            r.turn_id for r in records if r.turn_id and not r.turn_id.startswith("compaction-")
+        }
+        if len(turn_ids) >= self._compaction_config.min_turns_before_compact:
+            return records
+        return None
+
+    async def _compact_session(
+        self,
+        session_id: str,
+        trace_id: str,
+        user_id: str | None,
+        records: list[SessionRecord] | None = None,
+    ) -> None:
+        """Compact session by summarizing and clearing history.
+
+        Preserves system prompt records (constructed by capabilities) and all
+        previously created compaction summary records (up to max_compactions).
+        """
+        if self._compaction_service is None:
+            return
+
+        if records is None:
+            records = await self._store.sessions.read_session(session_id)
+
+        # Collect existing compaction summary records.
+        previous_summaries = [
+            r for r in records if r.record_type == SessionRecordType.COMPACTION_SUMMARY
+        ]
+
+        # Enforce max compactions limit.
+        if len(previous_summaries) >= self._compaction_config.max_compactions:
+            logger.warning(
+                "orchestrator.compaction_limit_reached",
+                session_id=session_id,
+                max=self._compaction_config.max_compactions,
+            )
+            return
+
+        # Collect ALL system prompt records (capabilities constructs the system prompt).
+        system_records = [r for r in records if r.record_type == SessionRecordType.SYSTEM_MESSAGE]
+
+        # Generate summary from full history.
+        messages = records_to_messages(records)
+        summary = await self._compaction_service.summarize(messages, trace_id)
+
+        # Archive usage stats before clearing.
+        if self._usage_service and user_id:
+            try:
+                await self._usage_service.archive_session_usage(session_id, user_id)
+            except Exception:
+                logger.warning(
+                    "orchestrator.compaction_archive_failed",
+                    session_id=session_id,
+                    trace_id=trace_id,
+                )
+
+        # Build new summary record.
+        now = datetime.now(UTC)
+        compaction_pass = len(previous_summaries) + 1
+        new_summary_record = SessionRecord(
+            session_id=session_id,
+            sequence=len(system_records) + len(previous_summaries),
+            event_id=f"compaction-{uuid.uuid4().hex[:8]}",
+            turn_id=f"compaction-{now.isoformat()}",
+            timestamp=now,
+            record_type=SessionRecordType.COMPACTION_SUMMARY,
+            payload={
+                "message_id": f"summary-{uuid.uuid4().hex[:8]}",
+                "content": f"[Session Compacted - Pass {compaction_pass}]\n\n{summary}",
+                "scope": SystemMessageScope.SESSION.value,
+            },
+        )
+
+        # Atomically replace session: system_records + previous_summaries + new summary.
+        # Using replace_session avoids the gap between clear_session and append where
+        # data could be lost (disk error) or corrupted (concurrent writes).
+        records_to_restore = system_records + previous_summaries + [new_summary_record]
+        await self._store.sessions.replace_session(session_id, records_to_restore)
+
+        logger.info(
+            "orchestrator.session_compacted",
+            session_id=session_id,
+            trace_id=trace_id,
+            original_record_count=len(records),
+            preserved_summaries=len(previous_summaries),
+            compaction_pass=compaction_pass,
         )

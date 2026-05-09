@@ -21,6 +21,7 @@ class SessionRecordType(StrEnum):
     SYSTEM_MESSAGE = "system_message"
     TURN_SUMMARY = "turn_summary"
     TURN_TERMINAL = "turn_terminal"
+    COMPACTION_SUMMARY = "compaction_summary"
 
 
 class TurnTerminalStatus(StrEnum):

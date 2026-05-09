@@ -287,6 +287,17 @@ class StoreConfig(BaseModel):
     idempotency_retention_seconds: int = Field(default=86400, ge=1)
 
 
+class CompactionConfig(BaseModel):
+    """Chat compaction configuration (config/compaction.yaml)."""
+
+    enabled: bool = False
+    token_threshold: int = Field(default=100_000, ge=10_000)
+    summarizer_model_id: str = "claude-haiku-4-5"
+    summarizer_max_tokens: int = Field(default=2048, ge=256)
+    min_turns_before_compact: int = Field(default=5, ge=2)
+    max_compactions: int = Field(default=3, ge=1, le=3)
+
+
 class RuntimeConfig(BaseModel):
     """Aggregated runtime configuration across all domains."""
 
@@ -299,4 +310,5 @@ class RuntimeConfig(BaseModel):
     scheduler: SchedulerConfig
     store: StoreConfig
     memory: MemoryConfig
+    compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution

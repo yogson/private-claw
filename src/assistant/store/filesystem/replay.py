@@ -26,6 +26,8 @@ def build_replay(records: list[SessionRecord], budget: int) -> list[SessionRecor
 
     Algorithm:
     - Finds the newest session-scoped system_message and prepends it.
+    - Collects COMPACTION_SUMMARY records (oldest→newest) and prepends them
+      after the system message so the LLM sees the full chain of summaries.
     - Collects only complete turns (turns with a turn_terminal record).
     - For each complete turn, strips non-model-facing record types and
       removes orphan tool_result records (no matching tool_call).
@@ -46,6 +48,7 @@ def build_replay(records: list[SessionRecord], budget: int) -> list[SessionRecor
 
     ordered = sorted(records, key=lambda r: r.sequence)
     latest_system_msg = _find_latest_session_system_message(ordered)
+    compaction_summaries = _collect_compaction_summaries(ordered)
     complete_turns = _collect_complete_turns(ordered)
     turn_slots = [_filter_turn_records(tr) for tr in complete_turns]
     turn_slots = [s for s in turn_slots if s]
@@ -57,12 +60,25 @@ def build_replay(records: list[SessionRecord], budget: int) -> list[SessionRecor
         result.append(latest_system_msg)
         remaining_budget -= 1
 
+    # Prepend compaction summaries (oldest→newest) so the LLM sees context.
+    for summary in compaction_summaries:
+        if remaining_budget > 0:
+            result.append(summary)
+            remaining_budget -= 1
+
     while sum(len(s) for s in turn_slots) > remaining_budget and turn_slots:
         turn_slots.pop(0)
 
     for slot in turn_slots:
         result.extend(slot)
     return result
+
+
+def _collect_compaction_summaries(
+    ordered: list[SessionRecord],
+) -> list[SessionRecord]:
+    """Collect all COMPACTION_SUMMARY records in sequence order (oldest→newest)."""
+    return [r for r in ordered if r.record_type == SessionRecordType.COMPACTION_SUMMARY]
 
 
 def _find_latest_session_system_message(

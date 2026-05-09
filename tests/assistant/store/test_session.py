@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -205,3 +206,111 @@ async def test_append_raw_bypasses_idempotency(
     await session_store.append_raw([record2])
     records = await session_store.read_session("session-1")
     assert len(records) == 2
+
+
+# ---------------------------------------------------------------------------
+# replace_session tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replace_session_replaces_content(session_store: FilesystemSessionStore) -> None:
+    """replace_session atomically swaps the session file contents."""
+    # Seed with original records.
+    await session_store.append([make_record("session-1", event_id="e-old")])
+    original = await session_store.read_session("session-1")
+    assert len(original) == 1
+
+    # Replace with new records.
+    new_records = [
+        make_record("session-1", event_id="e-new-1"),
+        make_record("session-1", event_id="e-new-2"),
+    ]
+    await session_store.replace_session("session-1", new_records)
+
+    stored = await session_store.read_session("session-1")
+    assert len(stored) == 2
+    assert stored[0].event_id == "e-new-1"
+    assert stored[1].event_id == "e-new-2"
+
+
+@pytest.mark.asyncio
+async def test_replace_session_creates_file_if_missing(
+    session_store: FilesystemSessionStore,
+) -> None:
+    """replace_session works even when no session file exists yet."""
+    new_records = [make_record("session-new", event_id="e-1")]
+    await session_store.replace_session("session-new", new_records)
+
+    stored = await session_store.read_session("session-new")
+    assert len(stored) == 1
+    assert stored[0].event_id == "e-1"
+
+
+@pytest.mark.asyncio
+async def test_replace_session_preserves_old_on_write_failure(
+    session_store: FilesystemSessionStore,
+) -> None:
+    """If the temp-file write fails, the original session data is untouched."""
+    await session_store.append([make_record("session-1", event_id="e-original")])
+
+    with (
+        patch("assistant.store.filesystem.session.os.write", side_effect=OSError("disk full")),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        await session_store.replace_session(
+            "session-1", [make_record("session-1", event_id="e-new")]
+        )
+
+    # Original data should be intact.
+    stored = await session_store.read_session("session-1")
+    assert len(stored) == 1
+    assert stored[0].event_id == "e-original"
+
+
+@pytest.mark.asyncio
+async def test_replace_session_holds_lock_across_operation(
+    session_store: FilesystemSessionStore,
+) -> None:
+    """The session lock is held for the entire replace_session call, preventing
+    concurrent interleaving between clear and write."""
+    lock = session_store._get_lock("session-1")  # noqa: SLF001
+    lock_was_held = False
+
+    original_os_replace = __import__("os").replace
+
+    def os_replace_spy(src: str, dst: str) -> None:
+        """Intercept os.replace to verify the lock is held at the critical moment."""
+        nonlocal lock_was_held
+        lock_was_held = lock.locked()
+        original_os_replace(src, dst)
+
+    new_records = [make_record("session-1", event_id="e-1")]
+
+    with patch("assistant.store.filesystem.session.os.replace", side_effect=os_replace_spy):
+        await session_store.replace_session("session-1", new_records)
+
+    # Lock was held during the atomic rename.
+    assert lock_was_held
+    # Lock is released after the call.
+    assert not lock.locked()
+
+    # Verify data was written correctly.
+    stored = await session_store.read_session("session-1")
+    assert len(stored) == 1
+
+
+@pytest.mark.asyncio
+async def test_replace_session_cleans_up_temp_on_failure(
+    session_store: FilesystemSessionStore, sessions_dir: Path
+) -> None:
+    """Temp file is cleaned up if an error occurs during write."""
+    with (
+        patch("assistant.store.filesystem.session.os.write", side_effect=OSError("fail")),
+        pytest.raises(OSError),
+    ):
+        await session_store.replace_session("session-1", [make_record("session-1", event_id="e-1")])
+
+    # No temp files should remain.
+    tmp_files = list(sessions_dir.glob(".tmp_*"))
+    assert tmp_files == []

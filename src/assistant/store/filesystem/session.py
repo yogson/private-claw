@@ -6,6 +6,8 @@ Filesystem-based session persistence using append-only JSONL files.
 
 import asyncio
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -184,6 +186,32 @@ class FilesystemSessionStore(SessionStoreInterface):
                 return False
             path.unlink()
             return True
+
+    async def replace_session(self, session_id: str, records: list[SessionRecord]) -> None:
+        """Atomically replace all records in a session.
+
+        Writes *records* to a temporary file, then uses ``os.replace()`` to
+        atomically swap it into place.  The session lock is held for the
+        entire operation so no concurrent coroutine can interleave.
+        """
+        lock = self._get_lock(session_id)
+        async with lock:
+            path = self._session_path(session_id)
+            content = "".join(self._serialize_record(r) + "\n" for r in records)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".tmp_", suffix=".jsonl")
+            try:
+                os.write(fd, content.encode("utf-8"))
+                os.fsync(fd)
+                os.close(fd)
+                fd = -1
+                os.replace(tmp_path, path)
+            except Exception:
+                if fd >= 0:
+                    os.close(fd)
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
 
     async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
         """

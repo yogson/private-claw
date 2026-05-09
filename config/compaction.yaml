@@ -1,0 +1,6 @@
+enabled: true
+token_threshold: 80000
+summarizer_model_id: claude-haiku-4-5
+summarizer_max_tokens: 2048
+min_turns_before_compact: 5
+max_compactions: 3
