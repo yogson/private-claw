@@ -30,11 +30,12 @@ any commitments made. Format as a structured briefing.\
 class ChatCompactionService:
     """Summarizes chat history using a lightweight LLM agent."""
 
-    def __init__(self, model_id: str, max_tokens: int = 2048) -> None:
+    def __init__(self, model_id: str, max_tokens: int = 2048, prompt: str = "") -> None:
+        effective_prompt = prompt.strip() if prompt.strip() else SUMMARIZER_PROMPT
         self._agent: Agent[None, str] = Agent(
-            f"anthropic:{model_id}",  # type: ignore[arg-type]
-            system_prompt=SUMMARIZER_PROMPT,
-            result_type=str,
+            f"anthropic:{model_id}",
+            system_prompt=effective_prompt,
+            output_type=str,
         )
         self._max_tokens = max_tokens
 
@@ -59,8 +60,8 @@ class ChatCompactionService:
             message_count=len(messages),
             input_chars=len(formatted),
         )
-        result = await self._agent.run(formatted)
-        summary = result.data
+        result = await self._agent.run(formatted, model_settings={"max_tokens": self._max_tokens})
+        summary = result.output
         logger.info(
             "compaction.summarize_complete",
             trace_id=trace_id,

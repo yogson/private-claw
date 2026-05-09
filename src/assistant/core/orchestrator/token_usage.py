@@ -15,7 +15,13 @@ async def calculate_session_total_tokens(
     session_id: str,
     records: list[SessionRecord] | None = None,
 ) -> int:
-    """Sum all input+output tokens from assistant_message records in a session.
+    """Return the context window size from the most recent assistant_message record.
+
+    Because each record's ``input_tokens`` already reflects the full accumulated
+    context (not a per-turn delta), summing across all records would double-count.
+    Instead, we look at the ``input_tokens`` of the last ``ASSISTANT_MESSAGE``
+    record (highest ``sequence``) that carries a ``usage`` field — this gives the
+    true current context size.
 
     Args:
         session_store: Session persistence interface.
@@ -23,14 +29,18 @@ async def calculate_session_total_tokens(
         records: Optional pre-loaded session records to avoid a redundant read.
 
     Returns:
-        Total token count (input + output) across all assistant messages.
+        ``input_tokens`` from the most recent assistant message with usage data,
+        or ``0`` if no such record exists.
     """
     if records is None:
         records = await session_store.read_session(session_id)
-    total = 0
+
+    last_input_tokens = 0
+    last_sequence = -1
     for r in records:
         if r.record_type == SessionRecordType.ASSISTANT_MESSAGE:
             usage = r.payload.get("usage", {})
-            if isinstance(usage, dict):
-                total += int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
-    return total
+            if isinstance(usage, dict) and "input_tokens" in usage and r.sequence > last_sequence:
+                last_sequence = r.sequence
+                last_input_tokens = int(usage["input_tokens"])
+    return last_input_tokens

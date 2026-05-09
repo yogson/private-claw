@@ -14,7 +14,7 @@ from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
-from assistant.core.orchestrator.service import Orchestrator
+from assistant.core.orchestrator.service import COMPACTION_NOTIFICATION_TEXT, Orchestrator
 from assistant.extensions.language_learning.models import (
     CardResult,
     ExerciseResultPayload,
@@ -317,11 +317,17 @@ def _build_orchestrator_handler(
             text_notifier = _build_streaming_text_notifier(
                 adapter, chat_id, orch_event.session_id, event.trace_id
             )
+        compaction_notifier = None
+        if chat_id:
+            compaction_notifier = _build_compaction_notifier(
+                adapter, chat_id, orch_event.session_id, event.trace_id
+            )
         try:
             orch_result = await orchestrator.execute_turn(
                 orch_event,
                 tool_call_notifier=notifier,
                 streaming_text_notifier=text_notifier,
+                compaction_notifier=compaction_notifier,
             )
         except ModelHTTPError as exc:
             if _is_token_limit_error(exc):
@@ -487,6 +493,26 @@ def _build_streaming_text_notifier(
             return
         response = build_text_channel_response(
             text=text,
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+        with suppress(Exception):
+            await adapter.send_response(response, chat_id=chat_id)
+
+    return _notifier
+
+
+def _build_compaction_notifier(
+    adapter: TelegramAdapter,
+    chat_id: int,
+    session_id: str,
+    trace_id: str,
+) -> "Callable[[], Awaitable[None]]":
+    """Build an async notifier that informs the user when session history is compacted."""
+
+    async def _notifier() -> None:
+        response = build_text_channel_response(
+            text=COMPACTION_NOTIFICATION_TEXT,
             session_id=session_id,
             trace_id=trace_id,
         )

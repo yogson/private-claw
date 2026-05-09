@@ -295,7 +295,14 @@ class CompactionConfig(BaseModel):
     summarizer_model_id: str = "claude-haiku-4-5"
     summarizer_max_tokens: int = Field(default=2048, ge=256)
     min_turns_before_compact: int = Field(default=5, ge=2)
-    max_compactions: int = Field(default=3, ge=1, le=3)
+    max_compactions: int = Field(default=3, ge=1)
+    compaction_prompt: str = Field(
+        default="",
+        description=(
+            "Custom system prompt for the summarizer LLM. "
+            "When empty the built-in default prompt is used."
+        ),
+    )
 
 
 class RuntimeConfig(BaseModel):

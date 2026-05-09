@@ -2,12 +2,12 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from assistant.core.config.schemas import CompactionConfig
-from assistant.core.orchestrator.compaction import ChatCompactionService
+from assistant.core.orchestrator.compaction import SUMMARIZER_PROMPT, ChatCompactionService
 from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.store.filesystem.replay import build_replay
 from assistant.store.filesystem.session import FilesystemSessionStore
@@ -125,6 +125,7 @@ class TestCompactionConfig:
         assert cfg.token_threshold == 100_000
         assert cfg.summarizer_model_id == "claude-haiku-4-5"
         assert cfg.max_compactions == 3
+        assert cfg.compaction_prompt == ""
 
     def test_custom_values(self) -> None:
         cfg = CompactionConfig(
@@ -140,6 +141,17 @@ class TestCompactionConfig:
         with pytest.raises(ValueError):
             CompactionConfig(token_threshold=5_000)  # below minimum 10_000
 
+    def test_custom_compaction_prompt(self) -> None:
+        """compaction_prompt is stored as-is when provided."""
+        custom = "Summarize only the key decisions made."
+        cfg = CompactionConfig(compaction_prompt=custom)
+        assert cfg.compaction_prompt == custom
+
+    def test_empty_compaction_prompt_is_default(self) -> None:
+        """Empty string is the default and signals use of built-in prompt."""
+        cfg = CompactionConfig(compaction_prompt="")
+        assert cfg.compaction_prompt == ""
+
 
 # ---------------------------------------------------------------------------
 # calculate_session_total_tokens tests
@@ -154,7 +166,12 @@ class TestCalculateSessionTotalTokens:
         assert await calculate_session_total_tokens(store, "s1") == 0
 
     @pytest.mark.asyncio
-    async def test_sums_input_and_output_tokens(self) -> None:
+    async def test_returns_last_record_input_tokens(self) -> None:
+        """Returns input_tokens of the highest-sequence assistant message.
+
+        input_tokens already reflects the full accumulated context, so we
+        read the most recent value rather than summing across all records.
+        """
         store = AsyncMock()
         store.read_session = AsyncMock(
             return_value=[
@@ -163,7 +180,7 @@ class TestCalculateSessionTotalTokens:
             ]
         )
         total = await calculate_session_total_tokens(store, "s1")
-        assert total == 4300  # (1000+500) + (2000+800)
+        assert total == 2000  # input_tokens of the last (highest-sequence) record
 
     @pytest.mark.asyncio
     async def test_ignores_non_assistant_records(self) -> None:
@@ -175,7 +192,7 @@ class TestCalculateSessionTotalTokens:
             ]
         )
         total = await calculate_session_total_tokens(store, "s1")
-        assert total == 700
+        assert total == 500  # only the assistant record's input_tokens
 
     @pytest.mark.asyncio
     async def test_handles_missing_usage(self) -> None:
@@ -317,6 +334,87 @@ class TestChatCompactionService:
         formatted = ChatCompactionService._format_for_summary(messages)
         assert "Let me check." in formatted
         assert "[Tool call: memory_search]" in formatted
+
+    def test_instantiates_with_default_prompt(self) -> None:
+        """Service can be created without a custom prompt (uses built-in default)."""
+        svc = ChatCompactionService(model_id="claude-haiku-4-5")
+        assert svc is not None
+
+    def test_instantiates_with_empty_prompt_string(self) -> None:
+        """Explicit empty string falls back to built-in default prompt."""
+        svc = ChatCompactionService(model_id="claude-haiku-4-5", prompt="")
+        assert svc is not None
+
+    def test_instantiates_with_custom_prompt(self) -> None:
+        """Explicit non-empty prompt is accepted and the service is ready to use."""
+        custom = "Only summarize the final decisions."
+        svc = ChatCompactionService(model_id="claude-haiku-4-5", prompt=custom)
+        assert svc is not None
+
+    def test_whitespace_only_prompt_falls_back_to_default(self) -> None:
+        """A prompt consisting solely of whitespace triggers fallback to built-in."""
+        svc = ChatCompactionService(model_id="claude-haiku-4-5", prompt="   ")
+        assert svc is not None
+
+    def test_custom_prompt_propagated_to_agent(self) -> None:
+        """Custom prompt is passed as system_prompt to the underlying pydantic-ai Agent."""
+        custom_prompt = "Only summarize the key decisions made."
+        svc = ChatCompactionService(model_id="claude-haiku-4-5", prompt=custom_prompt)
+        assert svc._agent._system_prompts == (custom_prompt,)
+
+    def test_empty_prompt_uses_default_summarizer_prompt(self) -> None:
+        """Empty string prompt causes Agent to receive the built-in SUMMARIZER_PROMPT."""
+        svc_empty = ChatCompactionService(model_id="claude-haiku-4-5", prompt="")
+        assert svc_empty._agent._system_prompts == (SUMMARIZER_PROMPT,)
+
+    def test_whitespace_prompt_uses_default_summarizer_prompt(self) -> None:
+        """Whitespace-only prompt causes Agent to receive the built-in SUMMARIZER_PROMPT."""
+        svc_ws = ChatCompactionService(model_id="claude-haiku-4-5", prompt="   ")
+        assert svc_ws._agent._system_prompts == (SUMMARIZER_PROMPT,)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator._compact_session: graceful fallback on summarize error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compact_session_graceful_fallback_on_summarize_error() -> None:
+    """_compact_session must not raise when summarize() fails; session stays unchanged."""
+    from assistant.core.orchestrator.service import Orchestrator
+
+    # Two real turns so min_turns_before_compact (=2) is satisfied.
+    records = [
+        _rec(sequence=0, turn_id="t1"),
+        _terminal(sequence=1, turn_id="t1"),
+        _rec(sequence=2, turn_id="t2"),
+        _terminal(sequence=3, turn_id="t2"),
+    ]
+
+    store = MagicMock()
+    store.sessions = AsyncMock()
+    store.sessions.read_session = AsyncMock(return_value=records)
+    store.sessions.replace_session = AsyncMock()
+
+    compaction_cfg = CompactionConfig(enabled=True, min_turns_before_compact=2)
+
+    # Build a bare Orchestrator instance bypassing __init__.
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator._store = store
+    orchestrator._compaction_config = compaction_cfg
+    orchestrator._usage_service = None
+    orchestrator._compaction_service = ChatCompactionService(model_id="claude-haiku-4-5")
+
+    # Make summarize() raise so the fallback path is exercised.
+    orchestrator._compaction_service.summarize = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("LLM unavailable")
+    )
+
+    # Must not raise.
+    await orchestrator._compact_session("session-1", "trace-abc", None, records=records)
+
+    # Session must NOT have been modified (replace_session never called).
+    store.sessions.replace_session.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -7,8 +7,9 @@ Orchestrator service executing turn lifecycle with persistence and idempotency.
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 
 import structlog
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
@@ -70,6 +71,9 @@ from assistant.subagents.interfaces import DelegationCoordinatorInterface
 # Max chars per memory-search match body returned to the agent (limits prompt/tool bloat).
 MEMORY_SEARCH_MATCH_BODY_MAX_CHARS = 12_000
 
+# Notification text sent to the user after a successful session compaction.
+COMPACTION_NOTIFICATION_TEXT: Final[str] = "🗜 История чата сжата"
+
 logger = structlog.get_logger(__name__)
 
 _REPLAY_BUDGET = 50
@@ -122,6 +126,7 @@ class Orchestrator:
             self._compaction_service = ChatCompactionService(
                 model_id=self._compaction_config.summarizer_model_id,
                 max_tokens=self._compaction_config.summarizer_max_tokens,
+                prompt=self._compaction_config.compaction_prompt,
             )
 
     async def execute_turn(
@@ -129,6 +134,7 @@ class Orchestrator:
         event: OrchestratorEvent,
         tool_call_notifier: "Callable[[str, str], Awaitable[None]] | None" = None,
         streaming_text_notifier: "Callable[[str], Awaitable[None]] | None" = None,
+        compaction_notifier: "Callable[[], Awaitable[None]] | None" = None,
     ) -> OrchestratorResult | None:
         """
         Execute one turn for the given event.
@@ -157,6 +163,7 @@ class Orchestrator:
                     event,
                     tool_call_notifier=tool_call_notifier,
                     streaming_text_notifier=streaming_text_notifier,
+                    compaction_notifier=compaction_notifier,
                 )
                 ctx.increment_turn_count()
                 await self._session_factory.persist_state(ctx)
@@ -502,6 +509,7 @@ class Orchestrator:
         event: OrchestratorEvent,
         tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
+        compaction_notifier: Callable[[], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
         user_text = extract_user_text(event)
         attachments = gather_attachments(event)
@@ -541,9 +549,12 @@ class Orchestrator:
                 # Check if compaction is needed before building messages.
                 compact_records = await self._should_compact_session(session_id)
                 if compact_records is not None:
-                    await self._compact_session(
+                    compacted = await self._compact_session(
                         session_id, event.trace_id, event.user_id, records=compact_records
                     )
+                    if compacted and compaction_notifier is not None:
+                        with suppress(Exception):
+                            await compaction_notifier()
                     records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 messages = records_to_messages(records)
@@ -707,14 +718,16 @@ class Orchestrator:
         trace_id: str,
         user_id: str | None,
         records: list[SessionRecord] | None = None,
-    ) -> None:
+    ) -> bool:
         """Compact session by summarizing and clearing history.
 
         Preserves system prompt records (constructed by capabilities) and all
         previously created compaction summary records (up to max_compactions).
+
+        Returns True if the session was successfully compacted, False otherwise.
         """
         if self._compaction_service is None:
-            return
+            return False
 
         if records is None:
             records = await self._store.sessions.read_session(session_id)
@@ -731,14 +744,22 @@ class Orchestrator:
                 session_id=session_id,
                 max=self._compaction_config.max_compactions,
             )
-            return
+            return False
 
         # Collect ALL system prompt records (capabilities constructs the system prompt).
         system_records = [r for r in records if r.record_type == SessionRecordType.SYSTEM_MESSAGE]
 
         # Generate summary from full history.
         messages = records_to_messages(records)
-        summary = await self._compaction_service.summarize(messages, trace_id)
+        try:
+            summary = await self._compaction_service.summarize(messages, trace_id)
+        except Exception as exc:
+            logger.warning(
+                "orchestrator.compaction_summarize_failed",
+                trace_id=trace_id,
+                error=str(exc),
+            )
+            return False
 
         # Archive usage stats before clearing.
         if self._usage_service and user_id:
@@ -763,7 +784,10 @@ class Orchestrator:
             record_type=SessionRecordType.COMPACTION_SUMMARY,
             payload={
                 "message_id": f"summary-{uuid.uuid4().hex[:8]}",
-                "content": f"[Session Compacted - Pass {compaction_pass}]\n\n{summary}",
+                "content": (
+                    f"[System Context Summary]\n"
+                    f"[Session Compacted - Pass {compaction_pass}]\n\n{summary}"
+                ),
                 "scope": SystemMessageScope.SESSION.value,
             },
         )
@@ -782,3 +806,4 @@ class Orchestrator:
             preserved_summaries=len(previous_summaries),
             compaction_pass=compaction_pass,
         )
+        return True

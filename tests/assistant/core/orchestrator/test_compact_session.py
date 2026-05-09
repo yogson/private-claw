@@ -196,10 +196,12 @@ class TestShouldCompactSession:
 
     @pytest.mark.asyncio
     async def test_returns_records_when_compaction_needed(self) -> None:
+        # calculate_session_total_tokens uses the last assistant record's input_tokens,
+        # so the most-recent record must exceed the threshold (10_000) on its own.
         records = [
             _assistant_with_usage(0, turn_id="t1", input_tokens=5000, output_tokens=3000),
             _terminal(1, turn_id="t1"),
-            _assistant_with_usage(2, turn_id="t2", input_tokens=5000, output_tokens=3000),
+            _assistant_with_usage(2, turn_id="t2", input_tokens=12_000, output_tokens=3000),
             _terminal(3, turn_id="t2"),
         ]
         orch = _build_orchestrator(records)
@@ -332,3 +334,146 @@ class TestCompactSession:
 
         orch._store.sessions.read_session.assert_awaited_once_with("s1")  # noqa: SLF001
         orch._store.sessions.replace_session.assert_awaited_once()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_returns_true_on_success(self) -> None:
+        """_compact_session returns True after a successful compaction."""
+        records = [
+            _system(0),
+            _rec(sequence=1, turn_id="t1"),
+            _terminal(2, turn_id="t1"),
+        ]
+        orch = _build_orchestrator(records)
+
+        result = await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_summarize_failure(self) -> None:
+        """_compact_session returns False when summarize raises (graceful fallback)."""
+        records = [
+            _system(0),
+            _rec(sequence=1, turn_id="t1"),
+            _terminal(2, turn_id="t1"),
+        ]
+        orch = _build_orchestrator(records)
+        orch._compaction_service.summarize.side_effect = RuntimeError("LLM unavailable")  # noqa: SLF001
+
+        result = await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
+
+        assert result is False
+        orch._store.sessions.replace_session.assert_not_called()  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Compaction notifier tests – exercise the _run_turn wiring
+# ---------------------------------------------------------------------------
+
+
+def _make_run_turn_records() -> list[SessionRecord]:
+    """Minimal session records that trigger compaction in _run_turn."""
+    return [
+        _system(0),
+        _rec(sequence=1, turn_id="t1"),
+        _terminal(2, turn_id="t1"),
+    ]
+
+
+def _build_event(session_id: str = "s1") -> MagicMock:
+    event = MagicMock()
+    event.session_id = session_id
+    event.event_id = "evt-1"
+    event.trace_id = "trace-1"
+    event.user_id = "user-1"
+    event.capabilities_override = None
+    event.model_id_override = None
+    event.text = "hello"
+    event.voice = None
+    event.attachment = None
+    event.attachments = []
+    event.metadata = {}
+    return event
+
+
+class TestCompactionNotifier:
+    """Tests that the compaction_notifier callback is wired correctly in _run_turn."""
+
+    def _build_orchestrator_for_run_turn(
+        self,
+        compact_return: bool,
+    ) -> Orchestrator:
+        """Build an orchestrator whose _compact_session and _run_turn_pydantic_ai
+        are fully mocked so we can test notifier dispatch in isolation."""
+        from assistant.core.orchestrator.models import OrchestratorResult
+
+        records = _make_run_turn_records()
+        orch = _build_orchestrator(records)
+
+        # _should_compact_session → return records (compaction needed)
+        orch._should_compact_session = AsyncMock(return_value=records)  # noqa: SLF001
+        # _compact_session → return compact_return
+        orch._compact_session = AsyncMock(return_value=compact_return)  # noqa: SLF001
+        # replay_for_turn (called again after compaction) → same records
+        orch._store.sessions.replay_for_turn = AsyncMock(return_value=records)  # noqa: SLF001
+        # _run_turn_pydantic_ai → dummy result
+        orch._run_turn_pydantic_ai = AsyncMock(  # noqa: SLF001
+            return_value=OrchestratorResult(text="ok")
+        )
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_notifier_called_after_successful_compaction(self) -> None:
+        """compaction_notifier is awaited exactly once when _compact_session returns True."""
+        orch = self._build_orchestrator_for_run_turn(compact_return=True)
+        notifier = AsyncMock()
+        event = _build_event()
+
+        with (
+            patch("assistant.core.orchestrator.service.set_trace_id"),
+            patch("assistant.core.orchestrator.service.reset_trace_id"),
+            patch("assistant.core.orchestrator.service.records_to_messages", return_value=[]),
+            patch(
+                "assistant.core.orchestrator.service.build_user_content_blocks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("assistant.core.orchestrator.service.extract_user_text", return_value="hello"),
+            patch("assistant.core.orchestrator.service.gather_attachments", return_value=[]),
+            patch("assistant.core.orchestrator.service.format_attachment_context", return_value=""),
+            patch(
+                "assistant.core.orchestrator.service.extract_raw_text_for_multimodal",
+                return_value="hello",
+            ),
+        ):
+            await orch._run_turn(event, compaction_notifier=notifier)  # noqa: SLF001
+
+        notifier.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_notifier_not_called_on_summarize_failure(self) -> None:
+        """compaction_notifier is NOT called when _compact_session returns False."""
+        orch = self._build_orchestrator_for_run_turn(compact_return=False)
+        notifier = AsyncMock()
+        event = _build_event()
+
+        with (
+            patch("assistant.core.orchestrator.service.set_trace_id"),
+            patch("assistant.core.orchestrator.service.reset_trace_id"),
+            patch("assistant.core.orchestrator.service.records_to_messages", return_value=[]),
+            patch(
+                "assistant.core.orchestrator.service.build_user_content_blocks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("assistant.core.orchestrator.service.extract_user_text", return_value="hello"),
+            patch("assistant.core.orchestrator.service.gather_attachments", return_value=[]),
+            patch("assistant.core.orchestrator.service.format_attachment_context", return_value=""),
+            patch(
+                "assistant.core.orchestrator.service.extract_raw_text_for_multimodal",
+                return_value="hello",
+            ),
+        ):
+            await orch._run_turn(event, compaction_notifier=notifier)  # noqa: SLF001
+
+        notifier.assert_not_awaited()
