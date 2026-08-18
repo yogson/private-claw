@@ -171,12 +171,6 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
             )
         )
         if is_factory:
-            if definition.max_retries != 0:
-                logger.warning(
-                    "provider.tools.factory_max_retries_ignored",
-                    tool_id=tool_id,
-                    hint="Factory tools return a pre-built Tool instance; max_retries in tools.yaml has no effect.",
-                )
             tool_instance = resolved()
             if tool_instance is None:
                 logger.info(
@@ -185,6 +179,10 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
                     reason="factory returned None (likely missing API key)",
                 )
                 continue
+            # tools.yaml is canonical: apply max_retries to the pre-built Tool too,
+            # otherwise factory tools would silently ignore it.
+            if definition.max_retries is not None and isinstance(tool_instance, Tool):
+                tool_instance.max_retries = definition.max_retries
             tools.append(cast(AgentTool, tool_instance))
         else:
             tools.append(

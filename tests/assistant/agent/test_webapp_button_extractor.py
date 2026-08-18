@@ -82,8 +82,8 @@ class TestExtractPendingWebappButtons:
         result = _extract_pending_webapp_buttons([msg])
         assert result is None
 
-    def test_non_start_exercise_tool_is_ignored(self) -> None:
-        """ToolReturnPart from a different tool is skipped even if it has web_app_url."""
+    def test_any_tool_with_web_app_url_is_extracted(self) -> None:
+        """Extraction is tool-name-agnostic: every exercise tool renders its own buttons."""
         msg = _make_request_with_tool_return(
             tool_name="some_other_tool",
             content={
@@ -98,7 +98,16 @@ class TestExtractPendingWebappButtons:
             },
         )
         result = _extract_pending_webapp_buttons([msg])
-        assert result is None
+        assert result is not None
+        buttons, _ = result
+        assert buttons == [
+            {
+                "label": "Click",
+                "web_app_url": "https://example.com/other",
+                "callback_id": "other",
+                "callback_data": "",
+            }
+        ]
 
     def test_no_tool_return_part_in_response_returns_none(self) -> None:
         """ModelResponse messages (no ToolReturnPart) return None."""

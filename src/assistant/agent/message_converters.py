@@ -144,14 +144,29 @@ def _llm_messages_to_history(messages: list[dict[str, Any]]) -> list[ModelMessag
     return history
 
 
+def _coerce_tool_result(value: Any) -> dict[str, Any]:
+    """Wrap a non-dict tool return in a dict, keeping the payload JSON-serializable."""
+    if isinstance(value, dict):
+        return cast(dict[str, Any], value)
+    if isinstance(value, list):
+        return {"results": value}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return {"result": value}
+    return {"result": str(value)}
+
+
 def _parse_tool_result_content(content: str | Any) -> dict[str, Any]:
-    """Parse tool return content to dict. Handles JSON string or dict."""
+    """Parse tool return content to dict. Handles JSON string, dict, list or scalar.
+
+    Tools legitimately return lists (tavily_search returns a list of results). Recording
+    those as a failure made the next turn replay every search as a failed tool call.
+    """
     if isinstance(content, dict):
         return content
     if isinstance(content, str):
         try:
-            result: dict[str, Any] = json.loads(content)
-            return result
+            parsed = json.loads(content)
         except json.JSONDecodeError:
-            return {"status": "failed", "reason": f"invalid json: {content[:100]}"}
-    return {"status": "failed", "reason": "unknown content type"}
+            return {"result": content}
+        return _coerce_tool_result(parsed)
+    return _coerce_tool_result(content)

@@ -313,7 +313,7 @@ def test_get_agent_tools_includes_macos_when_capability_enabled(
         memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
-    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "macos_notes_read" in tool_names
     assert "macos_notes_write" in tool_names
     assert "macos_reminders_read" in tool_names

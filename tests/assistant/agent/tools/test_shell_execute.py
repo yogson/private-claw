@@ -263,7 +263,7 @@ def test_get_agent_tools_included_when_global_and_capability_enabled(
         memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
-    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_readonly" in tool_names
 
 
@@ -324,7 +324,7 @@ def test_get_agent_tools_excluded_when_global_disabled(
         memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
-    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_readonly" not in tool_names
 
 
@@ -385,7 +385,7 @@ def test_get_agent_tools_excluded_when_capability_disabled(
         memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
-    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_readonly" not in tool_names
 
 
@@ -457,7 +457,7 @@ def test_get_agent_tools_excludes_denied_capability(
         memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
-    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_allowlisted" not in tool_names
     assert "shell_execute_readonly" in tool_names
 
@@ -660,6 +660,6 @@ def test_get_agent_tools_excludes_transitively_denied_nested_capability(
         memory=MemoryConfig(api_key="test"),
     )
     tools = get_agent_tools(config)
-    tool_names = [getattr(t, "__name__", str(t)) for t in tools]
+    tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_allowlisted" not in tool_names
     assert "shell_execute_readonly" in tool_names

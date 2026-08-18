@@ -67,10 +67,12 @@ tools:
   - tool_id: tavily_search
     entrypoint: assistant.agent.tools.tavily_search:get_tavily_search_tool
     enabled: true
+    max_retries: 1
 
   - tool_id: tavily_extract
     entrypoint: assistant.agent.tools.tavily_extract:get_tavily_extract_tool
     enabled: true
+    max_retries: 1
 
   - tool_id: write_markdown_file
     entrypoint: assistant.agent.tools.write_markdown:write_markdown_file
