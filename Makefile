@@ -1,3 +1,6 @@
+SHELL := /bin/bash
+.SHELLFLAGS := -o pipefail -c
+
 .PHONY: start stop format lint install sync test
 
 install:
@@ -7,7 +10,8 @@ sync:
 	uv sync --group dev
 
 start:
-	uv run uvicorn assistant.api.main:app --host 0.0.0.0 --port 8000
+	@mkdir -p data/logs
+	uv run uvicorn assistant.api.main:app --host 0.0.0.0 --port 8000 2>&1 | tee -a "data/logs/uvicorn-$$(date +%Y-%m-%d).log"
 	# --reload
 
 stop:
