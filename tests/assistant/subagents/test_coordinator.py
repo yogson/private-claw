@@ -46,6 +46,22 @@ class _FailingBackend(DelegationBackendAdapterInterface):
         return DelegationResult(ok=False, error=f"{request.task_id}-failed")
 
 
+class _CrashingBackend(DelegationBackendAdapterInterface):
+    """Backend that raises instead of returning DelegationResult(ok=False, ...).
+
+    Simulates an unhandled exception inside the backend (e.g. SDK subprocess
+    crash, broken-pipe in transport, programming bug) so the coordinator's
+    safety net can be exercised.
+    """
+
+    @property
+    def backend_id(self) -> str:
+        return "claude_code"
+
+    async def execute(self, request: DelegationRun) -> DelegationResult:
+        raise RuntimeError(f"{request.task_id}-boom")
+
+
 class _RelayCapableBackend(DelegationBackendAdapterInterface):
     """Fake backend that supports relay and invokes the registered relay during execute."""
 
@@ -384,6 +400,48 @@ async def test_stage_failure_marks_task_failed(tmp_path: Path) -> None:
         assert task is not None
         assert task.status == TaskStatus.FAILED
         assert "failed" in (task.error or "")
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_backend_crash_marks_task_failed_and_notifies(tmp_path: Path) -> None:
+    """If backend.execute() raises, the task must be marked FAILED in store
+    (not left as a RUNNING ghost) and the completion callback must fire so
+    downstream notifiers can react."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    completion_callback = AsyncMock()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_CrashingBackend()],
+        completion_callback=completion_callback,
+    )
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={"objective": "Implement it", "tool_params": {}},
+        )
+        task_id = accepted["task_id"]
+        for _ in range(40):
+            task = await coordinator.get_task(task_id)
+            if task is not None and task.status == TaskStatus.FAILED:
+                break
+            await asyncio.sleep(0.1)
+        task = await coordinator.get_task(task_id)
+        assert task is not None, "task disappeared from store"
+        assert task.status == TaskStatus.FAILED, (
+            f"task left in {task.status.value}; bug: backend crash leaks RUNNING ghost"
+        )
+        assert "RuntimeError" in (task.error or "")
+        assert "boom" in (task.error or "")
+        completion_callback.assert_awaited_once()
     finally:
         await coordinator.stop()
         await store.shutdown()

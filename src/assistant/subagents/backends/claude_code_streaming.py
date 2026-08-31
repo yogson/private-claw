@@ -9,6 +9,7 @@ AskUserQuestion feedback loop via a configurable question relay callback.
 """
 
 import asyncio
+import contextlib
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, cast
@@ -147,14 +148,19 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
             task = asyncio.create_task(_run_query())
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=request.timeout_seconds)
-            except TimeoutError:
-                task.cancel()
                 try:
-                    await task
-                except (asyncio.CancelledError, Exception) as cleanup_exc:
-                    logger.debug("sdk_task_cleanup", exc=str(cleanup_exc))
-                return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
+                    await asyncio.wait_for(asyncio.shield(task), timeout=request.timeout_seconds)
+                except TimeoutError:
+                    return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
+            finally:
+                # Whatever path got us out of the shielded await (timeout, outer
+                # cancellation, unexpected exception), the inner _run_query task
+                # must be terminated and awaited. Otherwise the claude-agent-sdk
+                # subprocess orphans and keeps consuming memory until OOM.
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
 
         except Exception as exc:
             return DelegationResult(ok=False, error=f"claude-agent-sdk execution failed: {exc}")

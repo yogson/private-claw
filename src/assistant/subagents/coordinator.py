@@ -310,7 +310,37 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         if backend.supports_relay:
             self._register_streaming_relay(backend, task)
         try:
-            result = await backend.execute(run)
+            try:
+                result = await backend.execute(run)
+            except Exception as exc:
+                # Backend should return DelegationResult(ok=False, ...) for
+                # normal failures. A raised exception means something
+                # unexpected — mark the task FAILED so it doesn't ghost in
+                # RUNNING forever and notify completion downstream.
+                logger.exception(
+                    "subagent.run.crashed",
+                    task_id=task.task_id,
+                    backend=backend_id,
+                )
+                updated = await self._store.tasks.update_status(
+                    task.task_id,
+                    TaskStatus.FAILED,
+                    error=f"backend crashed: {type(exc).__name__}: {exc}",
+                )
+                if updated is not None:
+                    await self._notify_completion(updated)
+                return
+            except BaseException:
+                # Cancellation / SystemExit / KeyboardInterrupt: best-effort
+                # mark FAILED for state consistency, then re-raise so the
+                # asyncio cancellation chain isn't swallowed.
+                with contextlib.suppress(Exception):
+                    await self._store.tasks.update_status(
+                        task.task_id,
+                        TaskStatus.FAILED,
+                        error="cancelled",
+                    )
+                raise
         finally:
             if backend.supports_relay:
                 backend.unregister_relay(task.task_id)

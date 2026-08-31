@@ -383,3 +383,47 @@ async def test_ask_user_question_no_relay_injects_empty_answer() -> None:
     assert isinstance(result, PermissionResultAllow)
     assert result.updated_input is not None
     assert result.updated_input.get("answer") == ""
+
+
+@pytest.mark.asyncio
+async def test_outer_cancellation_terminates_inner_query_task() -> None:
+    """When execute() is cancelled by the caller, the shielded _run_query task
+    must be cancelled and awaited too — otherwise the claude-agent-sdk
+    subprocess orphans and accumulates memory until OOM."""
+    inner_started = asyncio.Event()
+    inner_finally_ran = asyncio.Event()
+
+    async def _hanging_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        inner_started.set()
+        try:
+            await asyncio.sleep(60)  # would block forever without cleanup
+        finally:
+            # The SDK's real subprocess cleanup runs here. We surface it via
+            # an event so the test can verify cancellation propagated inside.
+            inner_finally_ran.set()
+        yield _make_result_msg()  # unreachable
+
+    with _patch_query_side_effect(_hanging_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        outer = asyncio.create_task(adapter.execute(_make_request(timeout_seconds=300)))
+        # Let the inner query start before cancelling the outer.
+        await asyncio.wait_for(inner_started.wait(), timeout=2.0)
+        outer.cancel()
+        with contextlib_suppress_cancelled():
+            await outer
+
+    # The inner task ran its finally — subprocess teardown completed,
+    # nothing leaked.
+    assert inner_finally_ran.is_set()
+
+
+def contextlib_suppress_cancelled() -> Any:
+    """Local helper: suppress CancelledError without polluting top-of-file imports."""
+    import contextlib
+
+    return contextlib.suppress(asyncio.CancelledError)
