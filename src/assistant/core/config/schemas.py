@@ -296,6 +296,7 @@ class CompactionConfig(BaseModel):
     summarizer_max_tokens: int = Field(default=2048, ge=256)
     min_turns_before_compact: int = Field(default=5, ge=2)
     max_compactions: int = Field(default=3, ge=1)
+    keep_recent_turns: int = Field(default=5, ge=0)
     compaction_prompt: str = Field(
         default="",
         description=(

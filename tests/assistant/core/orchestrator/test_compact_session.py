@@ -113,6 +113,9 @@ def _make_compaction_config(**overrides: object) -> CompactionConfig:
         "token_threshold": 10_000,
         "min_turns_before_compact": 2,
         "max_compactions": 3,
+        # Tests pre-date the kept-window feature — default to 0 so they keep
+        # exercising the "summarize everything" path unless they opt in.
+        "keep_recent_turns": 0,
     }
     defaults.update(overrides)
     return CompactionConfig(**defaults)  # type: ignore[arg-type]
@@ -516,3 +519,169 @@ class TestCompactionNotifier:
             await orch._run_turn(event, compaction_notifier=notifier)  # noqa: SLF001
 
         notifier.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# keep_recent_turns tests
+# ---------------------------------------------------------------------------
+
+
+class TestKeepRecentTurns:
+    @pytest.mark.asyncio
+    async def test_keeps_last_n_turns_verbatim(self) -> None:
+        """With keep_recent_turns=2, the last 2 complete turns survive
+        compaction verbatim and only the older turns are summarized."""
+        cfg = _make_compaction_config(keep_recent_turns=2)
+        records = [
+            _system(0),
+            # turn t1 — should be summarized (older)
+            _rec(sequence=1, turn_id="t1", payload={"message_id": "m-1", "content": "old q"}),
+            _assistant_with_usage(2, turn_id="t1"),
+            _terminal(3, turn_id="t1"),
+            # turn t2 — should be summarized (older)
+            _rec(sequence=4, turn_id="t2", payload={"message_id": "m-4", "content": "old q2"}),
+            _assistant_with_usage(5, turn_id="t2"),
+            _terminal(6, turn_id="t2"),
+            # turn t3 — KEEP
+            _rec(sequence=7, turn_id="t3", payload={"message_id": "m-7", "content": "recent q1"}),
+            _assistant_with_usage(8, turn_id="t3"),
+            _terminal(9, turn_id="t3"),
+            # turn t4 — KEEP
+            _rec(sequence=10, turn_id="t4", payload={"message_id": "m-10", "content": "recent q2"}),
+            _assistant_with_usage(11, turn_id="t4"),
+            _terminal(12, turn_id="t4"),
+        ]
+        orch = _build_orchestrator(records, compaction_config=cfg)
+
+        await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
+
+        # Summarizer only saw turns t1 and t2.
+        summarize_mock = orch._compaction_service.summarize  # noqa: SLF001
+        summarize_mock.assert_awaited_once()
+        passed_messages = summarize_mock.call_args[0][0]
+
+        def _flatten(msg: object) -> str:
+            text = getattr(msg, "content", "") or ""
+            for block in getattr(msg, "content_blocks", None) or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text += "\n" + block.get("text", "")
+            return text
+
+        joined = "\n".join(_flatten(m) for m in passed_messages)
+        assert "old q" in joined
+        assert "old q2" in joined
+        assert "recent q1" not in joined
+        assert "recent q2" not in joined
+
+        # Restored session contains system + new summary + ALL records of t3, t4.
+        restored = orch._store.sessions.replace_session.call_args[0][1]  # noqa: SLF001
+        restored_turn_ids = {r.turn_id for r in restored}
+        assert "t3" in restored_turn_ids
+        assert "t4" in restored_turn_ids
+        assert "t1" not in restored_turn_ids
+        assert "t2" not in restored_turn_ids
+
+        # Kept records appear AFTER the new summary in the restored list,
+        # so their original sequences flow into future appends correctly.
+        types_in_order = [r.record_type for r in restored]
+        summary_idx = types_in_order.index(SessionRecordType.COMPACTION_SUMMARY)
+        kept_indices = [
+            i for i, r in enumerate(restored) if r.turn_id in {"t3", "t4"}
+        ]
+        assert all(i > summary_idx for i in kept_indices)
+
+    @pytest.mark.asyncio
+    async def test_skips_when_all_turns_within_keep_window(self) -> None:
+        """If keep_recent_turns covers every turn, _compact_session is a no-op
+        rather than producing an empty summary."""
+        cfg = _make_compaction_config(keep_recent_turns=5)
+        records = [
+            _system(0),
+            _rec(sequence=1, turn_id="t1"),
+            _assistant_with_usage(2, turn_id="t1"),
+            _terminal(3, turn_id="t1"),
+            _rec(sequence=4, turn_id="t2"),
+            _assistant_with_usage(5, turn_id="t2"),
+            _terminal(6, turn_id="t2"),
+        ]
+        orch = _build_orchestrator(records, compaction_config=cfg)
+
+        result = await orch._compact_session(  # noqa: SLF001
+            "s1", "trace-1", "user-1", records=records
+        )
+
+        assert result is False
+        orch._compaction_service.summarize.assert_not_awaited()  # noqa: SLF001
+        orch._store.sessions.replace_session.assert_not_called()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_should_compact_requires_min_plus_keep_turns(self) -> None:
+        """_should_compact_session must wait until there are enough turns to
+        both summarize (min_turns_before_compact) AND keep (keep_recent_turns)."""
+        cfg = _make_compaction_config(
+            token_threshold=10_000,
+            min_turns_before_compact=2,
+            keep_recent_turns=3,
+        )
+        # 4 turns total — not enough (need 2 + 3 = 5).
+        records = [
+            _rec(sequence=0, turn_id="t1"),
+            _assistant_with_usage(1, turn_id="t1", input_tokens=12_000, output_tokens=100),
+            _terminal(2, turn_id="t1"),
+            _rec(sequence=3, turn_id="t2"),
+            _assistant_with_usage(4, turn_id="t2", input_tokens=12_000, output_tokens=100),
+            _terminal(5, turn_id="t2"),
+            _rec(sequence=6, turn_id="t3"),
+            _assistant_with_usage(7, turn_id="t3", input_tokens=12_000, output_tokens=100),
+            _terminal(8, turn_id="t3"),
+            _rec(sequence=9, turn_id="t4"),
+            _assistant_with_usage(10, turn_id="t4", input_tokens=12_000, output_tokens=100),
+            _terminal(11, turn_id="t4"),
+        ]
+        orch = _build_orchestrator(records, compaction_config=cfg)
+        assert await orch._should_compact_session("s1") is None  # noqa: SLF001
+
+        # Add a 5th turn — now we have min(2) + keep(3) = 5, should trigger.
+        records.extend(
+            [
+                _rec(sequence=12, turn_id="t5"),
+                _assistant_with_usage(13, turn_id="t5", input_tokens=12_000, output_tokens=100),
+                _terminal(14, turn_id="t5"),
+            ]
+        )
+        orch._store.sessions.read_session = AsyncMock(return_value=records)  # noqa: SLF001
+        assert await orch._should_compact_session("s1") is not None  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_kept_window_excludes_compaction_summaries(self) -> None:
+        """The last-N window counts real turns only — prior compaction-* turns
+        do not consume a slot."""
+        cfg = _make_compaction_config(keep_recent_turns=2)
+        records = [
+            _system(0),
+            _compaction_summary(1, content="Pass 1", turn_id="compaction-1"),
+            # Older turn — should be summarized.
+            _rec(sequence=2, turn_id="t1", payload={"message_id": "m-2", "content": "old"}),
+            _assistant_with_usage(3, turn_id="t1"),
+            _terminal(4, turn_id="t1"),
+            # Recent — keep.
+            _rec(sequence=5, turn_id="t2", payload={"message_id": "m-5", "content": "kept-a"}),
+            _assistant_with_usage(6, turn_id="t2"),
+            _terminal(7, turn_id="t2"),
+            # Recent — keep.
+            _rec(sequence=8, turn_id="t3", payload={"message_id": "m-8", "content": "kept-b"}),
+            _assistant_with_usage(9, turn_id="t3"),
+            _terminal(10, turn_id="t3"),
+        ]
+        orch = _build_orchestrator(records, compaction_config=cfg)
+
+        await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
+
+        restored_turn_ids = {
+            r.turn_id for r in orch._store.sessions.replace_session.call_args[0][1]  # noqa: SLF001
+        }
+        # Both real recent turns survive; the old turn does not.
+        assert {"t2", "t3"} <= restored_turn_ids
+        assert "t1" not in restored_turn_ids
+        # Prior compaction summary is also preserved.
+        assert "compaction-1" in restored_turn_ids

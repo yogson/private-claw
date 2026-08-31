@@ -1,8 +1,9 @@
 enabled: true
 token_threshold: 60000
-summarizer_model_id: claude-haiku-4-5
-summarizer_max_tokens: 2048
+summarizer_model_id: claude-sonnet-4-6
+summarizer_max_tokens: 8192
 min_turns_before_compact: 5
 max_compactions: 3
+keep_recent_turns: 5
 # Custom summarizer system prompt. Leave empty to use the built-in default prompt.
 compaction_prompt: ""

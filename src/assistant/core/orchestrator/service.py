@@ -84,6 +84,27 @@ _SYSTEM_REMINDER = (
 )
 
 
+def _ordered_recent_turn_ids(
+    chat_records: "list[SessionRecord]", keep_recent_turns: int
+) -> set[str]:
+    """Return the set of the last ``keep_recent_turns`` turn_ids in sequence order.
+
+    Synthetic turns (``compaction-*`` summaries) never count toward the kept
+    window. Records without a turn_id are ignored.
+    """
+    if keep_recent_turns <= 0:
+        return set()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for r in sorted(chat_records, key=lambda x: x.sequence):
+        tid = r.turn_id
+        if not tid or tid.startswith("compaction-") or tid in seen:
+            continue
+        seen.add(tid)
+        ordered.append(tid)
+    return set(ordered[-keep_recent_turns:])
+
+
 class Orchestrator:
     """
     Turn-based orchestrator executing via Pydantic AI turn adapter.
@@ -704,11 +725,16 @@ class Orchestrator:
         )
         if total_tokens < self._compaction_config.token_threshold:
             return None
-        # Also check minimum turn count.
+        # Need enough turns to both summarize AND keep verbatim. Otherwise
+        # the kept-window swallows everything and compaction is a no-op.
         turn_ids = {
             r.turn_id for r in records if r.turn_id and not r.turn_id.startswith("compaction-")
         }
-        if len(turn_ids) >= self._compaction_config.min_turns_before_compact:
+        required = (
+            self._compaction_config.min_turns_before_compact
+            + self._compaction_config.keep_recent_turns
+        )
+        if len(turn_ids) >= required:
             return records
         return None
 
@@ -758,7 +784,27 @@ class Orchestrator:
             if r.record_type
             not in (SessionRecordType.COMPACTION_SUMMARY, SessionRecordType.SYSTEM_MESSAGE)
         ]
-        messages = records_to_messages(chat_records)
+
+        # Split chat_records: summarize the older ones, keep the last N turns
+        # verbatim so recent conversation context survives compaction intact.
+        kept_turn_ids = _ordered_recent_turn_ids(
+            chat_records, self._compaction_config.keep_recent_turns
+        )
+        records_to_summarize = [r for r in chat_records if r.turn_id not in kept_turn_ids]
+        kept_records = [r for r in chat_records if r.turn_id in kept_turn_ids]
+
+        if not records_to_summarize:
+            # Nothing to summarize — everything fits in the kept window. Compaction
+            # would just rewrite the file with no token savings.
+            logger.info(
+                "orchestrator.compaction_skipped_no_older_turns",
+                session_id=session_id,
+                trace_id=trace_id,
+                kept_turns=len(kept_turn_ids),
+            )
+            return False
+
+        messages = records_to_messages(records_to_summarize)
         try:
             summary = await self._compaction_service.summarize(messages, trace_id)
         except Exception as exc:
@@ -800,10 +846,13 @@ class Orchestrator:
             },
         )
 
-        # Atomically replace session: system_records + previous_summaries + new summary.
-        # Using replace_session avoids the gap between clear_session and append where
-        # data could be lost (disk error) or corrupted (concurrent writes).
-        records_to_restore = system_records + previous_summaries + [new_summary_record]
+        # Atomically replace session: system_records + previous_summaries + new
+        # summary + kept_records (last N turns verbatim). replace_session avoids
+        # the gap between clear_session and append where data could be lost
+        # (disk error) or corrupted (concurrent writes).
+        records_to_restore = (
+            system_records + previous_summaries + [new_summary_record] + kept_records
+        )
         await self._store.sessions.replace_session(session_id, records_to_restore)
 
         logger.info(
