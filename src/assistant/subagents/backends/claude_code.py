@@ -6,6 +6,7 @@ Claude Code backend adapter for delegated staged execution.
 
 import asyncio
 import json
+from typing import Any
 
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
@@ -16,8 +17,16 @@ _DEFAULT_CLAUDE_BINARY = "claude"
 class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
     """Executes staged delegation tasks via local Claude Code CLI."""
 
-    def __init__(self, binary: str = _DEFAULT_CLAUDE_BINARY) -> None:
+    def __init__(
+        self,
+        binary: str = _DEFAULT_CLAUDE_BINARY,
+        mcp_servers: dict[str, Any] | None = None,
+    ) -> None:
         self._binary = binary
+        # MCP servers exposed to every sub-agent run, passed as inline --mcp-config
+        # JSON.  The CLI ignores the "mcpServers" key in settings.json, so that file
+        # cannot be used to deliver MCP servers to sub-agents.
+        self._mcp_servers = mcp_servers or {}
 
     @property
     def backend_id(self) -> str:
@@ -75,6 +84,8 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             "--max-turns",
             str(request.max_turns),
         ]
+        if self._mcp_servers:
+            cmd += ["--mcp-config", json.dumps({"mcpServers": self._mcp_servers})]
         effort = str(request.backend_params.get("effort", "")).strip()
         if effort:
             cmd += ["--effort", effort]

@@ -9,11 +9,20 @@ prompt: |
   - User ask to analyze code or repo
   If delegate failed, do not complete the task on your own. Provide a feedback to the user instead.
 
+  #### UI/frontend tasks
+  When delegating UI or frontend work, instruct the subagent to consult the `ui-skills` MCP first:
+  `mcp__ui-skills__list_skills` to find a relevant skill, `mcp__ui-skills__get_skill` to load it,
+  then follow it while writing the UI code.
+
 tools:
   - tool_id: delegate_subagent_task
     enabled: true
 
 claude_code_settings:
+  mcp_servers:
+    ui-skills:
+      type: http
+      url: https://www.ui-skills.com/mcp
   permissions:
     allow:
       - "Read(*)"
@@ -94,6 +103,7 @@ claude_code_settings:
       - "Bash(cut:*)"
       - "Bash(tee:*)"
       - "mcp__chrome-devtools__*"
+      - "mcp__ui-skills__*"
 
     deny:
       - "Bash(rm -rf /)"

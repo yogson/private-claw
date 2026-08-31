@@ -427,3 +427,26 @@ def contextlib_suppress_cancelled() -> Any:
     import contextlib
 
     return contextlib.suppress(asyncio.CancelledError)
+
+
+def test_build_options_includes_capability_mcp_servers() -> None:
+    servers = {"ui-skills": {"type": "http", "url": "https://www.ui-skills.com/mcp"}}
+    adapter = ClaudeCodeStreamingBackendAdapter(mcp_servers=servers)
+
+    async def _noop(_tool: str, _input: dict[str, Any], _ctx: Any) -> Any:
+        return None
+
+    options = adapter._build_options(_make_request(), _noop)
+    assert options.mcp_servers == servers
+    # Defensive copy: mutating the options must not corrupt the adapter's config.
+    options.mcp_servers.clear()
+    assert adapter._mcp_servers == servers
+
+
+def test_build_options_without_mcp_servers_is_empty() -> None:
+    adapter = ClaudeCodeStreamingBackendAdapter()
+
+    async def _noop(_tool: str, _input: dict[str, Any], _ctx: Any) -> Any:
+        return None
+
+    assert adapter._build_options(_make_request(), _noop).mcp_servers == {}

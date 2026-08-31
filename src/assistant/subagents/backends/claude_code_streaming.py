@@ -63,10 +63,14 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
     each get their own isolated relay.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, mcp_servers: dict[str, dict[str, Any]] | None = None) -> None:
         # Keyed by task_id; each entry is an async callable that receives
         # (question, options) and returns the user's answer as a string.
         self._task_relays: dict[str, Callable[[str, list[str]], Awaitable[str]]] = {}
+        # MCP servers exposed to every sub-agent run, passed to the CLI as
+        # --mcp-config.  Sub-agents run with --setting-sources "" (SDK default),
+        # so servers registered in ~/.claude.json or settings.json never reach them.
+        self._mcp_servers = mcp_servers or {}
 
     @property
     def backend_id(self) -> str:
@@ -220,6 +224,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
         return ClaudeAgentOptions(
             model=request.model_id,
+            mcp_servers=cast(Any, dict(self._mcp_servers)),
             max_turns=request.max_turns,
             cwd=cwd,
             effort=cast(Any, effort),

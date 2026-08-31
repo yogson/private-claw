@@ -3,7 +3,10 @@
 import json
 from pathlib import Path
 
-from assistant.core.capabilities.loader import apply_claude_code_settings
+from assistant.core.capabilities.loader import (
+    apply_claude_code_settings,
+    collect_claude_code_mcp_servers,
+)
 from assistant.core.capabilities.schemas import (
     CapabilityDefinition,
     ClaudeCodePermissions,
@@ -125,3 +128,33 @@ def test_apply_claude_code_settings_denied_cap_excluded_when_caller_filters(
     data = json.loads(settings_path.read_text())
     assert "Bash(rm:*)" not in data["permissions"]["allow"]
     assert "secret" not in data.get("mcpServers", {})
+
+
+def test_collect_claude_code_mcp_servers_merges_in_order() -> None:
+    definitions = {
+        "a": CapabilityDefinition(
+            capability_id="a",
+            claude_code_settings=ClaudeCodeSettings(
+                mcp_servers={
+                    "shared": {"type": "http", "url": "https://first"},
+                    "ui-skills": {"type": "http", "url": "https://www.ui-skills.com/mcp"},
+                }
+            ),
+        ),
+        "b": CapabilityDefinition(
+            capability_id="b",
+            claude_code_settings=ClaudeCodeSettings(
+                mcp_servers={"shared": {"type": "http", "url": "https://second"}}
+            ),
+        ),
+        "c": CapabilityDefinition(capability_id="c"),
+    }
+    merged = collect_claude_code_mcp_servers(definitions, ["a", "b", "c", "missing"])
+    assert merged == {
+        "shared": {"type": "http", "url": "https://second"},
+        "ui-skills": {"type": "http", "url": "https://www.ui-skills.com/mcp"},
+    }
+    # Deep-copied: callers may not mutate the capability definitions.
+    merged["shared"]["url"] = "mutated"
+    assert definitions["b"].claude_code_settings is not None
+    assert definitions["b"].claude_code_settings.mcp_servers["shared"]["url"] == "https://second"

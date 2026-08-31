@@ -101,6 +101,27 @@ def expand_nested_capabilities(
     return result
 
 
+def collect_claude_code_mcp_servers(
+    definitions: dict[str, CapabilityDefinition],
+    enabled_capabilities: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Merge ``claude_code_settings.mcp_servers`` from the active capabilities.
+
+    Servers are merged in ``enabled_capabilities`` order; duplicate ids are overwritten
+    by later capabilities.  The result is handed to the delegation backends, which pass
+    it to Claude Code via ``--mcp-config`` — the CLI ignores ``mcpServers`` in
+    settings.json, so that file cannot be used to deliver MCP servers to sub-agents.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for cap_id in enabled_capabilities:
+        definition = definitions.get(cap_id)
+        if definition is None or definition.claude_code_settings is None:
+            continue
+        for name, spec in definition.claude_code_settings.mcp_servers.items():
+            merged[name] = copy.deepcopy(spec)
+    return merged
+
+
 def apply_claude_code_settings(
     definitions: dict[str, CapabilityDefinition],
     enabled_capabilities: list[str],
@@ -118,6 +139,9 @@ def apply_claude_code_settings(
     MCP servers from capabilities are merged in enabled_capabilities order; duplicate
     server ids are overwritten by later capabilities. Written as top-level ``mcpServers``.
     If no capability defines ``mcp_servers``, the existing ``mcpServers`` key is left unchanged.
+    Note that Claude Code ignores ``mcpServers`` in settings.json — the key is written for
+    reference only; sub-agents get their servers via ``collect_claude_code_mcp_servers``,
+    which the delegation backends pass to the CLI as ``--mcp-config``.
     """
     if settings_path is None:
         settings_path = Path.home() / ".claude" / "settings.json"
@@ -126,7 +150,7 @@ def apply_claude_code_settings(
     merged_deny: list[str] = []
     seen_allow: set[str] = set()
     seen_deny: set[str] = set()
-    merged_mcp: dict[str, dict[str, Any]] = {}
+    merged_mcp = collect_claude_code_mcp_servers(definitions, enabled_capabilities)
 
     for cap_id in enabled_capabilities:
         definition = definitions.get(cap_id)
@@ -141,8 +165,6 @@ def apply_claude_code_settings(
             if entry not in seen_deny:
                 merged_deny.append(entry)
                 seen_deny.add(entry)
-        for name, spec in definition.claude_code_settings.mcp_servers.items():
-            merged_mcp[name] = copy.deepcopy(spec)
 
     if not merged_allow and not merged_deny and not merged_mcp:
         return

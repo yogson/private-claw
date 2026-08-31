@@ -1,6 +1,7 @@
 """Tests for Claude Code backend adapter."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -129,3 +130,21 @@ def test_build_command_includes_backend_params() -> None:
     assert "--permission-mode" in command
     assert "plan" in command
     assert command.count("--add-dir") == 2
+
+
+def test_build_command_passes_mcp_servers_as_inline_config() -> None:
+    adapter = ClaudeCodeBackendAdapter(
+        binary="claude",
+        mcp_servers={"ui-skills": {"type": "http", "url": "https://www.ui-skills.com/mcp"}},
+    )
+    request = DelegationRun(task_id="t1", objective="Build UI", model_id="claude-sonnet-4-5")
+    command = adapter._build_command(request, "prompt")
+    assert "--mcp-config" in command
+    payload = json.loads(command[command.index("--mcp-config") + 1])
+    assert payload["mcpServers"]["ui-skills"]["url"] == "https://www.ui-skills.com/mcp"
+
+
+def test_build_command_omits_mcp_config_when_no_servers() -> None:
+    adapter = ClaudeCodeBackendAdapter(binary="claude")
+    request = DelegationRun(task_id="t1", objective="Build UI", model_id="claude-sonnet-4-5")
+    assert "--mcp-config" not in adapter._build_command(request, "prompt")

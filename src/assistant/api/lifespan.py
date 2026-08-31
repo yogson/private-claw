@@ -20,7 +20,11 @@ from assistant.channels.telegram.polling import CancellationRegistry, run_pollin
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap
-from assistant.core.capabilities import load_capability_definitions
+from assistant.core.capabilities import (
+    collect_claude_code_mcp_servers,
+    expand_nested_capabilities,
+    load_capability_definitions,
+)
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session import SessionContextFactory
@@ -137,10 +141,27 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
+        # MCP servers declared by the active capabilities are handed to the
+        # sub-agents explicitly: Claude Code does not read "mcpServers" from
+        # settings.json, and the SDK backend loads no filesystem settings at all.
+        denied_capabilities = frozenset(runtime_config.capabilities.denied_capabilities)
+        subagent_mcp_servers = collect_claude_code_mcp_servers(
+            capability_definitions,
+            [
+                cap_id
+                for cap_id in expand_nested_capabilities(
+                    runtime_config.capabilities.enabled_capabilities, capability_definitions
+                )
+                if cap_id not in denied_capabilities
+            ],
+        )
         delegation_coordinator = DelegationCoordinator(
             store=store,
             config=runtime_config,
-            backends=[ClaudeCodeBackendAdapter(), ClaudeCodeStreamingBackendAdapter()],
+            backends=[
+                ClaudeCodeBackendAdapter(mcp_servers=subagent_mcp_servers),
+                ClaudeCodeStreamingBackendAdapter(mcp_servers=subagent_mcp_servers),
+            ],
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
