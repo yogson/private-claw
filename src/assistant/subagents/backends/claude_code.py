@@ -97,6 +97,11 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             for item in add_dirs:
                 if isinstance(item, str) and item.strip():
                     cmd += ["--add-dir", item.strip()]
+        plugin_dirs = request.backend_params.get("plugin_dirs")
+        if isinstance(plugin_dirs, list):
+            for item in plugin_dirs:
+                if isinstance(item, str) and item.strip():
+                    cmd += ["--plugin-dir", item.strip()]
         return cmd
 
     @staticmethod

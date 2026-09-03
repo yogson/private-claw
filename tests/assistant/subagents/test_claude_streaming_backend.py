@@ -259,6 +259,7 @@ async def test_backend_params_passed_to_options() -> None:
                     "permission_mode": "bypassPermissions",
                     "add_dirs": ["src", "tests"],
                     "directory": "/tmp/project",
+                    "plugin_dirs": ["/path/to/plugin-a"],
                 }
             )
         )
@@ -268,6 +269,7 @@ async def test_backend_params_passed_to_options() -> None:
     assert opts.permission_mode == "bypassPermissions"
     assert opts.add_dirs == ["src", "tests"]
     assert str(opts.cwd) == "/tmp/project"
+    assert opts.plugins == [{"type": "local", "path": "/path/to/plugin-a"}]
 
 
 def test_backend_id() -> None:

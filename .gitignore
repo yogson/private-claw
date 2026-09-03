@@ -214,3 +214,7 @@ data
 
 .claude
 .ai
+
+# Local symlink into the Obsidian vault's wiki/projects/private-claw/ (machine-specific
+# absolute path, not portable — see wiki/projects/private-claw/overview.md in the vault)
+/wiki

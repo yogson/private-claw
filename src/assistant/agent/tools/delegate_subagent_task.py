@@ -21,6 +21,7 @@ async def delegate_subagent_task(
     model_id: str | None = None,
     directory: str | None = None,
     backend: str | None = None,
+    plugin_dirs: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a delegated background task and return immediate acknowledgement.
     Use this when you need to delegate coding work to a background sub-agent (e.g. Claude Code).
@@ -33,6 +34,9 @@ async def delegate_subagent_task(
         backend: Optional backend selector. Use "claude_code" for fire-and-forget one shot
             simple task or "claude_code_streaming" for complex tasks with feedback loop.
             Omit to use the default backend - "claude_code".
+        plugin_dirs: Optional list of local Claude Code plugin directories to load for this
+            run only (e.g. a checked-out plugin providing extra Skills). Each entry must be
+            an existing directory; if invalid, the task is rejected.
     """
     handler = ctx.deps.delegation_enqueue_handler
     if handler is None:
@@ -50,6 +54,15 @@ async def delegate_subagent_task(
                 "rejection_reason": f"directory does not exist: {directory}",
             }
         backend_params["directory"] = directory
+    if plugin_dirs:
+        for path in plugin_dirs:
+            if not os.path.isdir(path):
+                return {
+                    "accepted": False,
+                    "status": "error",
+                    "rejection_reason": f"plugin_dirs entry does not exist: {path}",
+                }
+        backend_params["plugin_dirs"] = list(plugin_dirs)
     request: dict[str, Any] = {
         "objective": objective,
         "model_id": model_id,

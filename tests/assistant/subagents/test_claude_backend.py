@@ -122,6 +122,7 @@ def test_build_command_includes_backend_params() -> None:
             "effort": "high",
             "permission_mode": "plan",
             "add_dirs": ["src", "tests"],
+            "plugin_dirs": ["/path/to/plugin-a", "/path/to/plugin-b"],
         },
     )
     command = adapter._build_command(request, "prompt")
@@ -130,6 +131,9 @@ def test_build_command_includes_backend_params() -> None:
     assert "--permission-mode" in command
     assert "plan" in command
     assert command.count("--add-dir") == 2
+    assert command.count("--plugin-dir") == 2
+    assert "/path/to/plugin-a" in command
+    assert "/path/to/plugin-b" in command
 
 
 def test_build_command_passes_mcp_servers_as_inline_config() -> None:

@@ -12,6 +12,14 @@ tools:
     entrypoint: assistant.agent.tools.memory_propose_update:memory_propose_update
     enabled: true
 
+  - tool_id: obsidian_wiki_search
+    entrypoint: assistant.agent.tools.obsidian_wiki_search:obsidian_wiki_search
+    enabled: true
+
+  - tool_id: obsidian_wiki_write
+    entrypoint: assistant.agent.tools.obsidian_wiki_write:obsidian_wiki_write
+    enabled: true
+
   - tool_id: ask_question
     entrypoint: assistant.agent.tools.ask_question:ask_question
     enabled: true

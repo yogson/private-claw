@@ -222,6 +222,17 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             else []
         )
 
+        plugin_dirs_raw = params.get("plugin_dirs")
+        plugins: list[dict[str, str]] = (
+            [
+                {"type": "local", "path": str(d)}
+                for d in plugin_dirs_raw
+                if isinstance(d, str) and d.strip()
+            ]
+            if isinstance(plugin_dirs_raw, list)
+            else []
+        )
+
         return ClaudeAgentOptions(
             model=request.model_id,
             mcp_servers=cast(Any, dict(self._mcp_servers)),
@@ -230,6 +241,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             effort=cast(Any, effort),
             permission_mode=cast(Any, permission_mode),
             add_dirs=cast(Any, add_dirs),
+            plugins=cast(Any, plugins),
             can_use_tool=can_use_tool,
             # Stub hook keeps SDK stdin open for ask_question relay (Fix 3).
             # Even if the SDK patch (Fix 1) is lost on reinstall, bool(hooks)

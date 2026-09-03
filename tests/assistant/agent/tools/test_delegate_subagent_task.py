@@ -102,3 +102,33 @@ async def test_delegate_subagent_task_invalid_directory_returns_error() -> None:
     assert result["accepted"] is False
     assert result["status"] == "error"
     assert "directory does not exist" in result["rejection_reason"]
+
+
+@pytest.mark.asyncio
+async def test_delegate_subagent_task_plugin_dirs_forwarded(tmp_path: Path) -> None:
+    ctx = _Ctx(_make_deps())
+    result = await delegate_subagent_task(
+        ctx,
+        objective="Ingest source",
+        directory=str(tmp_path),
+        plugin_dirs=[str(tmp_path)],
+    )
+    assert result["accepted"] is True
+    payload = result["payload_echo"]
+    assert payload["backend_params"] == {
+        "directory": str(tmp_path),
+        "plugin_dirs": [str(tmp_path)],
+    }
+
+
+@pytest.mark.asyncio
+async def test_delegate_subagent_task_invalid_plugin_dir_returns_error() -> None:
+    ctx = _Ctx(_make_deps())
+    result = await delegate_subagent_task(
+        ctx,
+        objective="Ingest source",
+        plugin_dirs=["/nonexistent/plugin/path"],
+    )
+    assert result["accepted"] is False
+    assert result["status"] == "error"
+    assert "plugin_dirs entry does not exist" in result["rejection_reason"]
