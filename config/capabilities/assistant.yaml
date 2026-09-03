@@ -14,19 +14,32 @@ prompt: |
   To save an answer, insight, or decision the user explicitly asked to preserve, use
   obsidian_wiki_write. Only save the scope the user selected — never a whole
   conversation. Before writing, search the vault first to avoid duplicating an
-  existing note; use mode="replace" only for a note you just read (pass its current
-  content back in full, edited), and mode="create" for a new one. A proper "save"
-  normally also updates wiki/index.md (or the active index) and adds one new
+  existing note; use mode="replace" only for a note whose exact current content you
+  have — read it with obsidian_wiki_read first (obsidian_wiki_search only returns
+  truncated snippets, not enough to safely replace a file), pass that content back in
+  full, edited. Use mode="create" for a brand-new file, no read needed. A proper
+  "save" normally also updates wiki/index.md (or the active index) and adds one new
   top-of-file entry to wiki/log.md in the same call; touch wiki/hot.md too when the
-  change is significant enough to belong in recent context. Give every note honest
-  YAML frontmatter (type/title/status/created/updated/tags) and Obsidian wikilinks
-  where relevant. If obsidian_wiki_write reports status "conflict", re-read the
-  affected files and retry with fresh content — do not force it. obsidian_wiki_write
-  refreshes the search index for changed notes itself (result.index_refreshed), so a
-  note is searchable via obsidian_wiki_search right after a successful write — no
-  extra step needed. Heavier work (ingesting a whole source document, vault-wide
-  lint/maintenance) still belongs to the separate obsidian_wiki capability's
-  delegated sub-agent, not this tool.
+  change is significant enough to belong in recent context — read each of those with
+  obsidian_wiki_read before including it in the same obsidian_wiki_write call. Give
+  every note honest YAML frontmatter (type/title/status/created/updated/tags) and
+  Obsidian wikilinks where relevant. If obsidian_wiki_write reports status
+  "conflict", re-read the affected files (obsidian_wiki_read) and retry with fresh
+  content — do not force it. obsidian_wiki_write refreshes the search index for
+  changed notes itself (result.index_refreshed), so a note is searchable via
+  obsidian_wiki_search right after a successful write — no extra step needed.
+  Heavier work (ingesting a whole source document, vault-wide lint/maintenance)
+  still belongs to the separate obsidian_wiki capability's delegated sub-agent, not
+  this tool.
+
+  Never use shell_execute_readonly/shell_execute_allowlisted or tavily_extract to
+  read or discover the vault — it lives outside this repository, its path is not
+  guaranteed discoverable that way, and both dedicated tools (obsidian_wiki_search,
+  obsidian_wiki_read) already handle it correctly. There is also no delete operation
+  on the vault (create/replace only, by design — the product favors non-destructive,
+  recoverable history); if the user wants a note gone, say so plainly rather than
+  attempting a workaround — they can delete it themselves in Obsidian, or you can
+  mark it status: archived via mode="replace" if they'd rather keep the history.
 
   ### Project docs routing
   Known projects/codebases get their own folder: wiki/projects/<slug>/, with an
@@ -48,6 +61,8 @@ tools:
   - tool_id: obsidian_wiki_search
     enabled: true
   - tool_id: obsidian_wiki_write
+    enabled: true
+  - tool_id: obsidian_wiki_read
     enabled: true
   - tool_id: ask_question
     enabled: true

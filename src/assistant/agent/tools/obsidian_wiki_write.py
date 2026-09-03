@@ -19,13 +19,13 @@ import os
 import subprocess
 import tempfile
 import uuid
-from pathlib import PurePosixPath
 from typing import Any
 
 import structlog
 from pydantic_ai import RunContext
 
 from assistant.agent.tools.deps import TurnDeps
+from assistant.agent.tools.obsidian_wiki_common import reject_unsafe_vault_path
 
 logger = structlog.get_logger(__name__)
 
@@ -34,18 +34,6 @@ _INDEX_REFRESH_TIMEOUT_SECONDS = 20
 _EXIT_CONFLICT = 75
 _MAX_WRITES_PER_CALL = 20
 _ALLOWED_MODES = {"create", "replace"}
-
-
-def _reject_reason(path: str) -> str | None:
-    """Return a reason string if a vault-relative write path is unsafe, else None."""
-    if not path or not path.strip():
-        return "path must not be empty"
-    rel = PurePosixPath(path)
-    if rel.is_absolute():
-        return f"path must be vault-relative, not absolute: {path}"
-    if ".." in rel.parts:
-        return f"path must not contain '..': {path}"
-    return None
 
 
 def obsidian_wiki_write(
@@ -102,7 +90,7 @@ def obsidian_wiki_write(
         mode = str(entry.get("mode", ""))
         content = entry.get("content")
 
-        reason = _reject_reason(path)
+        reason = reject_unsafe_vault_path(path)
         if reason is not None:
             return {"status": "rejected_invalid", "reason": reason}
         if mode not in _ALLOWED_MODES:

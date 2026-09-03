@@ -20,6 +20,10 @@ tools:
     entrypoint: assistant.agent.tools.obsidian_wiki_write:obsidian_wiki_write
     enabled: true
 
+  - tool_id: obsidian_wiki_read
+    entrypoint: assistant.agent.tools.obsidian_wiki_read:obsidian_wiki_read
+    enabled: true
+
   - tool_id: ask_question
     entrypoint: assistant.agent.tools.ask_question:ask_question
     enabled: true
