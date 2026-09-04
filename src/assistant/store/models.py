@@ -32,6 +32,11 @@ class TurnTerminalStatus(StrEnum):
     CANCELLED = "cancelled"
     TIMED_OUT = "timed_out"
     INTERRUPTED = "interrupted"
+    # Turn completed with partial output after exhausting tool-call retries.
+    # The model's pre-tool-call text is surfaced to the user, but the requested
+    # action was not performed.  Distinct from COMPLETED to avoid inflating
+    # completion metrics.
+    DEGRADED = "degraded"
     # Reserved for future use (e.g. turn suspended awaiting user input such as ask_question).
     # Not used in v1; turns with pending_ask are persisted as COMPLETED.
     SUSPENDED = "suspended"

@@ -27,10 +27,12 @@ tools:
   - tool_id: ask_question
     entrypoint: assistant.agent.tools.ask_question:ask_question
     enabled: true
+    max_retries: 1
 
   - tool_id: delegate_subagent_task
     entrypoint: assistant.agent.tools.delegate_subagent_task:delegate_subagent_task
     enabled: true
+    max_retries: 1
     default_params:
       delegation_allowed_backends:
         - claude_code

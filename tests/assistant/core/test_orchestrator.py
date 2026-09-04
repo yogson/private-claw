@@ -40,10 +40,11 @@ from assistant.core.orchestrator import (
     _gather_attachments,
     _records_to_messages,
 )
+from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.service import MEMORY_SEARCH_MATCH_BODY_MAX_CHARS
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
-from assistant.store.models import SessionRecord, SessionRecordType
+from assistant.store.models import SessionRecord, SessionRecordType, TurnTerminalStatus
 
 
 def _runtime_config() -> RuntimeConfig:
@@ -1536,3 +1537,168 @@ class TestOrchestratorWithSessionFactory:
         event = _minimal_event()
         with pytest.raises(SessionNotFoundError):
             await orch.execute_turn(event)
+
+
+class TestToolCallFailedWithPartialHandling:
+    """Verify ToolCallFailedWithPartial degrades gracefully."""
+
+    @pytest.mark.asyncio
+    async def test_recovered_text_is_returned(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="I will delegate the task now.",
+            )
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        assert result is not None
+        assert result.text == "I will delegate the task now."
+
+    @pytest.mark.asyncio
+    async def test_fallback_text_when_no_recovered_text(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="",
+            )
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        assert result is not None
+        assert "tool error" in result.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_turn_is_persisted_as_completed(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="Model explanation here.",
+            )
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        assert result is not None
+        # Should persist records (not raise), verify append was called
+        assert mock_store.sessions.append.call_count >= 1
+        all_records: list[SessionRecord] = []
+        for call in mock_store.sessions.append.call_args_list:
+            all_records.extend(call[0][0])
+        # Should be DEGRADED — not COMPLETED and not FAILED.
+        terminal_records = [
+            r for r in all_records if r.record_type == SessionRecordType.TURN_TERMINAL
+        ]
+        assert terminal_records, "Expected at least one TURN_TERMINAL record"
+        for tr in terminal_records:
+            assert tr.payload.get("status") == TurnTerminalStatus.DEGRADED.value
+
+    @pytest.mark.asyncio
+    async def test_persist_failure_swallowed_gracefully(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        """When persist raises during ToolCallFailedWithPartial handling, the
+        exception is swallowed and the recovered text is still returned."""
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="I tried to delegate.",
+            )
+        )
+        # Make persistence raise so we exercise the swallow path.
+        mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("disk full"))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        # Should still return a result, not raise.
+        assert result is not None
+        assert result.text == "I tried to delegate."
+
+
+class TestExtractCauseDetail:
+    """Tests for extract_cause_detail shared helper."""
+
+    def test_no_cause_returns_unknown(self) -> None:
+        exc = RuntimeError("boom")
+        cause_type, cause_detail = extract_cause_detail(exc)
+        assert cause_type == "unknown"
+        assert cause_detail == ""
+
+    def test_generic_cause(self) -> None:
+        exc = RuntimeError("wrapper")
+        exc.__cause__ = ValueError("bad value")
+        cause_type, cause_detail = extract_cause_detail(exc)
+        assert cause_type == "ValueError"
+        assert cause_detail == "bad value"
+
+    def test_pydantic_validation_error(self) -> None:
+        from pydantic import BaseModel, ValidationError
+
+        class _Dummy(BaseModel):
+            x: int
+
+        try:
+            _Dummy(x="not_an_int")  # type: ignore[arg-type]
+        except ValidationError as ve:
+            exc = RuntimeError("wrapper")
+            exc.__cause__ = ve
+            cause_type, cause_detail = extract_cause_detail(exc)
+            assert cause_type == "ValidationError"
+            # Should use errors() compact form, not raw traceback.
+            assert "int" in cause_detail.lower()

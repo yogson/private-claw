@@ -14,6 +14,7 @@ from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
+from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.service import COMPACTION_NOTIFICATION_TEXT, Orchestrator
 from assistant.extensions.language_learning.models import (
     CardResult,
@@ -363,11 +364,14 @@ def _build_orchestrator_handler(
                 trace_id=event.trace_id,
             )
         except UnexpectedModelBehavior as exc:
+            cause_type, cause_detail = extract_cause_detail(exc)
             logger.warning(
                 "orchestrator.unexpected_model_behavior",
                 session_id=orch_event.session_id,
                 trace_id=event.trace_id,
                 error=str(exc),
+                cause_type=cause_type,
+                cause_detail=cause_detail,
             )
             return build_text_channel_response(
                 text=(

@@ -18,6 +18,7 @@ from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.agent.interfaces import LLMMessage, MessageRole
 from assistant.agent.pydantic_ai_agent import (
     PydanticAITurnAdapter,
+    ToolCallFailedWithPartial,
     TurnCancelledWithPartial,
     TurnDeps,
     _extract_pending_ask_question,
@@ -31,6 +32,7 @@ from assistant.core.config.schemas import CompactionConfig, RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.core.orchestrator.compaction import ChatCompactionService
+from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.memory import apply_approved_memory_intents
 from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.payloads import (
@@ -376,6 +378,76 @@ class Orchestrator:
                     turn_id=turn_id,
                 )
             raise
+        except ToolCallFailedWithPartial as exc:
+            # Tool-arg retries exhausted (e.g. empty args). Degrade gracefully:
+            # persist as COMPLETED and return the model's own text to the user.
+            cause_type, cause_detail = extract_cause_detail(exc)
+            logger.warning(
+                "orchestrator.unexpected_model_behavior",
+                session_id=session_id,
+                turn_id=turn_id,
+                error=str(exc),
+                cause_type=cause_type,
+                cause_detail=cause_detail,
+            )
+            recovered_text = exc.recovered_text or (
+                "I encountered a tool error and could not complete the action. "
+                "Please try again or rephrase your request."
+            )
+            try:
+                now = datetime.now(UTC)
+                assistant_msg_id = f"msg-{turn_id}-assistant"
+                partial_records = _new_messages_to_session_records(
+                    exc.partial_messages,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    timestamp=now,
+                    assistant_msg_id=assistant_msg_id,
+                    model_id=model_id,
+                    user_id=user_id,
+                    skip_memory_tool_results=True,
+                )
+                if not any(
+                    r.record_type == SessionRecordType.ASSISTANT_MESSAGE for r in partial_records
+                ):
+                    partial_records.append(
+                        SessionRecord(
+                            session_id=session_id,
+                            sequence=0,
+                            event_id=assistant_msg_id,
+                            turn_id=turn_id,
+                            timestamp=now,
+                            record_type=SessionRecordType.ASSISTANT_MESSAGE,
+                            payload={
+                                "message_id": assistant_msg_id,
+                                "content": recovered_text,
+                                "model_id": model_id,
+                            },
+                        )
+                    )
+                await persist_turn_initial(
+                    self._store.sessions,
+                    self._config,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    user_text=user_content,
+                    assistant_records=partial_records,
+                    user_id=user_id,
+                )
+                await persist_turn_outcomes(
+                    self._store.sessions,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    outcomes=[],
+                    terminal_status=TurnTerminalStatus.DEGRADED,
+                )
+            except Exception:
+                logger.warning(
+                    "orchestrator.tool_call_failed_persist_error",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
+            return OrchestratorResult(text=recovered_text)
         except UnexpectedModelBehavior as exc:
             # Tool call failed because the tool is not registered (e.g. capability disabled).
             # Persist a failed turn record so the turn appears in session history.
