@@ -9,7 +9,9 @@ import asyncio
 import contextlib
 from typing import Any
 
+import structlog
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -33,8 +35,11 @@ from assistant.agent.tools import TurnDeps, get_agent_tools
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.first_party.memory import normalize_candidate_for_upsert
 
+logger = structlog.get_logger(__name__)
+
 __all__ = [
     "PydanticAITurnAdapter",
+    "ToolCallFailedWithPartial",
     "TurnCancelledWithPartial",
     "TurnDeps",
     "_extract_pending_ask_question",
@@ -43,6 +48,26 @@ __all__ = [
     "_llm_messages_to_history",
     "_normalize_candidate_for_upsert",
 ]
+
+
+class ToolCallFailedWithPartial(UnexpectedModelBehavior):
+    """Raised when tool-arg retries are exhausted; carries partial messages and recovered text.
+
+    Subclasses UnexpectedModelBehavior so existing handlers still catch it.
+    The ``recovered_text`` is the model's own pre-tool-call explanation (if any),
+    which can be surfaced to the user instead of a generic error.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_messages: list[ModelMessage],
+        recovered_text: str,
+    ) -> None:
+        super().__init__(message)
+        self.partial_messages = partial_messages
+        self.recovered_text = recovered_text
 
 
 class TurnCancelledWithPartial(asyncio.CancelledError):
@@ -94,6 +119,21 @@ def _inject_cancellation_results(messages: list[ModelMessage]) -> list[ModelMess
         for call in pending
     ]
     return list(messages) + [ModelRequest(parts=cancelled_parts)]
+
+
+def _extract_recovered_text(messages: list[ModelMessage]) -> str:
+    """Extract the model's explanatory text from partial messages.
+
+    Scans ModelResponse parts for TextPart content that preceded
+    the failed tool call, returning the last non-empty text found.
+    """
+    recovered = ""
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, TextPart) and part.content:
+                    recovered = part.content.strip()
+    return recovered
 
 
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
@@ -204,9 +244,16 @@ class PydanticAITurnAdapter:
                             if text_parts:
                                 _buffered_text = "\n\n".join(p.content for p in text_parts).strip()
 
-                        if deps.tool_call_notifier is not None:
-                            for part in node.model_response.parts:
-                                if isinstance(part, ToolCallPart):
+                        for part in node.model_response.parts:
+                            if isinstance(part, ToolCallPart):
+                                logger.debug(
+                                    "turn.tool_call_raw_args",
+                                    tool_name=part.tool_name,
+                                    tool_call_id=part.tool_call_id,
+                                    raw_args=part.args_as_json_str(),
+                                    trace_id=trace_id,
+                                )
+                                if deps.tool_call_notifier is not None:
                                     with contextlib.suppress(Exception):
                                         await deps.tool_call_notifier(
                                             part.tool_name, part.args_as_json_str()
@@ -218,6 +265,19 @@ class PydanticAITurnAdapter:
                 with contextlib.suppress(Exception):
                     partial = list(agent_run.new_messages())
                 raise TurnCancelledWithPartial(_inject_cancellation_results(partial)) from None
+            except UnexpectedModelBehavior as umb_exc:
+                # Tool-arg retries exhausted (e.g. empty args on delegate_subagent_task).
+                # Extract the model's pre-tool-call text so the caller can surface it
+                # instead of a generic error.
+                partial_msgs: list[ModelMessage] = []
+                with contextlib.suppress(Exception):
+                    partial_msgs = list(agent_run.new_messages())
+                recovered = _extract_recovered_text(partial_msgs)
+                raise ToolCallFailedWithPartial(
+                    "Tool call failed after retries exhausted",
+                    partial_messages=partial_msgs,
+                    recovered_text=recovered,
+                ) from umb_exc.__cause__
 
             # Flush any text buffered from the last CallToolsNode: those tools have
             # now completed (loop exited normally).

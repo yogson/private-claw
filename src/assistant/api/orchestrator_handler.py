@@ -363,11 +363,23 @@ def _build_orchestrator_handler(
                 trace_id=event.trace_id,
             )
         except UnexpectedModelBehavior as exc:
+            cause = exc.__cause__
+            cause_type = type(cause).__name__ if cause else "unknown"
+            cause_detail = ""
+            if cause is not None:
+                from pydantic import ValidationError as _PydanticValidationError
+
+                if isinstance(cause, _PydanticValidationError):
+                    cause_detail = str(cause.errors(include_url=False))
+                else:
+                    cause_detail = str(cause)
             logger.warning(
                 "orchestrator.unexpected_model_behavior",
                 session_id=orch_event.session_id,
                 trace_id=event.trace_id,
                 error=str(exc),
+                cause_type=cause_type,
+                cause_detail=cause_detail,
             )
             return build_text_channel_response(
                 text=(

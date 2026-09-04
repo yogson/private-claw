@@ -43,7 +43,7 @@ from assistant.core.orchestrator import (
 from assistant.core.orchestrator.service import MEMORY_SEARCH_MATCH_BODY_MAX_CHARS
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
-from assistant.store.models import SessionRecord, SessionRecordType
+from assistant.store.models import SessionRecord, SessionRecordType, TurnTerminalStatus
 
 
 def _runtime_config() -> RuntimeConfig:
@@ -1536,3 +1536,101 @@ class TestOrchestratorWithSessionFactory:
         event = _minimal_event()
         with pytest.raises(SessionNotFoundError):
             await orch.execute_turn(event)
+
+
+class TestToolCallFailedWithPartialHandling:
+    """Verify ToolCallFailedWithPartial degrades gracefully."""
+
+    @pytest.mark.asyncio
+    async def test_recovered_text_is_returned(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="I will delegate the task now.",
+            )
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        assert result is not None
+        assert result.text == "I will delegate the task now."
+
+    @pytest.mark.asyncio
+    async def test_fallback_text_when_no_recovered_text(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="",
+            )
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        assert result is not None
+        assert "tool error" in result.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_turn_is_persisted_as_completed(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        from assistant.agent.pydantic_ai_agent import ToolCallFailedWithPartial
+
+        adapter = MagicMock(spec=PydanticAITurnAdapter)
+        adapter.run_turn = AsyncMock(
+            side_effect=ToolCallFailedWithPartial(
+                "Tool call failed after retries exhausted",
+                partial_messages=[],
+                recovered_text="Model explanation here.",
+            )
+        )
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=adapter,
+            session_factory=mock_session_factory,
+        )
+        result = await orch.execute_turn(_minimal_event(text="do something"))
+        assert result is not None
+        # Should persist records (not raise), verify append was called
+        assert mock_store.sessions.append.call_count >= 1
+        all_records: list[SessionRecord] = []
+        for call in mock_store.sessions.append.call_args_list:
+            all_records.extend(call[0][0])
+        # Should NOT have FAILED status — it's a graceful completion
+        terminal_records = [
+            r for r in all_records if r.record_type == SessionRecordType.TURN_TERMINAL
+        ]
+        for tr in terminal_records:
+            assert tr.payload.get("status") != TurnTerminalStatus.FAILED.value

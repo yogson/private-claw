@@ -17,6 +17,8 @@ from pydantic_ai.messages import (
 )
 
 from assistant.agent.pydantic_ai_agent import (
+    ToolCallFailedWithPartial,
+    _extract_recovered_text,
     _llm_messages_to_history,
     _message_to_user_prompt_content,
     _new_messages_to_plans,
@@ -327,3 +329,55 @@ def test_new_messages_to_plans_normalizes_upsert_candidate_before_persist() -> N
     assert args["requires_user_confirmation"] is True
     assert args["candidate"]["body_markdown"] == "- name: Egor"
     assert args["candidate"]["entities"] == ["Egor"]
+
+
+class TestExtractRecoveredText:
+    """Tests for _extract_recovered_text helper."""
+
+    def test_extracts_last_text_from_model_responses(self) -> None:
+        msgs = [
+            ModelResponse(parts=[TextPart(content="First explanation.")]),
+            ModelResponse(
+                parts=[
+                    TextPart(content="I will delegate the task."),
+                    ToolCallPart(
+                        tool_name="delegate_subagent_task",
+                        tool_call_id="tc-1",
+                        args={},
+                    ),
+                ]
+            ),
+        ]
+        assert _extract_recovered_text(msgs) == "I will delegate the task."
+
+    def test_returns_empty_string_when_no_text(self) -> None:
+        msgs = [
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="delegate_subagent_task",
+                        tool_call_id="tc-1",
+                        args={},
+                    )
+                ]
+            ),
+        ]
+        assert _extract_recovered_text(msgs) == ""
+
+    def test_returns_empty_for_empty_messages(self) -> None:
+        assert _extract_recovered_text([]) == ""
+
+
+class TestToolCallFailedWithPartialSubclass:
+    """Verify ToolCallFailedWithPartial is a proper UnexpectedModelBehavior subclass."""
+
+    def test_is_unexpected_model_behavior(self) -> None:
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+        exc = ToolCallFailedWithPartial("test", partial_messages=[], recovered_text="hello")
+        assert isinstance(exc, UnexpectedModelBehavior)
+
+    def test_carries_recovered_text(self) -> None:
+        exc = ToolCallFailedWithPartial("test", partial_messages=[], recovered_text="model words")
+        assert exc.recovered_text == "model words"
+        assert exc.partial_messages == []
