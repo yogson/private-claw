@@ -64,8 +64,9 @@ class ToolCallFailedWithPartial(UnexpectedModelBehavior):
         *,
         partial_messages: list[ModelMessage],
         recovered_text: str,
+        body: str | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(message, body=body)
         self.partial_messages = partial_messages
         self.recovered_text = recovered_text
 
@@ -127,6 +128,8 @@ def _extract_recovered_text(messages: list[ModelMessage]) -> str:
     Scans ModelResponse parts for TextPart content that preceded
     the failed tool call, returning the last non-empty text found.
     """
+    # "Last wins": each non-empty TextPart overwrites the previous, so the
+    # most recent model explanation is the one surfaced to the user.
     recovered = ""
     for msg in messages:
         if isinstance(msg, ModelResponse):
@@ -134,6 +137,17 @@ def _extract_recovered_text(messages: list[ModelMessage]) -> str:
                 if isinstance(part, TextPart) and part.content:
                     recovered = part.content.strip()
     return recovered
+
+
+def _last_tool_call_name(messages: list[ModelMessage]) -> str | None:
+    """Return the tool name from the last ToolCallPart in *messages*, or None."""
+    name: str | None = None
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    name = part.tool_name
+    return name
 
 
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
@@ -246,6 +260,9 @@ class PydanticAITurnAdapter:
 
                         for part in node.model_response.parts:
                             if isinstance(part, ToolCallPart):
+                                # NOTE: raw_args may contain user-provided PII
+                                # or secrets.  This log is DEBUG-only and must
+                                # never be raised to INFO+ in production.
                                 logger.debug(
                                     "turn.tool_call_raw_args",
                                     tool_name=part.tool_name,
@@ -273,11 +290,19 @@ class PydanticAITurnAdapter:
                 with contextlib.suppress(Exception):
                     partial_msgs = list(agent_run.new_messages())
                 recovered = _extract_recovered_text(partial_msgs)
+                # Include the failing tool name for easier triage.
+                failed_tool = _last_tool_call_name(partial_msgs)
+                msg = (
+                    f"Tool call failed after retries exhausted (tool={failed_tool})"
+                    if failed_tool
+                    else "Tool call failed after retries exhausted"
+                )
                 raise ToolCallFailedWithPartial(
-                    "Tool call failed after retries exhausted",
+                    msg,
                     partial_messages=partial_msgs,
                     recovered_text=recovered,
-                ) from umb_exc.__cause__
+                    body=str(umb_exc),
+                ) from umb_exc
 
             # Flush any text buffered from the last CallToolsNode: those tools have
             # now completed (loop exited normally).

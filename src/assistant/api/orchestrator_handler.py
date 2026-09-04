@@ -14,6 +14,7 @@ from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
+from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.service import COMPACTION_NOTIFICATION_TEXT, Orchestrator
 from assistant.extensions.language_learning.models import (
     CardResult,
@@ -363,16 +364,7 @@ def _build_orchestrator_handler(
                 trace_id=event.trace_id,
             )
         except UnexpectedModelBehavior as exc:
-            cause = exc.__cause__
-            cause_type = type(cause).__name__ if cause else "unknown"
-            cause_detail = ""
-            if cause is not None:
-                from pydantic import ValidationError as _PydanticValidationError
-
-                if isinstance(cause, _PydanticValidationError):
-                    cause_detail = str(cause.errors(include_url=False))
-                else:
-                    cause_detail = str(cause)
+            cause_type, cause_detail = extract_cause_detail(exc)
             logger.warning(
                 "orchestrator.unexpected_model_behavior",
                 session_id=orch_event.session_id,

@@ -32,6 +32,7 @@ from assistant.core.config.schemas import CompactionConfig, RuntimeConfig
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.core.orchestrator.compaction import ChatCompactionService
+from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.memory import apply_approved_memory_intents
 from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.payloads import (
@@ -380,16 +381,7 @@ class Orchestrator:
         except ToolCallFailedWithPartial as exc:
             # Tool-arg retries exhausted (e.g. empty args). Degrade gracefully:
             # persist as COMPLETED and return the model's own text to the user.
-            cause = exc.__cause__
-            cause_type = type(cause).__name__ if cause else "unknown"
-            cause_detail = ""
-            if cause is not None:
-                from pydantic import ValidationError as _PydanticValidationError
-
-                if isinstance(cause, _PydanticValidationError):
-                    cause_detail = str(cause.errors(include_url=False))
-                else:
-                    cause_detail = str(cause)
+            cause_type, cause_detail = extract_cause_detail(exc)
             logger.warning(
                 "orchestrator.unexpected_model_behavior",
                 session_id=session_id,
@@ -447,6 +439,7 @@ class Orchestrator:
                     session_id=session_id,
                     turn_id=turn_id,
                     outcomes=[],
+                    terminal_status=TurnTerminalStatus.DEGRADED,
                 )
             except Exception:
                 logger.warning(

@@ -5,7 +5,10 @@ import json
 import subprocess
 import sys
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
+import pytest
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     BinaryContent,
     ModelRequest,
@@ -19,12 +22,14 @@ from pydantic_ai.messages import (
 from assistant.agent.pydantic_ai_agent import (
     ToolCallFailedWithPartial,
     _extract_recovered_text,
+    _last_tool_call_name,
     _llm_messages_to_history,
     _message_to_user_prompt_content,
     _new_messages_to_plans,
     _new_messages_to_session_records,
     _normalize_candidate_for_upsert,
 )
+from assistant.agent.tools import TurnDeps
 from assistant.store.models import SessionRecordType
 
 
@@ -381,3 +386,103 @@ class TestToolCallFailedWithPartialSubclass:
         exc = ToolCallFailedWithPartial("test", partial_messages=[], recovered_text="model words")
         assert exc.recovered_text == "model words"
         assert exc.partial_messages == []
+
+    def test_body_forwarded_to_super(self) -> None:
+        exc = ToolCallFailedWithPartial(
+            "msg", partial_messages=[], recovered_text="", body="original error body"
+        )
+        assert exc.body == "original error body"
+
+
+class TestLastToolCallName:
+    """Tests for _last_tool_call_name helper."""
+
+    def test_returns_last_tool_name(self) -> None:
+        msgs = [
+            ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="first_tool", tool_call_id="tc-1", args={}),
+                ]
+            ),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="second_tool", tool_call_id="tc-2", args={}),
+                ]
+            ),
+        ]
+        assert _last_tool_call_name(msgs) == "second_tool"
+
+    def test_returns_none_for_no_tool_calls(self) -> None:
+        msgs = [ModelResponse(parts=[TextPart(content="hello")])]
+        assert _last_tool_call_name(msgs) is None
+
+    def test_returns_none_for_empty(self) -> None:
+        assert _last_tool_call_name([]) is None
+
+
+class TestRunTurnExceptionWrapping:
+    """Test the run_turn() path that wraps UnexpectedModelBehavior into ToolCallFailedWithPartial.
+
+    This exercises the actual adapter code rather than mocking the adapter,
+    verifying the exception transformation logic in PydanticAITurnAdapter.run_turn().
+    """
+
+    @pytest.mark.asyncio
+    async def test_unexpected_model_behavior_wrapped_into_tool_call_failed(self) -> None:
+        """When the agent iter raises UnexpectedModelBehavior, run_turn wraps it
+        into ToolCallFailedWithPartial with the original chained as __cause__."""
+
+        from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
+
+        original_cause = ValueError("empty tool args")
+        umb = UnexpectedModelBehavior("tool call validation failed")
+        umb.__cause__ = original_cause
+
+        class _RaisingAsyncIter:
+            """Async iterator that raises UMB on first __anext__."""
+
+            def __aiter__(self) -> "_RaisingAsyncIter":
+                return self
+
+            async def __anext__(self) -> None:
+                raise umb
+
+        class _FakeAgentRun:
+            """Minimal mock of pydantic_ai AgentRun async context manager."""
+
+            async def __aenter__(self) -> "_FakeAgentRun":
+                return self
+
+            async def __aexit__(self, *args: object) -> bool:
+                return False
+
+            def __aiter__(self) -> _RaisingAsyncIter:
+                return _RaisingAsyncIter()
+
+            def new_messages(self) -> list[object]:
+                return []
+
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=_FakeAgentRun())
+
+        adapter = PydanticAITurnAdapter.__new__(PydanticAITurnAdapter)
+        adapter._model_id = "anthropic:test"
+        adapter._max_tokens = 1024
+        adapter._system_prompt = "test"
+        adapter._agent = mock_agent
+
+        deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
+
+        with pytest.raises(ToolCallFailedWithPartial) as exc_info:
+            await adapter.run_turn(
+                messages=[{"role": "user", "content": "hello"}],
+                deps=deps,
+                trace_id="test-trace",
+            )
+
+        wrapped = exc_info.value
+        # The original UMB should be the __cause__
+        assert wrapped.__cause__ is umb
+        assert isinstance(wrapped, ToolCallFailedWithPartial)
+        assert wrapped.partial_messages == []
+        assert wrapped.recovered_text == ""
