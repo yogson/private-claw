@@ -1,5 +1,6 @@
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from datetime import UTC, datetime
 
 from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
@@ -57,15 +58,14 @@ def _build_delegation_feedback_handler(
             capabilities_override=capabilities_override,
         )
         logfire_ctx = task.metadata.get("logfire_context")
-        if isinstance(logfire_ctx, dict) and logfire_ctx:
-            try:
-                import logfire
+        with ExitStack() as stack:
+            if isinstance(logfire_ctx, dict) and logfire_ctx:
+                try:
+                    import logfire
 
-                with logfire.attach_context(logfire_ctx):
-                    result_msg = await orchestrator.execute_turn(event)
-            except Exception:
-                result_msg = await orchestrator.execute_turn(event)
-        else:
+                    stack.enter_context(logfire.attach_context(logfire_ctx))
+                except Exception:
+                    pass
             result_msg = await orchestrator.execute_turn(event)
         if result_msg is None:
             return
