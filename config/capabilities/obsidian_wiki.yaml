@@ -1,65 +1,22 @@
-# Obsidian wiki capability - heavier vault operations for the user's claude-obsidian
-# vault (github.com/AgriciDaniel/claude-obsidian): source ingestion and maintenance.
-#
-# Read (obsidian_wiki_search) and simple note saves (obsidian_wiki_write, direct
-# transaction apply, no sub-agent) are already in the baseline "assistant" capability.
-# This capability is only for work that genuinely needs an agentic pass over the
-# vault plugin — ingesting a source document or running vault-wide lint/maintenance —
-# done by delegating to a background Claude Code sub-agent via delegate_subagent_task.
+# Obsidian wiki capability for the user's claude-obsidian vault
+# (github.com/AgriciDaniel/claude-obsidian): read/search plus direct note saves.
 #
 # Setup (see docs/install-guide.md in the product checkout):
 #   git clone https://github.com/AgriciDaniel/claude-obsidian ~/PycharmProjects/claude-obsidian
 #   python3 ~/PycharmProjects/claude-obsidian/scripts/claude-obsidian.py init <vault-path> --apply
 #
-# In config.local/capabilities/obsidian_wiki.yaml, fill in the real absolute paths for
-# VAULT and PLUGIN below (this file is a template; config.local is what actually runs).
+# This file is a template; config.local is what actually runs.
 
 capability_id: obsidian_wiki
 prompt: |
-  ### Obsidian vault: ingest and maintain
+  ### Obsidian vault
 
   The user has an Obsidian knowledge vault managed by the claude-obsidian plugin
   (Skills: wiki, save, wiki-ingest, wiki-query, wiki-lint, wiki-retrieve, wiki-fold,
   canvas, autoresearch, wiki-mode, wiki-cli, obsidian-markdown, obsidian-bases, think).
-  For saving a single answer/insight/decision, use obsidian_wiki_write directly
-  (baseline tool) — do not delegate that. Delegate only wiki-ingest (turning a source
-  document into linked pages with provenance) and wiki-lint (vault health/maintenance
-  report), using delegate_subagent_task with:
-    - directory: the vault path (absolute; see this capability's runtime config)
-    - plugin_dirs: [the claude-obsidian product checkout path]
-    - backend: "claude_code" for a single ingest/lint pass, or
-      "claude_code_streaming" if you expect it may need to ask you a clarifying question
-  In the objective, name the exact skill to use, e.g.:
-    - "Use the claude-obsidian wiki-ingest skill to ingest inbox/<file>"
-    - "Use the claude-obsidian wiki-lint skill to report vault health issues"
-  For ingest, the source file must already exist under the vault's inbox/ directory
-  (ask the user to drop it there, or write it yourself with obsidian_wiki_write first,
-  then delegate the ingest). Unlike obsidian_wiki_write, a delegated ingest/lint pass
-  does NOT refresh the BM25 retrieval index automatically — it's a separate process.
-  After a delegated ingest, mention this to the user or include a wiki-retrieve
-  provisioning step in the objective if fresh results matter immediately (see the
-  wiki-retrieve skill's "Provision locally" section).
+  Use obsidian_wiki_search to look things up, and obsidian_wiki_write to save a single
+  answer/insight/decision directly.
 
 tools:
-  - tool_id: delegate_subagent_task
-    enabled: true
   - tool_id: obsidian_wiki_search
     enabled: true
-
-claude_code_settings:
-  permissions:
-    allow:
-      - "Read(*)"
-      - "Write(*)"
-      - "Edit(*)"
-      - "Bash(python3:*)"
-      - "Bash(cat:*)"
-      - "Bash(ls:*)"
-      - "Bash(find:*)"
-      - "Bash(grep:*)"
-      - "Bash(mkdir:*)"
-      - "Bash(pwd:*)"
-    deny:
-      - "Bash(rm -rf /)"
-      - "Bash(rm -rf ~)"
-      - "Bash(sudo rm:*)"

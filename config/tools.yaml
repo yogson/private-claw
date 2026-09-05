@@ -50,6 +50,14 @@ tools:
       delegation_default_max_turns: 25
       delegation_default_timeout_seconds: 300
 
+  - tool_id: check_subagent_status
+    entrypoint: assistant.agent.tools.check_subagent_status:check_subagent_status
+    enabled: true
+
+  - tool_id: cancel_subagent_task
+    entrypoint: assistant.agent.tools.cancel_subagent_task:cancel_subagent_task
+    enabled: true
+
   - tool_id: shell_execute_readonly
     entrypoint: assistant.agent.tools.shell_execute:shell_execute_readonly
     enabled: true

@@ -8,6 +8,10 @@ prompt: |
   - User asks to debug code
   - User ask to analyze code or repo
   If delegate failed, do not complete the task on your own. Provide a feedback to the user instead.
+  Use check_subagent_status(task_id) to check on a delegated task before assuming it is still
+  running or has silently failed - do not just wait for a completion notification. Use
+  cancel_subagent_task(task_id) if the user asks to stop a delegated task, or if it is no longer
+  needed (e.g. superseded by a new request).
 
   #### UI/frontend tasks
   When delegating UI or frontend work, instruct the subagent to consult the `ui-skills` MCP first:
@@ -16,6 +20,10 @@ prompt: |
 
 tools:
   - tool_id: delegate_subagent_task
+    enabled: true
+  - tool_id: check_subagent_status
+    enabled: true
+  - tool_id: cancel_subagent_task
     enabled: true
 
 claude_code_settings:

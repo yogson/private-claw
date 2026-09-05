@@ -5,6 +5,7 @@ Claude Code backend adapter for delegated staged execution.
 """
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -36,6 +37,7 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         prompt = self._build_prompt(request)
         cmd = self._build_command(request, prompt)
         cwd = request.backend_params.get("directory")
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -48,11 +50,23 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
                 timeout=request.timeout_seconds,
             )
         except TimeoutError:
+            # wait_for cancels process.communicate() on the inner awaitable but
+            # does not touch the OS process itself, so without an explicit kill
+            # the claude CLI subprocess orphans and keeps running/consuming
+            # resources after we've already reported the run as timed out.
+            await self._kill(process)
             return DelegationResult(ok=False, error="claude run timed out")
+        except asyncio.CancelledError:
+            # Deliberate cancellation (coordinator.cancel_task) - stop the
+            # subprocess before propagating so cancel actually halts work
+            # instead of leaving it running unattended.
+            await self._kill(process)
+            raise
         except FileNotFoundError:
             # cwd is validated before execution, so this means the binary is missing
             return DelegationResult(ok=False, error="claude CLI binary not found")
         except Exception as exc:  # pragma: no cover - defensive runtime branch
+            await self._kill(process)
             return DelegationResult(ok=False, error=f"claude execution failed: {exc}")
 
         stdout = stdout_b.decode("utf-8", errors="replace").strip()
@@ -73,6 +87,15 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             pass
 
         return DelegationResult(ok=True, output_text=stdout)
+
+    @staticmethod
+    async def _kill(process: asyncio.subprocess.Process | None) -> None:
+        if process is None or process.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
 
     def _build_command(self, request: DelegationRun, prompt: str) -> list[str]:
         cmd = [

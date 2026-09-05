@@ -62,6 +62,19 @@ class _CrashingBackend(DelegationBackendAdapterInterface):
         raise RuntimeError(f"{request.task_id}-boom")
 
 
+class _HangingBackend(DelegationBackendAdapterInterface):
+    """Backend that never returns on its own - only external cancellation ends
+    execute(). Used to exercise cancel_task() against a genuinely RUNNING task."""
+
+    @property
+    def backend_id(self) -> str:
+        return "claude_code"
+
+    async def execute(self, request: DelegationRun) -> DelegationResult:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
 class _RelayCapableBackend(DelegationBackendAdapterInterface):
     """Fake backend that supports relay and invokes the registered relay during execute."""
 
@@ -782,3 +795,223 @@ def test_options_relay_handler_converts_strings_to_dicts() -> None:
     # by checking it calls .get() on each option (which would fail on bare strings)
     for opt in options_dicts:
         assert opt.get("label") in options
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_running_terminates_backend_and_marks_cancelled(
+    tmp_path: Path,
+) -> None:
+    """cancel_task() on a RUNNING task must actually stop the backend's
+    execute() coroutine (not merely relabel the store record) and settle
+    the task as CANCELLED rather than FAILED."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_HangingBackend()],
+    )
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={"objective": "Implement it", "tool_params": {}},
+        )
+        task_id = accepted["task_id"]
+        for _ in range(20):
+            task = await coordinator.get_task(task_id)
+            if task is not None and task.status == TaskStatus.RUNNING:
+                break
+            await asyncio.sleep(0.05)
+        task = await coordinator.get_task(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.RUNNING
+
+        cancelled = await coordinator.cancel_task(task_id)
+        assert cancelled is not None
+        assert cancelled.status == TaskStatus.CANCELLED
+        assert cancelled.error == "Cancelled by user"
+
+        # Settled, not a race that a late completion path flips back to FAILED.
+        await asyncio.sleep(0.2)
+        task = await coordinator.get_task(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLED
+        assert task_id not in coordinator._cancel_requested
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_pending_preempts_before_worker_picks_up(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    # Deliberately not started: the task stays PENDING, never claimed by the
+    # worker loop, so cancel must flip the store record directly.
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={"objective": "Implement it", "tool_params": {}},
+    )
+    task_id = accepted["task_id"]
+    cancelled = await coordinator.cancel_task(task_id)
+    assert cancelled is not None
+    assert cancelled.status == TaskStatus.CANCELLED
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_already_terminal_is_noop(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={"objective": "Implement it", "tool_params": {}},
+        )
+        task_id = accepted["task_id"]
+        for _ in range(20):
+            task = await coordinator.get_task(task_id)
+            if task is not None and task.status == TaskStatus.COMPLETED:
+                break
+            await asyncio.sleep(0.1)
+        completed = await coordinator.get_task(task_id)
+        assert completed is not None
+        assert completed.status == TaskStatus.COMPLETED
+
+        result = await coordinator.cancel_task(task_id)
+        assert result is not None
+        assert result.status == TaskStatus.COMPLETED
+        assert result.result == completed.result
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_unknown_id_returns_none(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    result = await coordinator.cancel_task("does-not-exist")
+    assert result is None
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_before_worker_runs_first_line_still_settles_cancelled(
+    tmp_path: Path,
+) -> None:
+    """A worker asyncio.Task cancelled before it gets its first turn on the
+    event loop never executes any of _execute_task's body - including the
+    except-block that persists CANCELLED to the store. cancel_task() must
+    still hand back a settled CANCELLED record in that case (regression test
+    for the race where the store was left PENDING and the worker loop would
+    silently re-run a task the caller believed was cancelled)."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={"objective": "Implement it", "tool_params": {}},
+        )
+        task_id = accepted["task_id"]
+        task = await coordinator.get_task(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.PENDING
+
+        async def _never_runs() -> None:
+            await asyncio.sleep(1000)
+
+        # Simulate _worker_loop's asyncio.create_task() having just fired,
+        # before the event loop gives the new task its first turn.
+        worker = asyncio.create_task(_never_runs())
+        coordinator._inflight[task_id] = worker
+
+        cancelled = await coordinator.cancel_task(task_id)
+        assert cancelled is not None
+        assert cancelled.status == TaskStatus.CANCELLED
+    finally:
+        coordinator._inflight.pop(task_id, None)
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_task_scoped_to_session_id(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={"objective": "Implement it", "tool_params": {}},
+    )
+    task_id = accepted["task_id"]
+    assert await coordinator.get_task(task_id, session_id="tg:123") is not None
+    assert await coordinator.get_task(task_id, session_id="tg:other") is None
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_scoped_to_session_id_does_not_cancel_other_session(
+    tmp_path: Path,
+) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={"objective": "Implement it", "tool_params": {}},
+    )
+    task_id = accepted["task_id"]
+    result = await coordinator.cancel_task(task_id, session_id="tg:other")
+    assert result is None
+    task = await coordinator.get_task(task_id)
+    assert task is not None
+    assert task.status == TaskStatus.PENDING
+    await store.shutdown()

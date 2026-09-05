@@ -20,6 +20,10 @@ class TurnDeps:
     seen_intent_ids: set[str]  # mutable: deduplicate intent_id per turn
     memory_search_handler: Callable[[str, int, list[str] | None], dict[str, Any]] | None = None
     delegation_enqueue_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+    delegation_status_handler: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    """Optional async callback: task_id -> status dict for a delegated task."""
+    delegation_cancel_handler: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    """Optional async callback: task_id -> result dict after cancelling a delegated task."""
     tool_runtime_params: dict[str, dict[str, Any]] = field(
         default_factory=dict
     )  # per-tool merged params from tools.yaml + capability overrides

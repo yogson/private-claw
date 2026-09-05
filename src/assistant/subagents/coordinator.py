@@ -31,6 +31,12 @@ _DEFAULT_BACKEND = "claude_code"
 # Timeout for waiting on an AskUserQuestion relay answer from the user.
 # claude_code_streaming.py derives its SDK stdin-close timeout from this value.
 DELEGATION_RELAY_TIMEOUT_S = 300
+_TERMINAL_TASK_STATUSES = (
+    TaskStatus.COMPLETED,
+    TaskStatus.FAILED,
+    TaskStatus.CANCELLED,
+    TaskStatus.EXPIRED,
+)
 
 
 class DelegationCoordinator(DelegationCoordinatorInterface):
@@ -63,6 +69,10 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         self._stop = asyncio.Event()
         self._worker_task: asyncio.Task[None] | None = None
         self._inflight: dict[str, asyncio.Task[None]] = {}
+        # task_ids with a user-initiated cancel_task() in flight, so the
+        # BaseException handler in _execute_task can tell a deliberate
+        # cancellation apart from an unexpected asyncio cancellation.
+        self._cancel_requested: set[str] = set()
         self._max_workers = self._default_max_workers()
         self._worker_sem = asyncio.Semaphore(self._max_workers)
 
@@ -228,8 +238,64 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         )
         return accepted.model_dump()
 
-    async def get_task(self, task_id: str) -> TaskRecord | None:
-        return await self._store.tasks.get(task_id)
+    async def get_task(self, task_id: str, *, session_id: str | None = None) -> TaskRecord | None:
+        """Fetch a task by id.
+
+        When ``session_id`` is given, the lookup is scoped to that session:
+        a task belonging to a different session is treated as not found, so
+        one chat can't probe another session's delegated work by guessing ids.
+        """
+        task = await self._store.tasks.get(task_id)
+        if task is None:
+            return None
+        if session_id is not None and task.parent_session_id != session_id:
+            return None
+        return task
+
+    async def cancel_task(
+        self, task_id: str, *, session_id: str | None = None
+    ) -> TaskRecord | None:
+        """Cancel a pending or running task (see ``get_task`` for ``session_id`` scoping).
+
+        A task still PENDING (not yet claimed by the worker loop) is flipped
+        to CANCELLED directly - the worker loop only polls for PENDING tasks,
+        so this pre-empts execution.
+
+        A RUNNING task has its in-flight asyncio.Task cancelled and is awaited
+        so the caller gets back the final, settled status. Backends propagate
+        the resulting asyncio.CancelledError out of ``execute()`` after
+        terminating their own subprocess/subquery (see claude_code.py and
+        claude_code_streaming.py), so this actually stops the underlying work
+        rather than merely relabeling the store record.
+        """
+        task = await self.get_task(task_id, session_id=session_id)
+        if task is None:
+            return None
+        if task.status in _TERMINAL_TASK_STATUSES:
+            return task
+        worker = self._inflight.get(task_id)
+        if worker is not None and not worker.done():
+            self._cancel_requested.add(task_id)
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await worker
+            self._cancel_requested.discard(task_id)
+        # worker.cancel() only guarantees the coroutine stops - it does not
+        # guarantee _execute_task got a chance to persist that as a status
+        # transition. That handler only covers cancellation while blocked in
+        # backend.execute(); a task cancelled before its first line ever runs
+        # (asyncio.create_task() hasn't been scheduled yet) or between the
+        # RUNNING transition and backend.execute() starting leaves the store
+        # record exactly as it was (PENDING/RUNNING), which would make the
+        # worker loop pick a "cancelled" PENDING task back up. Force it
+        # terminal here so cancel_task's contract - the record it returns is
+        # always settled - holds regardless of where the cancellation landed.
+        final = await self._store.tasks.get(task_id)
+        if final is not None and final.status not in _TERMINAL_TASK_STATUSES:
+            final = await self._store.tasks.update_status(
+                task_id, TaskStatus.CANCELLED, error="Cancelled by user"
+            )
+        return final
 
     async def _worker_loop(self) -> None:
         while not self._stop.is_set():
@@ -332,13 +398,18 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 return
             except BaseException:
                 # Cancellation / SystemExit / KeyboardInterrupt: best-effort
-                # mark FAILED for state consistency, then re-raise so the
-                # asyncio cancellation chain isn't swallowed.
+                # mark the terminal status for state consistency, then
+                # re-raise so the asyncio cancellation chain isn't swallowed.
+                # A task_id present in _cancel_requested got here via a
+                # deliberate cancel_task() call, not an unexpected shutdown -
+                # record that distinction instead of always saying FAILED.
+                was_requested = task.task_id in self._cancel_requested
+                self._cancel_requested.discard(task.task_id)
                 with contextlib.suppress(Exception):
                     await self._store.tasks.update_status(
                         task.task_id,
-                        TaskStatus.FAILED,
-                        error="cancelled",
+                        TaskStatus.CANCELLED if was_requested else TaskStatus.FAILED,
+                        error="Cancelled by user" if was_requested else "cancelled",
                     )
                 raise
         finally:

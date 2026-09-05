@@ -66,5 +66,19 @@ class DelegationCoordinatorInterface(ABC):
         """Validate and enqueue a delegated task from an agent tool call."""
 
     @abstractmethod
-    async def get_task(self, task_id: str) -> TaskRecord | None:
-        """Fetch a task by id."""
+    async def get_task(self, task_id: str, *, session_id: str | None = None) -> TaskRecord | None:
+        """Fetch a task by id.
+
+        When ``session_id`` is given, a task belonging to a different session
+        is treated as not found.
+        """
+
+    @abstractmethod
+    async def cancel_task(
+        self, task_id: str, *, session_id: str | None = None
+    ) -> TaskRecord | None:
+        """Cancel a pending or running task; no-op on an already-terminal task.
+
+        Returns the task's current record, or None if the task does not exist
+        (or does not belong to ``session_id``, when given).
+        """

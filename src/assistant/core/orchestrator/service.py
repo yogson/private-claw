@@ -256,6 +256,8 @@ class Orchestrator:
 
             memory_handler = _handler
         delegation_handler = None
+        delegation_status_handler = None
+        delegation_cancel_handler = None
         if self._delegation_coordinator is not None:
             coordinator = self._delegation_coordinator
 
@@ -276,11 +278,25 @@ class Orchestrator:
                     request=payload,
                 )
 
+            async def delegation_status_handler(task_id: str) -> dict[str, Any]:
+                task = await coordinator.get_task(task_id, session_id=session_id)
+                if task is None:
+                    return {"found": False, "task_id": task_id}
+                return {"found": True, **task.model_dump(mode="json")}
+
+            async def delegation_cancel_handler(task_id: str) -> dict[str, Any]:
+                cancelled = await coordinator.cancel_task(task_id, session_id=session_id)
+                if cancelled is None:
+                    return {"found": False, "task_id": task_id}
+                return {"found": True, **cancelled.model_dump(mode="json")}
+
         deps = TurnDeps(
             writes_approved=[],
             seen_intent_ids=set(),
             memory_search_handler=memory_handler,
             delegation_enqueue_handler=delegation_handler,
+            delegation_status_handler=delegation_status_handler,
+            delegation_cancel_handler=delegation_cancel_handler,
             tool_runtime_params=tool_params,
             tool_call_notifier=tool_call_notifier,
             streaming_text_notifier=streaming_text_notifier,
