@@ -82,3 +82,17 @@ class DelegationCoordinatorInterface(ABC):
         Returns the task's current record, or None if the task does not exist
         (or does not belong to ``session_id``, when given).
         """
+
+    @abstractmethod
+    async def read_task_log(
+        self,
+        task_id: str,
+        *,
+        session_id: str | None = None,
+        tail_lines: int = 200,
+    ) -> dict[str, Any] | None:
+        """Return the last ``tail_lines`` activity lines for a task's run.
+
+        Returns None if the task does not exist (or does not belong to
+        ``session_id``, when given).
+        """

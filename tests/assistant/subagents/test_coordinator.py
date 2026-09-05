@@ -22,6 +22,7 @@ from assistant.core.config.schemas import (
     ToolsConfig,
 )
 from assistant.store.facade import StoreFacade
+from assistant.store.filesystem.task_log import append_log_line, task_log_path
 from assistant.store.models import TaskRecord, TaskStatus
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.coordinator import DelegationCoordinator
@@ -73,6 +74,21 @@ class _HangingBackend(DelegationBackendAdapterInterface):
     async def execute(self, request: DelegationRun) -> DelegationResult:
         await asyncio.Event().wait()
         raise AssertionError("unreachable")  # pragma: no cover
+
+
+class _LogPathCapturingBackend(DelegationBackendAdapterInterface):
+    """Records the DelegationRun it receives so tests can assert log_path wiring."""
+
+    def __init__(self) -> None:
+        self.received_run: DelegationRun | None = None
+
+    @property
+    def backend_id(self) -> str:
+        return "claude_code"
+
+    async def execute(self, request: DelegationRun) -> DelegationResult:
+        self.received_run = request
+        return DelegationResult(ok=True, output_text="done")
 
 
 class _RelayCapableBackend(DelegationBackendAdapterInterface):
@@ -1014,4 +1030,126 @@ async def test_cancel_task_scoped_to_session_id_does_not_cancel_other_session(
     task = await coordinator.get_task(task_id)
     assert task is not None
     assert task.status == TaskStatus.PENDING
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_execute_task_passes_log_path_to_backend(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    backend = _LogPathCapturingBackend()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[backend],
+    )
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={"objective": "Implement it", "tool_params": {}},
+        )
+        task_id = accepted["task_id"]
+        for _ in range(20):
+            task = await coordinator.get_task(task_id)
+            if task is not None and task.status == TaskStatus.COMPLETED:
+                break
+            await asyncio.sleep(0.05)
+        assert backend.received_run is not None
+        assert backend.received_run.log_path == str(
+            task_log_path(coordinator._log_dir, task_id)
+        )
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_task_log_unknown_task_returns_none(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    result = await coordinator.read_task_log("does-not-exist")
+    assert result is None
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_task_log_returns_empty_before_any_lines_written(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={"objective": "Implement it", "tool_params": {}},
+    )
+    task_id = accepted["task_id"]
+    result = await coordinator.read_task_log(task_id)
+    assert result is not None
+    assert result["task_id"] == task_id
+    assert result["status"] == TaskStatus.PENDING.value
+    assert result["lines"] == []
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_task_log_returns_tail_of_written_lines(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={"objective": "Implement it", "tool_params": {}},
+    )
+    task_id = accepted["task_id"]
+    path = task_log_path(coordinator._log_dir, task_id)
+    for i in range(5):
+        await append_log_line(path, f"[assistant] step {i}")
+
+    result = await coordinator.read_task_log(task_id, tail_lines=2)
+    assert result is not None
+    assert result["lines"] == ["[assistant] step 3", "[assistant] step 4"]
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_task_log_scoped_to_session_id(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={"objective": "Implement it", "tool_params": {}},
+    )
+    task_id = accepted["task_id"]
+    assert await coordinator.read_task_log(task_id, session_id="tg:other") is None
+    assert await coordinator.read_task_log(task_id, session_id="tg:123") is not None
     await store.shutdown()

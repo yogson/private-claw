@@ -66,6 +66,7 @@ from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
     SystemMessageScope,
+    TaskStatus,
     TurnTerminalStatus,
 )
 from assistant.subagents.interfaces import DelegationCoordinatorInterface
@@ -84,6 +85,27 @@ _SYSTEM_REMINDER = (
     "Delegate all coding tasks (develop, review, test, debug) to sub-agents. "
     "If delegation fails, ask the user what to do next—do not complete the task yourself.]"
 )
+_DELEGATION_STILL_RUNNING_HINT = (
+    "Still running. You will be automatically notified in a new turn when this task "
+    "completes - do not call check_subagent_status/read_subagent_log again in this turn "
+    "to poll for completion. End your turn now (tell the user it's still working) unless "
+    "the user explicitly asked you to wait and re-check right now."
+)
+_DELEGATION_NON_TERMINAL_STATUSES = (TaskStatus.PENDING.value, TaskStatus.RUNNING.value)
+
+
+def _with_still_running_hint(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach an anti-polling hint to a check_subagent_status/read_subagent_log
+    result when the task is still pending/running.
+
+    Without this, a model asked to babysit a delegated task tends to call
+    these tools back-to-back in a tight loop until it sees a terminal status,
+    even though a completion notification fires automatically - each such
+    call burns a full round trip for no new information.
+    """
+    if payload.get("status") in _DELEGATION_NON_TERMINAL_STATUSES:
+        payload["hint"] = _DELEGATION_STILL_RUNNING_HINT
+    return payload
 
 
 def _ordered_recent_turn_ids(
@@ -258,6 +280,7 @@ class Orchestrator:
         delegation_handler = None
         delegation_status_handler = None
         delegation_cancel_handler = None
+        delegation_log_handler = None
         if self._delegation_coordinator is not None:
             coordinator = self._delegation_coordinator
 
@@ -282,13 +305,21 @@ class Orchestrator:
                 task = await coordinator.get_task(task_id, session_id=session_id)
                 if task is None:
                     return {"found": False, "task_id": task_id}
-                return {"found": True, **task.model_dump(mode="json")}
+                return _with_still_running_hint({"found": True, **task.model_dump(mode="json")})
 
             async def delegation_cancel_handler(task_id: str) -> dict[str, Any]:
                 cancelled = await coordinator.cancel_task(task_id, session_id=session_id)
                 if cancelled is None:
                     return {"found": False, "task_id": task_id}
                 return {"found": True, **cancelled.model_dump(mode="json")}
+
+            async def delegation_log_handler(task_id: str, tail_lines: int) -> dict[str, Any]:
+                result = await coordinator.read_task_log(
+                    task_id, session_id=session_id, tail_lines=tail_lines
+                )
+                if result is None:
+                    return {"found": False, "task_id": task_id}
+                return _with_still_running_hint({"found": True, **result})
 
         deps = TurnDeps(
             writes_approved=[],
@@ -297,6 +328,7 @@ class Orchestrator:
             delegation_enqueue_handler=delegation_handler,
             delegation_status_handler=delegation_status_handler,
             delegation_cancel_handler=delegation_cancel_handler,
+            delegation_log_handler=delegation_log_handler,
             tool_runtime_params=tool_params,
             tool_call_notifier=tool_call_notifier,
             streaming_text_notifier=streaming_text_notifier,

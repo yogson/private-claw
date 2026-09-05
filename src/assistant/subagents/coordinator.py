@@ -9,11 +9,13 @@ import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import structlog
 
 from assistant.core.config.schemas import RuntimeConfig
+from assistant.store.filesystem.task_log import read_log_tail, task_log_path
 from assistant.store.interfaces import StoreFacadeInterface
 from assistant.store.models import TaskRecord, TaskStatus
 from assistant.subagents.contracts import DelegationAcceptResult, DelegationRun
@@ -37,6 +39,8 @@ _TERMINAL_TASK_STATUSES = (
     TaskStatus.CANCELLED,
     TaskStatus.EXPIRED,
 )
+_DEFAULT_LOG_TAIL_LINES = 200
+_MAX_LOG_TAIL_LINES = 2000
 
 
 class DelegationCoordinator(DelegationCoordinatorInterface):
@@ -54,6 +58,10 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         self._config = config
         self._backends = {b.backend_id: b for b in backends}
         self._completion_callback = completion_callback
+        # Sibling of the store's runtime/tasks/ dir - append-only activity
+        # logs, not TaskRecord JSON, so they don't share that store's
+        # whole-file-rewrite-per-update cost. See store/filesystem/task_log.py.
+        self._log_dir = Path(self._config.app.data_root) / "runtime" / "task_logs"
         # Optional callback for relaying AskUserQuestion to the channel layer.
         # Signature: (task_id, session_id, question, options) -> None
         # The callback is responsible only for sending the question; the answer
@@ -297,6 +305,27 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             )
         return final
 
+    async def read_task_log(
+        self,
+        task_id: str,
+        *,
+        session_id: str | None = None,
+        tail_lines: int = _DEFAULT_LOG_TAIL_LINES,
+    ) -> dict[str, Any] | None:
+        """Return the last ``tail_lines`` activity lines for a task's run.
+
+        Returns None if the task doesn't exist (or isn't owned by
+        ``session_id``, when given) so callers can distinguish "unknown task"
+        from "no log content yet". Both delegation backends (claude_code and
+        claude_code_streaming) write incremental activity lines here.
+        """
+        task = await self.get_task(task_id, session_id=session_id)
+        if task is None:
+            return None
+        capped = max(1, min(tail_lines, _MAX_LOG_TAIL_LINES))
+        lines = read_log_tail(task_log_path(self._log_dir, task_id), capped)
+        return {"task_id": task_id, "status": task.status.value, "lines": lines}
+
     async def _worker_loop(self) -> None:
         while not self._stop.is_set():
             self._reap_finished_inflight()
@@ -365,6 +394,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 if isinstance(task.metadata.get("backend_params"), dict)
                 else {}
             ),
+            log_path=str(task_log_path(self._log_dir, task.task_id)),
         )
         logger.info(
             "subagent.run.progress",

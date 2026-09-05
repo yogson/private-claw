@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from pathlib import Path
 from typing import Any, cast
 
 import structlog
@@ -43,6 +44,8 @@ try:
         ToolPermissionContext,
         query,
     )
+
+    from assistant.subagents.backends.log_formatting import write_log_lines
 
     _SDK_AVAILABLE = True
 except ImportError:
@@ -142,9 +145,13 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     "parent_tool_use_id": None,
                 }
 
+            log_path = Path(request.log_path) if request.log_path else None
+
             async def _run_query() -> None:
                 nonlocal result_msg
                 async for msg in query(prompt=_prompt_iter(), options=sdk_options):
+                    if log_path is not None:
+                        await write_log_lines(log_path, msg, request.task_id)
                     if isinstance(msg, ResultMessage):
                         result_msg = msg
                         if msg.result:

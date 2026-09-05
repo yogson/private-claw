@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -37,6 +38,8 @@ def _make_result_msg(
     msg.result = result
     msg.is_error = is_error
     msg.usage = usage or {}
+    msg.num_turns = 1
+    msg.duration_ms = 100
     return msg
 
 
@@ -452,3 +455,75 @@ def test_build_options_without_mcp_servers_is_empty() -> None:
         return None
 
     assert adapter._build_options(_make_request(), _noop).mcp_servers == {}
+
+
+# ---------------------------------------------------------------------------
+# Activity log writing (format_log_lines/truncate_for_log unit tests live in
+# tests/assistant/subagents/test_log_formatting.py - shared with claude_code.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_writes_log_lines_when_log_path_set(tmp_path: Path) -> None:
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    log_path = tmp_path / "dlg-1.log"
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        yield AssistantMessage(content=[TextBlock(text="working on it")], model="claude-sonnet-4-5")
+        yield _make_result_msg(result="done")
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request(log_path=str(log_path)))
+
+    assert result.ok is True
+    content = log_path.read_text()
+    assert "[assistant] working on it" in content
+    assert "[result] ok" in content
+
+
+@pytest.mark.asyncio
+async def test_execute_survives_log_formatting_error(tmp_path: Path) -> None:
+    """A bug in log formatting is observability breakage, not a run failure -
+    it must not surface as the delegated task itself having failed."""
+    log_path = tmp_path / "dlg-1.log"
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        yield object()
+        yield _make_result_msg(result="done")
+
+    with (
+        patch(
+            "assistant.subagents.backends.log_formatting.format_log_lines",
+            side_effect=RuntimeError("boom"),
+        ),
+        _patch_query_side_effect(_fake_query),
+    ):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request(log_path=str(log_path)))
+
+    assert result.ok is True
+    assert result.output_text == "done"
+
+
+@pytest.mark.asyncio
+async def test_execute_without_log_path_writes_no_file(tmp_path: Path) -> None:
+    result_msg = _make_result_msg(result="done")
+
+    with _patch_query(_async_iter(result_msg)):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request())
+
+    assert result.ok is True
+    assert list(tmp_path.iterdir()) == []

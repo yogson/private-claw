@@ -26,6 +26,12 @@ class DelegationRun(BaseModel):
     timeout_seconds: int = Field(default=300, ge=1)
     max_turns: int = Field(default=25, ge=1)
     backend_params: dict[str, Any] = Field(default_factory=dict)
+    log_path: str | None = None
+    """Optional path a backend should append human-readable activity lines to.
+
+    Both delegation backends (claude_code, claude_code_streaming) support this;
+    a backend that doesn't would simply ignore it.
+    """
 
 
 class DelegationResult(BaseModel):
