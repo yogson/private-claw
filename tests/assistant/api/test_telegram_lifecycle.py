@@ -790,6 +790,73 @@ async def test_delegation_feedback_handler_sends_ask_question_when_pending_ask()
     adapter.send_response.assert_awaited_once_with(mock_response, chat_id=239146894)
 
 
+@pytest.mark.asyncio
+async def test_delegation_feedback_handler_does_not_retry_turn_on_orchestrator_failure() -> None:
+    """A turn failure (e.g. UnexpectedModelBehavior) must propagate once, not be
+    silently retried with the same event_id, which the idempotency layer would
+    then drop as a duplicate — losing the result entirely."""
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(side_effect=RuntimeError("model behaved unexpectedly"))
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock()
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-4",
+        parent_session_id="tg:239146894:abc",
+        parent_turn_id="turn-1",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        metadata={
+            "trace_id": "trace-4",
+            "requested_by_user_id": "239146894",
+            "logfire_context": {"traceparent": "00-abc-def-01"},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="model behaved unexpectedly"):
+        await handler(task)
+
+    orchestrator.execute_turn.assert_awaited_once()
+    adapter.send_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delegation_feedback_handler_degrades_gracefully_on_bad_logfire_context() -> None:
+    """A malformed logfire_context (e.g. a non-string header value) must not prevent
+    the turn from running — attaching the trace context is best-effort only."""
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
+    from assistant.core.orchestrator.models import OrchestratorResult
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(return_value=OrchestratorResult(text="delegate done"))
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock(return_value=True)
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-5",
+        parent_session_id="tg:239146894:abc",
+        parent_turn_id="turn-1",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        metadata={
+            "trace_id": "trace-5",
+            "requested_by_user_id": "239146894",
+            "logfire_context": {"traceparent": 12345},
+        },
+    )
+
+    await handler(task)
+
+    orchestrator.execute_turn.assert_awaited_once()
+    adapter.send_response.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Tests for _notify_system_started
 # ---------------------------------------------------------------------------
