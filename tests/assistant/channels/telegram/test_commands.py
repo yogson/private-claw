@@ -16,6 +16,7 @@ def test_build_bot_commands_contains_supported_command_set() -> None:
     assert [f"/{item.command}" for item in commands] == [
         "/new",
         "/reset",
+        "/compact",
         "/sessions",
         "/model",
         "/capabilities",
@@ -32,6 +33,8 @@ def test_build_bot_commands_contains_supported_command_set() -> None:
         (" /NEW ", TelegramCommand.NEW),
         ("/new@my_bot", TelegramCommand.NEW),
         ("/reset", TelegramCommand.RESET),
+        ("/compact", TelegramCommand.COMPACT),
+        ("/compact@my_bot", TelegramCommand.COMPACT),
         ("/sessions", TelegramCommand.SESSIONS),
         ("/sessions@my_bot", TelegramCommand.SESSIONS),
         ("/model", TelegramCommand.MODEL),

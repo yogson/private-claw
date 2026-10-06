@@ -51,6 +51,7 @@ def _make_handler(vocabulary_store=None):
         "is_verbose_request",
         "is_session_new_request",
         "is_session_reset_request",
+        "is_compact_request",
         "is_session_resume_request",
         "is_session_resume_callback",
         "is_model_request",

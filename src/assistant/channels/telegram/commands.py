@@ -15,6 +15,7 @@ class TelegramCommand(StrEnum):
 
     NEW = "/new", "Start a fresh session for this chat."
     RESET = "/reset", "Clear context for the active session."
+    COMPACT = "/compact", "Summarize older history of the active session."
     SESSIONS = "/sessions", "List recent sessions and resume one."
     MODEL = "/model", "Select LLM model for the current session."
     CAPABILITIES = "/capabilities", "Toggle capabilities for the current session."

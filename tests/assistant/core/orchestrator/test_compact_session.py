@@ -685,3 +685,86 @@ class TestKeepRecentTurns:
         assert "t1" not in restored_turn_ids
         # Prior compaction summary is also preserved.
         assert "compaction-1" in restored_turn_ids
+
+
+# ---------------------------------------------------------------------------
+# compact_session (manual, on-demand) tests
+# ---------------------------------------------------------------------------
+
+
+class TestManualCompactSession:
+    @staticmethod
+    def _attach_session_ctx(orch: Orchestrator) -> MagicMock:
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=ctx)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        orch._session_factory.resume = AsyncMock(return_value=ctx)  # noqa: SLF001
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_compacts_below_token_threshold_under_session_lock(self) -> None:
+        # Far below token_threshold and min_turns_before_compact.
+        records = [
+            _system(0),
+            _rec(sequence=1, turn_id="t1"),
+            _assistant_with_usage(2, turn_id="t1", input_tokens=10, output_tokens=5),
+        ]
+        orch = _build_orchestrator(records)
+        ctx = self._attach_session_ctx(orch)
+
+        assert await orch._should_compact_session("s1") is None  # noqa: SLF001
+        assert await orch.compact_session("s1", "trace-1", "u1") is True
+
+        ctx.__aenter__.assert_awaited_once()
+        ctx.__aexit__.assert_awaited_once()
+        restored = orch._store.sessions.replace_session.call_args.args[1]  # noqa: SLF001
+        assert [r.record_type for r in restored] == [
+            SessionRecordType.SYSTEM_MESSAGE,
+            SessionRecordType.COMPACTION_SUMMARY,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bypasses_max_compactions_limit(self) -> None:
+        records = [
+            _system(0),
+            _compaction_summary(1),
+            _rec(sequence=2, turn_id="t1"),
+            _assistant_with_usage(3, turn_id="t1"),
+        ]
+        orch = _build_orchestrator(
+            records, compaction_config=_make_compaction_config(max_compactions=1)
+        )
+        self._attach_session_ctx(orch)
+
+        # Automatic path is blocked by the limit, manual path is not.
+        assert await orch._compact_session("s1", "trace-1", "u1") is False  # noqa: SLF001
+        assert await orch.compact_session("s1", "trace-1", "u1") is True
+
+        restored = orch._store.sessions.replace_session.call_args.args[1]  # noqa: SLF001
+        assert [r.record_type for r in restored] == [
+            SessionRecordType.SYSTEM_MESSAGE,
+            SessionRecordType.COMPACTION_SUMMARY,
+            SessionRecordType.COMPACTION_SUMMARY,
+        ]
+        assert "Pass 2" in restored[2].payload["content"]
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_disabled(self) -> None:
+        orch = _build_orchestrator([], compaction_config=_make_compaction_config(enabled=False))
+        orch._compaction_service = None  # noqa: SLF001
+        orch._session_factory.resume = AsyncMock()  # noqa: SLF001
+
+        assert orch.compaction_enabled is False
+        assert await orch.compact_session("s1", "trace-1", "u1") is False
+        orch._session_factory.resume.assert_not_awaited()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_everything_in_kept_window(self) -> None:
+        records = [_rec(sequence=1, turn_id="t1"), _assistant_with_usage(2, turn_id="t1")]
+        orch = _build_orchestrator(
+            records, compaction_config=_make_compaction_config(keep_recent_turns=5)
+        )
+        self._attach_session_ctx(orch)
+
+        assert await orch.compact_session("s1", "trace-1", "u1") is False
+        orch._store.sessions.replace_session.assert_not_awaited()  # noqa: SLF001

@@ -831,6 +831,26 @@ class Orchestrator:
             f"Please re-enable the required capability before continuing."
         )
 
+    @property
+    def compaction_enabled(self) -> bool:
+        """Whether chat compaction is configured and available."""
+        return self._compaction_service is not None
+
+    async def compact_session(self, session_id: str, trace_id: str, user_id: str | None) -> bool:
+        """Compact the session on demand, bypassing the token/turn thresholds.
+
+        Runs under the session lock so it cannot interleave with a turn.
+        ``max_compactions`` is not enforced; the kept-recent-turns window still applies.
+
+        Returns True if the session was compacted, False if there was nothing
+        to compact. Raises on lock timeout or missing session.
+        """
+        if self._compaction_service is None:
+            return False
+        ctx = await self._session_factory.resume(session_id)
+        async with ctx:
+            return await self._compact_session(session_id, trace_id, user_id, enforce_limit=False)
+
     async def _should_compact_session(self, session_id: str) -> list[SessionRecord] | None:
         """Check whether the session needs compaction based on token usage and turn count.
 
@@ -864,11 +884,13 @@ class Orchestrator:
         trace_id: str,
         user_id: str | None,
         records: list[SessionRecord] | None = None,
+        enforce_limit: bool = True,
     ) -> bool:
         """Compact session by summarizing and clearing history.
 
         Preserves system prompt records (constructed by capabilities) and all
-        previously created compaction summary records (up to max_compactions).
+        previously created compaction summary records (up to max_compactions,
+        unless ``enforce_limit`` is False).
 
         Returns True if the session was successfully compacted, False otherwise.
         """
@@ -884,7 +906,7 @@ class Orchestrator:
         ]
 
         # Enforce max compactions limit.
-        if len(previous_summaries) >= self._compaction_config.max_compactions:
+        if enforce_limit and len(previous_summaries) >= self._compaction_config.max_compactions:
             logger.warning(
                 "orchestrator.compaction_limit_reached",
                 session_id=session_id,
