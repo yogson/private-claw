@@ -16,12 +16,14 @@ from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.service import COMPACTION_NOTIFICATION_TEXT, Orchestrator
+from assistant.core.session.interfaces import SessionNotFoundError
 from assistant.extensions.language_learning.models import (
     CardResult,
     ExerciseResultPayload,
     FillBlanksResultPayload,
 )
 from assistant.extensions.language_learning.store import VocabularyStore
+from assistant.store.interfaces import LockAcquisitionError
 from assistant.subagents.coordinator import DelegationCoordinator
 
 logger = structlog.get_logger(__name__)
@@ -164,6 +166,8 @@ def _build_orchestrator_handler(
                 session_id=event.session_id,
                 trace_id=event.trace_id,
             )
+        if adapter.is_compact_request(event):
+            return await _handle_compact_request(event, orchestrator)
         if adapter.is_session_resume_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
             return await adapter.build_session_menu_response(
@@ -524,6 +528,32 @@ def _build_compaction_notifier(
             await adapter.send_response(response, chat_id=chat_id)
 
     return _notifier
+
+
+async def _handle_compact_request(
+    event: NormalizedEvent, orchestrator: Orchestrator
+) -> ChannelResponse:
+    """Handle the /compact command: force a compaction pass for the active session."""
+    if not orchestrator.compaction_enabled:
+        text = "Session compaction is disabled."
+    else:
+        try:
+            compacted = await orchestrator.compact_session(
+                event.session_id, event.trace_id, event.user_id
+            )
+        except LockAcquisitionError:
+            text = "Session is busy. Try again once the current turn finishes."
+        except SessionNotFoundError:
+            text = "Nothing to compact yet."
+        else:
+            text = (
+                COMPACTION_NOTIFICATION_TEXT
+                if compacted
+                else "Nothing to compact: history is too short."
+            )
+    return build_text_channel_response(
+        text=text, session_id=event.session_id, trace_id=event.trace_id
+    )
 
 
 async def _handle_exercise_results(

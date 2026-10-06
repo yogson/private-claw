@@ -159,6 +159,7 @@ async def test_configure_bot_commands_menu_registers_expected_commands() -> None
     assert [f"/{item.command}" for item in commands] == [
         "/new",
         "/reset",
+        "/compact",
         "/sessions",
         "/model",
         "/capabilities",

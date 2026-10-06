@@ -112,6 +112,7 @@ Define the Telegram interaction boundary for Personal AI Assistant v1, including
 - v1 configures Telegram native bot commands during polling startup using Bot API command metadata:
   - `/new` - start a fresh session for the current chat,
   - `/reset` - clear context for the currently active session,
+  - `/compact` - manually compact the active session (summarize older turns, keep the last `keep_recent_turns` verbatim); bypasses `token_threshold`, `min_turns_before_compact` and `max_compactions` but still honors `enabled`,
   - `/sessions` - list recent sessions and resume one via inline callbacks,
   - `/model` - select LLM model for the current session,
   - `/usage` - show token and cost usage statistics for current session, today (UTC), and this month (UTC).
