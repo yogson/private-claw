@@ -18,6 +18,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskStartedMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -66,11 +68,24 @@ def format_log_lines(msg: object) -> list[str]:
                     lines.append(f"[{tag}] {truncate_for_log(text or '')}")
                 elif isinstance(block, TextBlock):
                     lines.append(f"[user] {truncate_for_log(block.text)}")
+    elif isinstance(msg, TaskStartedMessage):
+        lines.append(
+            f"[system] task_started {msg.task_id} {truncate_for_log(msg.description or '')}"
+        )
+    elif isinstance(msg, TaskNotificationMessage):
+        lines.append(
+            f"[system] task_notification {msg.task_id} status={msg.status} "
+            f"{truncate_for_log(msg.summary or '')}"
+        )
     elif isinstance(msg, SystemMessage):
         lines.append(f"[system] {msg.subtype}")
     elif isinstance(msg, ResultMessage):
         outcome = "error" if msg.is_error else "ok"
-        lines.append(f"[result] {outcome} ({msg.num_turns} turns, {msg.duration_ms}ms)")
+        lines.append(
+            f"[result] {outcome} ({msg.num_turns} turns, {msg.duration_ms}ms, "
+            f"subtype={getattr(msg, 'subtype', None)}, "
+            f"stop_reason={getattr(msg, 'stop_reason', None)})"
+        )
     return lines
 
 

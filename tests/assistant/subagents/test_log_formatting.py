@@ -68,7 +68,27 @@ def test_format_log_lines_system_and_result() -> None:
     result_msg.is_error = False
     result_msg.num_turns = 3
     result_msg.duration_ms = 1234
-    assert format_log_lines(result_msg) == ["[result] ok (3 turns, 1234ms)"]
+    result_msg.subtype = "success"
+    result_msg.stop_reason = "end_turn"
+    assert format_log_lines(result_msg) == [
+        "[result] ok (3 turns, 1234ms, subtype=success, stop_reason=end_turn)"
+    ]
+
+
+def test_format_log_lines_task_notification_includes_status_and_summary() -> None:
+    from claude_agent_sdk import TaskNotificationMessage
+
+    msg = TaskNotificationMessage(
+        subtype="task_notification",
+        data={},
+        task_id="bg1",
+        status="completed",
+        output_file="/tmp/out",
+        summary="watch done",
+        uuid="u",
+        session_id="s",
+    )
+    assert format_log_lines(msg) == ["[system] task_notification bg1 status=completed watch done"]
 
 
 def test_format_log_lines_unknown_message_type_returns_empty() -> None:

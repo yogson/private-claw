@@ -11,6 +11,7 @@ AskUserQuestion feedback loop via a configurable question relay callback.
 import asyncio
 import contextlib
 import os
+import shutil
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -41,6 +42,8 @@ try:
         ClaudeAgentOptions,
         PermissionResultAllow,
         ResultMessage,
+        TaskNotificationMessage,
+        TaskStartedMessage,
         ToolPermissionContext,
         query,
     )
@@ -66,7 +69,11 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
     each get their own isolated relay.
     """
 
-    def __init__(self, mcp_servers: dict[str, dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        mcp_servers: dict[str, dict[str, Any]] | None = None,
+        cli_path: str | None = None,
+    ) -> None:
         # Keyed by task_id; each entry is an async callable that receives
         # (question, options) and returns the user's answer as a string.
         self._task_relays: dict[str, Callable[[str, list[str]], Awaitable[str]]] = {}
@@ -74,6 +81,12 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         # --mcp-config.  Sub-agents run with --setting-sources "" (SDK default),
         # so servers registered in ~/.claude.json or settings.json never reach them.
         self._mcp_servers = mcp_servers or {}
+        # The SDK prefers its bundled CLI over PATH, and the bundled copy lags
+        # behind: old CLIs send thinking={type:"enabled", budget_tokens}, which
+        # newer models (e.g. claude-opus-5-5) reject with a 400.  Use the
+        # system-installed claude (same binary as the claude_code backend) and
+        # fall back to the bundled one only when none is on PATH.
+        self._cli_path = cli_path or shutil.which("claude")
 
     @property
     def backend_id(self) -> str:
@@ -134,7 +147,12 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
         try:
             result_msg: ResultMessage | None = None
-            output_parts: list[str] = []
+            # Only the final ResultMessage carries the answer: earlier ones are
+            # interim turns (e.g. "waiting for the background watch").
+            final_text = ""
+            # Background tasks (run_in_background / Monitor) started but not yet
+            # reported finished via a task_notification.
+            pending_bg: set[str] = set()
 
             # can_use_tool requires an AsyncIterable prompt (SDK constraint).
             async def _prompt_iter() -> AsyncGenerator[dict[str, Any], None]:
@@ -148,14 +166,17 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             log_path = Path(request.log_path) if request.log_path else None
 
             async def _run_query() -> None:
-                nonlocal result_msg
+                nonlocal result_msg, final_text
                 async for msg in query(prompt=_prompt_iter(), options=sdk_options):
                     if log_path is not None:
                         await write_log_lines(log_path, msg, request.task_id)
-                    if isinstance(msg, ResultMessage):
+                    if isinstance(msg, TaskStartedMessage):
+                        pending_bg.add(msg.task_id)
+                    elif isinstance(msg, TaskNotificationMessage):
+                        pending_bg.discard(msg.task_id)
+                    elif isinstance(msg, ResultMessage):
                         result_msg = msg
-                        if msg.result:
-                            output_parts.append(msg.result)
+                        final_text = msg.result or ""
 
             task = asyncio.create_task(_run_query())
             try:
@@ -192,8 +213,26 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 usage=result_msg.usage or {},
             )
 
-        output_text = "\n".join(output_parts).strip()
+        output_text = final_text.strip()
         usage: dict[str, Any] = result_msg.usage or {}
+
+        if pending_bg:
+            # The stream ended (closing the CLI) while background tasks were
+            # still running, so the last text is an interim "waiting" note.
+            logger.warning(
+                "subagent_ended_with_pending_background_tasks",
+                task_id=request.task_id,
+                pending=sorted(pending_bg),
+            )
+            return DelegationResult(
+                ok=False,
+                error=(
+                    f"Sub-agent finished while {len(pending_bg)} background task(s) were "
+                    "still running; its last message was interim, not a final answer: "
+                    f"{output_text[:500]}"
+                ),
+                usage=usage,
+            )
 
         if not output_text:
             logger.warning(
@@ -242,6 +281,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
         return ClaudeAgentOptions(
             model=request.model_id,
+            cli_path=self._cli_path,
             mcp_servers=cast(Any, dict(self._mcp_servers)),
             max_turns=request.max_turns,
             cwd=cwd,
