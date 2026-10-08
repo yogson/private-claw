@@ -146,14 +146,57 @@ async def test_relay_is_called_for_ask_user_question() -> None:
     context = ToolPermissionContext(signal=None, suggestions=[])
     result = await can_use_tool_fn(
         "AskUserQuestion",
-        {"question": "Are you sure?", "options": ["yes", "no"]},
+        {
+            "questions": [
+                {
+                    "question": "Are you sure?",
+                    "header": "Confirm",
+                    "options": [
+                        {"label": "yes", "description": "go ahead"},
+                        {"label": "no", "description": ""},
+                    ],
+                    "multiSelect": False,
+                }
+            ]
+        },
         context,
     )
 
     assert isinstance(result, PermissionResultAllow)
     assert result.updated_input is not None
-    assert result.updated_input.get("answer") == "user said yes"
-    assert relay_called_with == [("Are you sure?", ["yes", "no"])]
+    assert result.updated_input["answers"] == {"Are you sure?": "user said yes"}
+    assert "questions" in result.updated_input
+    assert relay_called_with == [("Are you sure?\n• yes — go ahead", ["yes", "no"])]
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_maps_numeric_and_label_replies_to_labels() -> None:
+    from claude_agent_sdk import ToolPermissionContext
+
+    replies = iter(["2", "BLUE", "something else"])
+
+    async def _relay(question: str, options: list[str]) -> str:
+        return next(replies)
+
+    captured: list[Any] = []
+
+    async def _fake_query(*, prompt: Any, options: Any) -> AsyncGenerator[Any, None]:
+        captured.append(options.can_use_tool)
+        yield _make_result_msg()
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        adapter.register_relay("t1", _relay)
+        await adapter.execute(_make_request(task_id="t1"))
+
+    opts = [{"label": "Red"}, {"label": "Blue"}]
+    questions = [{"question": f"q{i}", "header": "h", "options": opts} for i in range(3)]
+    result = await captured[0](
+        "AskUserQuestion",
+        {"questions": questions},
+        ToolPermissionContext(signal=None, suggestions=[]),
+    )
+    assert result.updated_input["answers"] == {"q0": "Blue", "q1": "Blue", "q2": "something else"}
 
 
 @pytest.mark.asyncio
@@ -231,12 +274,12 @@ async def test_relay_answer_is_forwarded_to_updated_input() -> None:
 
     result = await can_use_tool_fn(
         "AskUserQuestion",
-        {"question": "Hello?", "options": []},
+        {"questions": [{"question": "Hello?", "header": "h", "options": []}]},
         context,
     )
     assert isinstance(result, PermissionResultAllow)
     assert result.updated_input is not None
-    assert result.updated_input.get("answer") == "relay_answer"
+    assert result.updated_input["answers"] == {"Hello?": "relay_answer"}
 
 
 @pytest.mark.asyncio
@@ -357,9 +400,9 @@ async def test_execute_returns_ok_with_empty_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ask_user_question_no_relay_injects_empty_answer() -> None:
-    """When no relay is registered, AskUserQuestion receives an empty-string answer."""
-    from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
+async def test_ask_user_question_no_relay_is_denied_with_guidance() -> None:
+    """With no relay the agent is told to decide itself instead of waiting forever."""
+    from claude_agent_sdk import PermissionResultDeny, ToolPermissionContext
 
     captured_can_use_tool: list[Any] = []
 
@@ -381,13 +424,12 @@ async def test_ask_user_question_no_relay_injects_empty_answer() -> None:
     context = ToolPermissionContext(signal=None, suggestions=[])
     result = await can_use_tool_fn(
         "AskUserQuestion",
-        {"question": "What now?", "options": ["yes", "no"]},
+        {"questions": [{"question": "What now?", "header": "h", "options": []}]},
         context,
     )
 
-    assert isinstance(result, PermissionResultAllow)
-    assert result.updated_input is not None
-    assert result.updated_input.get("answer") == ""
+    assert isinstance(result, PermissionResultDeny)
+    assert "choose the most reasonable option" in result.message
 
 
 @pytest.mark.asyncio

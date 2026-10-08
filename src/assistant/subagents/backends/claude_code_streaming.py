@@ -41,6 +41,7 @@ try:
     from claude_agent_sdk import (
         ClaudeAgentOptions,
         PermissionResultAllow,
+        PermissionResultDeny,
         ResultMessage,
         TaskNotificationMessage,
         TaskStartedMessage,
@@ -53,6 +54,16 @@ try:
     _SDK_AVAILABLE = True
 except ImportError:
     _SDK_AVAILABLE = False
+
+
+def _normalize_answer(reply: str, labels: list[str]) -> str:
+    """Map a free-text reply to an option label when it names one (by number or text)."""
+    if reply.isdigit() and 1 <= int(reply) <= len(labels):
+        return labels[int(reply) - 1]
+    for label in labels:
+        if label and reply.casefold() == label.casefold():
+            return label
+    return reply
 
 
 class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
@@ -114,31 +125,55 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
         relay = self._task_relays.get(request.task_id)
 
+        async def _answer_ask_user_question(
+            input_data: dict[str, Any],
+        ) -> "PermissionResultAllow | PermissionResultDeny":
+            # The CLI's AskUserQuestion input is {"questions": [{"question",
+            # "header", "options": [{"label", "description"}], "multiSelect"}]}
+            # and it expects {"questions": ..., "answers": {question: answer}}
+            # back; any other shape makes it report "The user did not answer".
+            questions = input_data.get("questions")
+            if relay is None or not isinstance(questions, list) or not questions:
+                logger.warning(
+                    "ask_user_question_unanswerable",
+                    task_id=request.task_id,
+                    has_relay=relay is not None,
+                )
+                return PermissionResultDeny(
+                    message=(
+                        "No channel to ask the user is available. Do not ask again: "
+                        "choose the most reasonable option yourself and state the assumption."
+                    )
+                )
+            answers: dict[str, str] = {}
+            for item in questions:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", ""))
+                raw_options = item.get("options")
+                options = [o for o in raw_options if isinstance(o, dict)] if raw_options else []
+                labels = [str(o.get("label", "")) for o in options]
+                # Buttons carry the bare labels (the answer text comes back as the
+                # label); descriptions go into the message body.
+                notes = [
+                    f"• {lbl} — {o['description']}"
+                    for o, lbl in zip(options, labels, strict=True)
+                    if o.get("description")
+                ]
+                text = "\n".join([question, *notes]) if notes else question
+                # Relay owns the timeout; the coordinator's _relay wraps the
+                # future wait with asyncio.wait_for.
+                reply = (await relay(text, labels)).strip()
+                answers[question] = _normalize_answer(reply, labels)
+            return PermissionResultAllow(updated_input={**input_data, "answers": answers})
+
         async def _can_use_tool(
             tool_name: str,
             input_data: dict[str, Any],
             context: "ToolPermissionContext",
-        ) -> "PermissionResultAllow":
+        ) -> "PermissionResultAllow | PermissionResultDeny":
             if tool_name == "AskUserQuestion":
-                question = str(input_data.get("question", ""))
-                raw_options = input_data.get("options")
-                options: list[str] = (
-                    [str(o) for o in raw_options] if isinstance(raw_options, list) else []
-                )
-                if relay is not None:
-                    # Relay owns the timeout; the coordinator's _relay wraps the
-                    # future wait with asyncio.wait_for.
-                    answer = await relay(question, options)
-                else:
-                    # No relay registered; inject empty answer so the agent
-                    # receives a well-formed response instead of a missing field.
-                    logger.warning(
-                        "ask_user_question_no_relay",
-                        task_id=request.task_id,
-                        question=question,
-                    )
-                    answer = ""
-                return PermissionResultAllow(updated_input={**input_data, "answer": answer})
+                return await _answer_ask_user_question(input_data)
             # Auto-approve everything else
             return PermissionResultAllow()
 
