@@ -180,7 +180,9 @@ async def test_ask_user_question_maps_numeric_and_label_replies_to_labels() -> N
 
     captured: list[Any] = []
 
-    async def _fake_query(*, prompt: Any, options: Any) -> AsyncGenerator[Any, None]:
+    async def _fake_query(
+        *, prompt: Any, options: Any, transport: Any = None
+    ) -> AsyncGenerator[Any, None]:
         captured.append(options.can_use_tool)
         yield _make_result_msg()
 
@@ -605,7 +607,9 @@ async def test_prompt_stays_open_until_background_tasks_finish() -> None:
     prompt_closed_at_first_result: list[bool] = []
     prompt_closed_at_end: list[bool] = []
 
-    async def _fake_query(*, prompt: Any, options: Any) -> AsyncGenerator[Any, None]:
+    async def _fake_query(
+        *, prompt: Any, options: Any, transport: Any = None
+    ) -> AsyncGenerator[Any, None]:
         prompt_done = asyncio.Event()
 
         async def _drain() -> None:
@@ -635,7 +639,9 @@ async def test_prompt_stays_open_until_background_tasks_finish() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_fails_when_stream_ends_with_pending_background_tasks() -> None:
-    async def _fake_query(*, prompt: Any, options: Any) -> AsyncGenerator[Any, None]:
+    async def _fake_query(
+        *, prompt: Any, options: Any, transport: Any = None
+    ) -> AsyncGenerator[Any, None]:
         yield _task_started("bg1")
         yield _make_result_msg(result="waiting for the watch")
 

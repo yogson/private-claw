@@ -10,6 +10,7 @@ AskUserQuestion feedback loop via a configurable question relay callback.
 
 import asyncio
 import contextlib
+import dataclasses
 import os
 import shutil
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -50,6 +51,7 @@ try:
     )
 
     from assistant.subagents.backends.log_formatting import write_log_lines
+    from assistant.subagents.backends.sdk_transport import QuietCloseTransport
 
     _SDK_AVAILABLE = True
 except ImportError:
@@ -213,7 +215,16 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
             async def _run_query() -> None:
                 nonlocal result_msg, final_text
-                async for msg in query(prompt=_prompt_iter(), options=sdk_options):
+                prompt_iter = _prompt_iter()
+                # query() only builds the transport itself, with this same
+                # option tweak for can_use_tool, when none is passed in.
+                transport = QuietCloseTransport(
+                    prompt=prompt_iter,
+                    options=dataclasses.replace(sdk_options, permission_prompt_tool_name="stdio"),
+                )
+                async for msg in query(
+                    prompt=prompt_iter, options=sdk_options, transport=transport
+                ):
                     if log_path is not None:
                         await write_log_lines(log_path, msg, request.task_id)
                     if isinstance(msg, TaskStartedMessage):
