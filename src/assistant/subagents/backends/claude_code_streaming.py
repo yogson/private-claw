@@ -154,6 +154,16 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             # reported finished via a task_notification.
             pending_bg: set[str] = set()
 
+            # Set once the run is genuinely over (a ResultMessage with no
+            # background tasks pending).  Until then the prompt iterator stays
+            # open, which keeps the CLI's stdin open: the SDK closes stdin as
+            # soon as the prompt iterator is exhausted and the first result has
+            # arrived, and after that every can_use_tool / hook control request
+            # the CLI sends in a later turn (e.g. the turn it starts when a
+            # background task finishes) fails with "Stream closed", so the tool
+            # call is rejected or the turn aborted.
+            run_finished = asyncio.Event()
+
             # can_use_tool requires an AsyncIterable prompt (SDK constraint).
             async def _prompt_iter() -> AsyncGenerator[dict[str, Any], None]:
                 yield {
@@ -162,6 +172,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     "message": {"role": "user", "content": f"Task objective:\n{prompt}"},
                     "parent_tool_use_id": None,
                 }
+                await run_finished.wait()
 
             log_path = Path(request.log_path) if request.log_path else None
 
@@ -177,6 +188,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     elif isinstance(msg, ResultMessage):
                         result_msg = msg
                         final_text = msg.result or ""
+                        if msg.is_error or not pending_bg:
+                            run_finished.set()
 
             task = asyncio.create_task(_run_query())
             try:

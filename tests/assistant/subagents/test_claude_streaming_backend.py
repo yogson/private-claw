@@ -527,3 +527,80 @@ async def test_execute_without_log_path_writes_no_file(tmp_path: Path) -> None:
 
     assert result.ok is True
     assert list(tmp_path.iterdir()) == []
+
+
+def _task_started(task_id: str) -> Any:
+    from claude_agent_sdk import TaskStartedMessage
+
+    return TaskStartedMessage(
+        subtype="task_started",
+        data={},
+        task_id=task_id,
+        description="bg",
+        uuid="u",
+        session_id="s",
+    )
+
+
+def _task_notification(task_id: str) -> Any:
+    from claude_agent_sdk import TaskNotificationMessage
+
+    return TaskNotificationMessage(
+        subtype="task_notification",
+        data={},
+        task_id=task_id,
+        status="completed",
+        output_file="/tmp/out",
+        summary="done",
+        uuid="u",
+        session_id="s",
+    )
+
+
+@pytest.mark.asyncio
+async def test_prompt_stays_open_until_background_tasks_finish() -> None:
+    """stdin must stay open across the bg-task wait, and the final result wins."""
+    prompt_closed_at_first_result: list[bool] = []
+    prompt_closed_at_end: list[bool] = []
+
+    async def _fake_query(*, prompt: Any, options: Any) -> AsyncGenerator[Any, None]:
+        prompt_done = asyncio.Event()
+
+        async def _drain() -> None:
+            async for _ in prompt:
+                pass
+            prompt_done.set()
+
+        drain = asyncio.create_task(_drain())
+        yield _task_started("bg1")
+        yield _make_result_msg(result="waiting")
+        await asyncio.sleep(0.05)
+        prompt_closed_at_first_result.append(prompt_done.is_set())
+        yield _task_notification("bg1")
+        yield _make_result_msg(result="FINAL")
+        await asyncio.wait_for(drain, timeout=1)
+        prompt_closed_at_end.append(prompt_done.is_set())
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request())
+
+    assert prompt_closed_at_first_result == [False]
+    assert prompt_closed_at_end == [True]
+    assert result.ok is True
+    assert result.output_text == "FINAL"
+
+
+@pytest.mark.asyncio
+async def test_execute_fails_when_stream_ends_with_pending_background_tasks() -> None:
+    async def _fake_query(*, prompt: Any, options: Any) -> AsyncGenerator[Any, None]:
+        yield _task_started("bg1")
+        yield _make_result_msg(result="waiting for the watch")
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        result = await adapter.execute(_make_request())
+
+    assert result.ok is False
+    assert "background task" in (result.error or "")
+    assert "waiting for the watch" in (result.error or "")
