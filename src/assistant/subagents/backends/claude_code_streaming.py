@@ -312,6 +312,11 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
         raw_effort = str(params.get("effort", "")).strip() or None
         effort = raw_effort if raw_effort in ("low", "medium", "high", "max") else None
+        # The SDK's typed effort field predates "xhigh", but the CLI accepts it;
+        # route it through extra_args, which the SDK turns into `--effort xhigh`.
+        extra_args: dict[str, str | None] = {"effort": "xhigh"} if raw_effort == "xhigh" else {}
+        if raw_effort is not None and effort is None and not extra_args:
+            logger.warning("claude_streaming.effort_ignored", effort=raw_effort)
 
         raw_permission_mode = str(params.get("permission_mode", "")).strip() or None
         permission_mode = (
@@ -345,6 +350,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             max_turns=request.max_turns,
             cwd=cwd,
             effort=cast(Any, effort),
+            extra_args=extra_args,
             permission_mode=cast(Any, permission_mode),
             add_dirs=cast(Any, add_dirs),
             plugins=cast(Any, plugins),

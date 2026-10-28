@@ -4,7 +4,7 @@ Component ID: CMP_CORE_CAPABILITIES
 Pydantic schemas for capability manifests (config/capabilities/*.yaml).
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -50,6 +50,7 @@ class CapabilityToolOverride(BaseModel):
     delegation_estimated_tokens_per_turn: int | None = None
     delegation_default_max_turns: int | None = None
     delegation_default_timeout_seconds: int | None = None
+    delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

@@ -213,7 +213,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "trace_id": trace_id,
             "chat_id": self._chat_id_from_session(session_id),
             "projected_tokens": projected_tokens,
-            "backend_params": request.get("backend_params", {}),
+            "backend_params": self._resolve_backend_params(request, tool_params),
         }
         logfire_ctx = request.get("logfire_context")
         if isinstance(logfire_ctx, dict) and logfire_ctx:
@@ -322,9 +322,17 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         task = await self.get_task(task_id, session_id=session_id)
         if task is None:
             return None
-        capped = max(1, min(tail_lines, _MAX_LOG_TAIL_LINES))
-        lines = read_log_tail(task_log_path(self._log_dir, task_id), capped)
+        lines = await self.read_log_lines(task_id, tail_lines)
         return {"task_id": task_id, "status": task.status.value, "lines": lines}
+
+    async def read_log_lines(self, task_id: str, tail_lines: int) -> list[str]:
+        """Return the last ``tail_lines`` log lines without an ownership lookup.
+
+        For callers that already fetched (and authorized) the task. The file is
+        read in a worker thread so a large log never blocks the event loop.
+        """
+        capped = max(1, min(tail_lines, _MAX_LOG_TAIL_LINES))
+        return await asyncio.to_thread(read_log_tail, task_log_path(self._log_dir, task_id), capped)
 
     async def _worker_loop(self) -> None:
         while not self._stop.is_set():
@@ -769,6 +777,20 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             if parsed_default is not None and parsed_default > 0:
                 return parsed_default
         return 8
+
+    @staticmethod
+    def _resolve_backend_params(request: dict[str, Any], tool_params: object) -> dict[str, Any]:
+        raw = request.get("backend_params")
+        backend_params = dict(raw) if isinstance(raw, dict) else {}
+        # Models often fill optional fields with "" or null; treat those as unset.
+        requested_effort = backend_params.get("effort")
+        if not (isinstance(requested_effort, str) and requested_effort.strip()):
+            backend_params.pop("effort", None)
+            if isinstance(tool_params, dict):
+                default_effort = tool_params.get("delegation_default_effort")
+                if isinstance(default_effort, str) and default_effort.strip():
+                    backend_params["effort"] = default_effort.strip()
+        return backend_params
 
     @staticmethod
     def _resolve_timeout_seconds(request: dict[str, Any], tool_params: object) -> int:

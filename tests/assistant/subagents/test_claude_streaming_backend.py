@@ -320,6 +320,29 @@ async def test_backend_params_passed_to_options() -> None:
     assert opts.plugins == [{"type": "local", "path": "/path/to/plugin-a"}]
 
 
+@pytest.mark.asyncio
+async def test_xhigh_effort_forwarded_via_extra_args() -> None:
+    """The SDK's typed effort field lacks "xhigh"; it must still reach the CLI."""
+    captured_options: list[Any] = []
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        captured_options.append(options)
+        yield _make_result_msg()
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        await adapter.execute(_make_request(backend_params={"effort": "xhigh"}))
+
+    opts = captured_options[0]
+    assert opts.effort is None
+    assert opts.extra_args == {"effort": "xhigh"}
+
+
 def test_backend_id() -> None:
     adapter = ClaudeCodeStreamingBackendAdapter()
     assert adapter.backend_id == "claude_code_streaming"

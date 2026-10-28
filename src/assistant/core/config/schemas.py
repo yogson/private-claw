@@ -7,6 +7,7 @@ Each schema corresponds to one config/*.yaml file.
 
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -148,6 +149,7 @@ class ToolDefaultParams(BaseModel):
     delegation_estimated_tokens_per_turn: int | None = Field(default=None, ge=1)
     delegation_default_max_turns: int | None = Field(default=None, ge=1)
     delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
+    delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod
@@ -207,6 +209,8 @@ class McpServerEntry(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     tool_policy: str = "deny_by_default"
+    # Per-server override of timeouts.call_seconds (e.g. for slow data sources).
+    call_seconds: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_transport_fields(self) -> "McpServerEntry":

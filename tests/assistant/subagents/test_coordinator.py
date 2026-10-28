@@ -336,6 +336,45 @@ async def test_tool_default_model_used_when_request_model_id_is_none(tmp_path: P
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend_params", "expected_effort"),
+    [
+        ({"directory": "/tmp"}, "high"),
+        ({"directory": "/tmp", "effort": "low"}, "low"),
+        ({"directory": "/tmp", "effort": ""}, "high"),
+        ({"directory": "/tmp", "effort": "  "}, "high"),
+        ({"directory": "/tmp", "effort": None}, "high"),
+    ],
+)
+async def test_tool_default_effort_applied_unless_request_sets_it(
+    tmp_path: Path, backend_params: dict[str, str | None], expected_effort: str
+) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={
+            "objective": "Implement",
+            "backend_params": backend_params,
+            "tool_params": {"delegation_default_effort": "high"},
+        },
+    )
+    assert accepted["accepted"] is True
+    task = await coordinator.get_task(accepted["task_id"])
+    assert task is not None
+    assert task.metadata["backend_params"] == {"directory": "/tmp", "effort": expected_effort}
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_reject_when_concurrency_limit_reached(tmp_path: Path) -> None:
     store = StoreFacade(data_root=tmp_path)
     await store.initialize()
@@ -1059,9 +1098,7 @@ async def test_execute_task_passes_log_path_to_backend(tmp_path: Path) -> None:
                 break
             await asyncio.sleep(0.05)
         assert backend.received_run is not None
-        assert backend.received_run.log_path == str(
-            task_log_path(coordinator._log_dir, task_id)
-        )
+        assert backend.received_run.log_path == str(task_log_path(coordinator._log_dir, task_id))
     finally:
         await coordinator.stop()
         await store.shutdown()
@@ -1130,6 +1167,24 @@ async def test_read_task_log_returns_tail_of_written_lines(tmp_path: Path) -> No
     result = await coordinator.read_task_log(task_id, tail_lines=2)
     assert result is not None
     assert result["lines"] == ["[assistant] step 3", "[assistant] step 4"]
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_log_lines_returns_tail_without_task_lookup(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_config(tmp_path),
+        backends=[_FakeBackend()],
+    )
+    path = task_log_path(coordinator._log_dir, "dlg-1")
+    for i in range(12):
+        await append_log_line(path, f"[assistant] step {i}")
+
+    lines = await coordinator.read_log_lines("dlg-1", 10)
+    assert lines == [f"[assistant] step {i}" for i in range(2, 12)]
     await store.shutdown()
 
 
