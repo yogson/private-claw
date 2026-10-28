@@ -5,7 +5,6 @@ Converts ModelMessage objects into SessionRecord instances for full
 conversation replay and restore.
 """
 
-import json
 from datetime import datetime
 from typing import Any
 
@@ -85,8 +84,15 @@ def _new_messages_to_session_records(
                 assistant_idx += 1
 
             for part in tool_call_parts:
-                args = part.args if isinstance(part.args, dict) else {}
-                args_json = json.dumps(args, separators=(",", ":"))
+                # part.args is str | dict | None depending on how the model streamed
+                # it — pydantic_ai's Anthropic responses very often carry it as the
+                # raw JSON string, not a pre-parsed dict. `isinstance(part.args, dict)`
+                # used to silently discard real, non-empty arguments as "{}" whenever
+                # args arrived as a string, corrupting persisted history: replayed
+                # back to the model on later turns, it looked like a precedent of the
+                # tool succeeding with empty args, which the model then imitated.
+                # args_as_json_str() handles both representations correctly.
+                args_json = part.args_as_json_str()
                 call_payload = AssistantToolCallPayload(
                     message_id=f"msg-{part.tool_call_id}",
                     tool_call_id=part.tool_call_id,

@@ -262,6 +262,37 @@ def test_new_messages_to_session_records_persists_all_tool_calls_and_results() -
     assert "Egor" in str(tool_results[0].payload["result"]["matches"])
 
 
+def test_new_messages_to_session_records_preserves_args_sent_as_raw_json_string() -> None:
+    """ToolCallPart.args often arrives as the raw JSON string the model streamed,
+    not a pre-parsed dict (pydantic_ai's Anthropic responses commonly do this for
+    non-trivial args). Persisting must not silently drop those args as "{}" —
+    that corrupts replayed history into a false precedent of the tool "succeeding"
+    with empty args, which the model then imitates on later turns."""
+    now = datetime.now(UTC)
+    records = _new_messages_to_session_records(
+        [
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="delegate_subagent_task",
+                        tool_call_id="tc-1",
+                        args='{"objective":"Review PR #464","backend":"claude_code"}',
+                    ),
+                ]
+            ),
+        ],
+        session_id="s1",
+        turn_id="t1",
+        timestamp=now,
+        assistant_msg_id="msg-t1-assistant",
+    )
+    tool_calls = [r for r in records if r.record_type == SessionRecordType.ASSISTANT_TOOL_CALL]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].payload["arguments_json"] == (
+        '{"objective":"Review PR #464","backend":"claude_code"}'
+    )
+
+
 def test_new_messages_to_session_records_skips_memory_propose_update_results() -> None:
     """memory_propose_update results are omitted when skip_memory_tool_results=True."""
     now = datetime.now(UTC)
