@@ -161,8 +161,6 @@ tools:
   # Earnings Tools
   - tool_id: cap.mcp.finance.get_earnings_calendar
     enabled: true
-  - tool_id: cap.mcp.finance.get_batch_earnings
-    enabled: true
 
   # News & Sentiment Tools
   - tool_id: cap.mcp.finance.get_stock_news
