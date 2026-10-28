@@ -29,7 +29,9 @@ async def check_subagent_status(
     call it back-to-back for the same task_id in one turn. Use it only when:
     the user explicitly asks for a progress update on a task that's still
     running, or you need to confirm a task's final status/result before
-    reporting to the user. If completed, the response includes the result
+    reporting to the user. The response always includes "recent_log" - the
+    last 10 lines of the task's activity log - so you rarely need a separate
+    read_subagent_log call. If completed, the response includes the result
     (summary text and usage); if failed, it includes the error. If still
     pending/running, the response includes a "hint" telling you to end your
     turn instead of checking again. This tool is rate-limited per task per

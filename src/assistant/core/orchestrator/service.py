@@ -92,6 +92,7 @@ _DELEGATION_STILL_RUNNING_HINT = (
     "the user explicitly asked you to wait and re-check right now."
 )
 _DELEGATION_NON_TERMINAL_STATUSES = (TaskStatus.PENDING.value, TaskStatus.RUNNING.value)
+_DELEGATION_STATUS_LOG_TAIL_LINES = 10
 
 
 def _with_still_running_hint(payload: dict[str, Any]) -> dict[str, Any]:
@@ -305,7 +306,11 @@ class Orchestrator:
                 task = await coordinator.get_task(task_id, session_id=session_id)
                 if task is None:
                     return {"found": False, "task_id": task_id}
-                return _with_still_running_hint({"found": True, **task.model_dump(mode="json")})
+                payload: dict[str, Any] = {"found": True, **task.model_dump(mode="json")}
+                payload["recent_log"] = await coordinator.read_log_lines(
+                    task_id, _DELEGATION_STATUS_LOG_TAIL_LINES
+                )
+                return _with_still_running_hint(payload)
 
             async def delegation_cancel_handler(task_id: str) -> dict[str, Any]:
                 cancelled = await coordinator.cancel_task(task_id, session_id=session_id)

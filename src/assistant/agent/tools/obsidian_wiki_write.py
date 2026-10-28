@@ -63,6 +63,24 @@ def obsidian_wiki_write(
             it. Paths must stay under wiki/ and must not use ".." or be absolute.
         operation_id: Optional stable ID for this operation; auto-generated if omitted.
     """
+    return write_vault_transaction(ctx, operation_type, writes, operation_id)
+
+
+def write_vault_transaction(
+    ctx: RunContext[TurnDeps],
+    operation_type: str,
+    writes: list[dict[str, str]],
+    operation_id: str | None = None,
+    *,
+    base_hashes: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Implementation of obsidian_wiki_write.
+
+    ``base_hashes`` maps a replace-mode path to the SHA-256 of the content the
+    caller derived its new content from. It is used as that path's precondition
+    instead of re-reading the file, so a concurrent change made after the
+    caller's read is rejected as a conflict rather than silently overwritten.
+    """
     vault = os.getenv("CLAUDE_OBSIDIAN_VAULT")
     product_root = os.getenv("CLAUDE_OBSIDIAN_PRODUCT_ROOT")
     if not vault or not product_root:
@@ -114,7 +132,9 @@ def obsidian_wiki_write(
                 "reason": f"cannot create — file already exists (use mode=replace instead): {path}",
             }
 
-        if mode == "replace":
+        if mode == "replace" and base_hashes and path in base_hashes:
+            expected_hashes[path] = base_hashes[path]
+        elif mode == "replace":
             with open(target, encoding="utf-8") as f:
                 current_hash = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
             expected_hashes[path] = current_hash

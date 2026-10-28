@@ -96,3 +96,10 @@ class DelegationCoordinatorInterface(ABC):
         Returns None if the task does not exist (or does not belong to
         ``session_id``, when given).
         """
+
+    @abstractmethod
+    async def read_log_lines(self, task_id: str, tail_lines: int) -> list[str]:
+        """Return the last ``tail_lines`` activity lines for an already-fetched task.
+
+        Performs no existence/ownership check - callers must have done it.
+        """

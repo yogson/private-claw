@@ -13,6 +13,9 @@
 #     In mcp_servers.yaml: transport=streamable-http,
 #       url=https://kimnam1--finance-mcp.apify.actor/mcp?token=YOUR_APIFY_TOKEN
 #
+# Input schemas are NOT declared here: the bridge fetches them from the server via
+# list_tools at startup, so they always match the running server.
+#
 # Note: This is a curated subset of the 119 available tools. Add more as needed.
 # Full tool list: https://lobehub.com/mcp/kimnam1-finance-mcp
 
@@ -26,77 +29,18 @@ tools:
     summary: Get real-time exchange rate between two currencies
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        from_currency:
-          type: string
-          description: Source currency code (e.g., USD, EUR, GBP)
-        to_currency:
-          type: string
-          description: Target currency code (e.g., EUR, JPY, CNY)
-        amount:
-          type: number
-          description: Amount to convert (default 1.0)
-      required: [from_currency, to_currency]
-
   - tool_name: convert_currency
     summary: Convert amount to multiple currencies at once
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        amount:
-          type: number
-          description: Amount to convert
-        from_currency:
-          type: string
-          description: Source currency code
-        to_currencies:
-          type: array
-          description: List of target currency codes
-      required: [amount, from_currency, to_currencies]
-
   - tool_name: get_historical_rates
     summary: Get historical exchange rates over a date range
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        from_currency:
-          type: string
-          description: Source currency code
-        to_currency:
-          type: string
-          description: Target currency code
-        start_date:
-          type: string
-          description: Start date (YYYY-MM-DD)
-        end_date:
-          type: string
-          description: End date (YYYY-MM-DD)
-      required: [from_currency, to_currency, start_date]
-
   - tool_name: get_rate_trend
     summary: Get exchange rate trend for the last N days
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        from_currency:
-          type: string
-          description: Source currency code
-        to_currency:
-          type: string
-          description: Target currency code
-        days:
-          type: integer
-          description: Number of days for trend analysis (default 30)
-      required: [from_currency, to_currency]
-
   - tool_name: list_supported_currencies
     summary: List all supported currency codes (~30 major currencies)
     risk_class: readonly
@@ -109,55 +53,18 @@ tools:
     summary: Get real-time price and 24h stats for any Binance trading pair
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbol:
-          type: string
-          description: Crypto symbol (e.g., BTC, ETH, SOL)
-      required: [symbol]
-
   - tool_name: get_crypto_market
     summary: Get top N cryptocurrencies ranked by market cap
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        limit:
-          type: integer
-          description: Number of coins to return (default 10)
-
   - tool_name: get_crypto_historical
     summary: Get OHLCV candles (daily, 4h, or hourly) for any crypto
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbol:
-          type: string
-          description: Crypto symbol (e.g., BTC, ETH)
-        interval:
-          type: string
-          description: Candle interval (1d, 4h, 1h)
-        limit:
-          type: integer
-          description: Number of candles
-      required: [symbol]
-
   - tool_name: compare_crypto
     summary: Side-by-side comparison of multiple cryptocurrencies
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbols:
-          type: array
-          description: List of crypto symbols to compare
-      required: [symbols]
-
   # ========================================
   # Macro Economics Tools (7)
   # ========================================
@@ -165,89 +72,30 @@ tools:
     summary: Get GDP (total or per capita) for any country
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        country:
-          type: string
-          description: Country code (e.g., US, CN, DE)
-        type:
-          type: string
-          description: GDP type (total or per_capita)
-      required: [country]
-
   - tool_name: get_inflation
     summary: Get annual CPI inflation rate by country
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        country:
-          type: string
-          description: Country code
-      required: [country]
-
   - tool_name: get_macro_overview
     summary: Get GDP, inflation, and unemployment in one call
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        country:
-          type: string
-          description: Country code
-      required: [country]
-
   - tool_name: compare_gdp_growth
     summary: Compare GDP growth rate across multiple countries
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        countries:
-          type: array
-          description: List of country codes
-      required: [countries]
-
   - tool_name: get_interest_rate
     summary: Get lending interest rate history by country
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        country:
-          type: string
-          description: Country code
-      required: [country]
-
   - tool_name: compare_interest_rates
     summary: Compare interest rates across multiple countries
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        countries:
-          type: array
-          description: List of country codes
-      required: [countries]
-
   - tool_name: compare_population
     summary: Compare population trends across countries
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        countries:
-          type: array
-          description: List of country codes
-      required: [countries]
-
   # ========================================
   # US Federal Reserve Tools (5) - Enhanced with FRED_API_KEY
   # ========================================
@@ -296,26 +144,10 @@ tools:
     summary: Get current level and daily change for major stock indices
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        index:
-          type: string
-          description: Index symbol (e.g., SPY, QQQ, DIA, IWM)
-      required: [index]
-
   - tool_name: compare_stock_indices
     summary: Side-by-side comparison of global stock indices
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        indices:
-          type: array
-          description: List of index symbols
-      required: [indices]
-
   # ========================================
   # ETFs & Backtesting Tools (3)
   # ========================================
@@ -323,47 +155,14 @@ tools:
     summary: Get current price and stats for any ETF (SPY, QQQ, ARKK, GLD...)
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbol:
-          type: string
-          description: ETF symbol
-      required: [symbol]
-
   - tool_name: get_index_history
     summary: Get historical OHLCV for indices and ETFs
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        index:
-          type: string
-          description: Index or ETF symbol
-        period:
-          type: string
-          description: Period (e.g. 1y, 6mo, 3mo)
-      required: [index]
-
   - tool_name: backtest_buy_hold
     summary: Calculate buy-and-hold returns for stocks, ETFs, or crypto
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbol:
-          type: string
-          description: Asset symbol
-        start_date:
-          type: string
-          description: Start date (YYYY-MM-DD)
-        amount_usd:
-          type: number
-          description: Initial investment in USD (default 1000)
-      required: [symbol, start_date]
-
   # ========================================
   # Portfolio Analytics Tools (3)
   # ========================================
@@ -371,29 +170,12 @@ tools:
     summary: Get Pearson correlation matrix for 2-6 assets
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbols:
-          type: array
-          description: List of asset symbols (2-6)
-      required: [symbols]
-
   - tool_name: get_portfolio_volatility
     summary: Calculate annualized return, volatility, Sharpe ratio, max drawdown
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbols:
-          type: array
-          description: List of asset symbols
-        weights:
-          type: array
-          description: Portfolio weights (must sum to 1)
-      required: [symbols, weights]
-
+    # holdings is list[dict]; only the server docstring spells out the item shape.
+    use_server_description: true
   - tool_name: get_fear_greed_index
     summary: Get Crypto Fear & Greed Index - current score and 7-day history
     risk_class: readonly
@@ -406,14 +188,6 @@ tools:
     summary: Get trailing yield, payout ratio, ex-dividend date, 5-yr average
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: compare_sectors
     summary: Compare all 11 S&P 500 sectors ranked by performance
     risk_class: readonly
@@ -423,26 +197,10 @@ tools:
     summary: Get P/E, EPS, market cap, 52-week range, revenue growth, ROE
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_analyst_ratings
     summary: Get analyst consensus, price target, upgrades/downgrades history
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   # ========================================
   # Earnings Tools (2)
   # ========================================
@@ -450,25 +208,6 @@ tools:
     summary: Get upcoming earnings dates with EPS estimates
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol (optional for broad calendar)
-
-  - tool_name: get_batch_earnings
-    summary: Batch earnings lookup for a watchlist
-    risk_class: readonly
-    requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        symbols:
-          type: array
-          description: List of ticker symbols
-      required: [symbols]
-
   # ========================================
   # News & Sentiment Tools (3)
   # ========================================
@@ -476,14 +215,6 @@ tools:
     summary: Get latest news headlines for any ticker
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_market_sentiment
     summary: Get VIX, DXY, and 10Y/2Y Treasury yields in one call
     risk_class: readonly
@@ -501,65 +232,22 @@ tools:
     summary: Get recent SEC filings (10-K, 10-Q, 8-K) with URLs
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-        form_type:
-          type: string
-          description: Filing type (10-K, 10-Q, 8-K)
-      required: [ticker]
-
   - tool_name: get_insider_trades
     summary: Get Form 4 insider buy/sell filings for any ticker
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_company_facts
     summary: Get XBRL financial facts - Revenue, NetIncome, Assets, EPS
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_institutional_holdings
     summary: Get top 10 institutional and top 5 mutual fund holders
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_short_interest
     summary: Get shares short, days-to-cover, float%, squeeze risk
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   # ========================================
   # Treasury & Options Tools (4)
   # ========================================
@@ -577,29 +265,10 @@ tools:
     summary: Get options chain - calls, puts, strikes, bid/ask, volume, OI, IV
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-        expiry:
-          type: string
-          description: Options expiration date (YYYY-MM-DD)
-      required: [ticker]
-
   - tool_name: get_options_flow
     summary: Get put/call ratio, sentiment label, unusual contracts
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   # ========================================
   # Advanced Analysis Tools (8)
   # ========================================
@@ -612,84 +281,26 @@ tools:
     summary: Get EPS surprise %, beat rate, consensus vs actual
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_insider_sentiment
     summary: Get Form 4 aggregate - net buy/sell, top transactions
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_currency_carry
     summary: Get rate differential, spot, carry label, viability
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        from:
-          type: string
-          description: Source currency
-        to:
-          type: string
-          description: Target currency
-      required: [from, to]
-
   - tool_name: get_stock_screener
     summary: Filter S&P 500 by P/E, yield, market cap, sector
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        min_pe:
-          type: number
-          description: Minimum P/E ratio
-        max_pe:
-          type: number
-          description: Maximum P/E ratio
-        min_dividend_yield:
-          type: number
-          description: Minimum dividend yield (%)
-        sector:
-          type: string
-          description: Sector filter
-
   - tool_name: get_earnings_call_sentiment
     summary: Get keyword NLP sentiment, guidance signal, news links
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        ticker:
-          type: string
-          description: Stock ticker symbol
-      required: [ticker]
-
   - tool_name: get_economic_surprise_index
     summary: Get ESI proxy - 6-indicator composite for 10 countries
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        country:
-          type: string
-          description: Country code
-
   - tool_name: get_sector_momentum
     summary: Get 11 sector ETFs ranked with rotation signal vs SPY
     risk_class: readonly
@@ -702,13 +313,6 @@ tools:
     summary: Get DeFi protocol TVL, history, or top 20 protocols
     risk_class: readonly
     requires_confirmation: false
-    input_schema:
-      type: object
-      properties:
-        protocol:
-          type: string
-          description: Protocol name (optional, returns top 20 if omitted)
-
   - tool_name: get_economic_calendar
     summary: Get annual FOMC schedule, SEP sessions, statement dates
     risk_class: readonly

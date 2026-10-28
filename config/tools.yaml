@@ -49,6 +49,8 @@ tools:
       delegation_estimated_tokens_per_turn: 2000
       delegation_default_max_turns: 25
       delegation_default_timeout_seconds: 300
+      # Passed to the sub-agent CLI as --effort unless the call sets its own.
+      delegation_default_effort: high
 
   - tool_id: check_subagent_status
     entrypoint: assistant.agent.tools.check_subagent_status:check_subagent_status

@@ -9,10 +9,13 @@ hot-swap).  Adapters are lazily built on first use and reused for all
 subsequent turns that share the same capability set.
 """
 
+from collections.abc import Callable
+
 import structlog
 
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.core.config.schemas import RuntimeConfig
+from assistant.extensions.mcp.bridge import mcp_schema_cache
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +33,11 @@ class TurnAdapterCache:
     capability override pay the build cost once; all later turns reuse the
     cached adapter.
 
+    MCP tool schemas arrive asynchronously (fetched from the servers after
+    startup), so an adapter built before they landed carries placeholder
+    schemas. Each entry remembers the schema-cache generation it was built
+    against and is rebuilt on the next lookup once that generation moves on.
+
     Thread-safety: not required — the application runs on a single asyncio
     event loop and adapters are built synchronously.
     """
@@ -39,19 +47,17 @@ class TurnAdapterCache:
         model_id: str,
         max_tokens: int,
         base_config: RuntimeConfig,
+        schema_generation: Callable[[], int] | None = None,
     ) -> None:
         self._model_id = model_id
         self._max_tokens = max_tokens
-        self._cache: dict[frozenset[str], PydanticAITurnAdapter] = {}
+        self._schema_generation = schema_generation or (lambda: mcp_schema_cache.generation)
+        self._cache: dict[frozenset[str], tuple[int, PydanticAITurnAdapter]] = {}
 
         # Pre-warm with the default capability set so the first default turn
         # never incurs a build cost.
         default_key = self._make_key(base_config)
-        self._cache[default_key] = PydanticAITurnAdapter(
-            model_id=model_id,
-            max_tokens=max_tokens,
-            config=base_config,
-        )
+        self._cache[default_key] = self._build(base_config)
         logger.debug(
             "adapter_cache.initialized",
             capability_key=sorted(default_key),
@@ -72,18 +78,20 @@ class TurnAdapterCache:
         a user switches to a session with a different capability override).
         """
         key = self._make_key(config)
-        if key not in self._cache:
+        entry = self._cache.get(key)
+        if entry is None:
             logger.info(
                 "adapter_cache.miss",
                 capability_key=sorted(key),
                 cache_size=len(self._cache),
             )
-            self._cache[key] = PydanticAITurnAdapter(
-                model_id=self._model_id,
-                max_tokens=self._max_tokens,
-                config=config,
-            )
-        return self._cache[key]
+        elif entry[0] != self._schema_generation():
+            logger.info("adapter_cache.stale_mcp_schemas", capability_key=sorted(key))
+        else:
+            return entry[1]
+        entry = self._build(config)
+        self._cache[key] = entry
+        return entry[1]
 
     @property
     def size(self) -> int:
@@ -93,6 +101,17 @@ class TurnAdapterCache:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _build(self, config: RuntimeConfig) -> tuple[int, PydanticAITurnAdapter]:
+        # Read the generation before building so specs landing mid-build
+        # still mark the entry stale.
+        generation = self._schema_generation()
+        adapter = PydanticAITurnAdapter(
+            model_id=self._model_id,
+            max_tokens=self._max_tokens,
+            config=config,
+        )
+        return generation, adapter
 
     @staticmethod
     def _make_key(config: RuntimeConfig) -> frozenset[str]:

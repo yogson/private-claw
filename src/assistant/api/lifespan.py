@@ -8,6 +8,7 @@ import structlog
 from fastapi import FastAPI
 
 from assistant.agent.adapter_cache import TurnAdapterCache
+from assistant.agent.tools.registry import collect_enabled_tool_ids
 from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.deps import set_runtime_config
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
@@ -35,7 +36,7 @@ from assistant.core.session_context import (
     SessionModelContextService,
 )
 from assistant.extensions.language_learning import VocabularyStore
-from assistant.extensions.mcp.bridge import mcp_pool
+from assistant.extensions.mcp.bridge import McpBridge, mcp_pool
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logfire import configure_logfire
 from assistant.observability.logging import configure_logging
@@ -219,10 +220,19 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     await mcp_pool.start_sweeper(interval=60.0)
+    # Warm up in the background so a slow MCP server does not delay startup.
+    mcp_bridge = McpBridge(runtime_config)
+    schema_refresh_task = asyncio.create_task(
+        mcp_bridge.refresh_schemas(collect_enabled_tool_ids(runtime_config))
+    )
 
     try:
         yield
     finally:
+        schema_refresh_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await schema_refresh_task
+        await mcp_bridge.close()
         await mcp_pool.close()
         if polling_task is not None:
             polling_stop.set()

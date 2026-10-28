@@ -26,6 +26,10 @@ class McpMappedTool(BaseModel):
     input_schema: dict[str, Any] | None = None
     risk_class: RiskClass = RiskClass.READONLY
     requires_confirmation: bool = False
+    # Use the server-advertised description (typically the full docstring) instead
+    # of `summary`. Opt-in per tool: full docstrings are long and inflate every
+    # turn's tool list, so reserve it for tools whose args the schema can't explain.
+    use_server_description: bool = False
 
 
 class McpToolMapping(BaseModel):
