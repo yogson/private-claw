@@ -521,8 +521,14 @@ async def test_streamable_http_client_read_timeout_ignores_call_timeout() -> Non
     entry = McpServerEntry(id="h", transport="streamable-http", url="http://localhost/mcp")
     ts = build_mcp_toolset(entry, 10.0, 30.0)
     factory = ts.client.transport.httpx_client_factory  # type: ignore[union-attr]
-    # fastmcp passes Timeout(30, read=call_seconds); the factory must not honour the read part
-    async with factory(headers={}, timeout=httpx2.Timeout(30.0, read=30.0)) as http:
+    # Called exactly as fastmcp's StreamableHttpTransport.connect_session does: with
+    # follow_redirects and Timeout(30, read=call_seconds); the read part must not be honoured.
+    async with factory(
+        headers={},
+        auth=None,
+        follow_redirects=True,
+        timeout=httpx2.Timeout(30.0, read=30.0),
+    ) as http:
         assert http.timeout.read is not None and http.timeout.read > 3600
 
 

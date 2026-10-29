@@ -150,6 +150,7 @@ def _idle_tolerant_http_client(
     headers: dict[str, str] | None = None,
     timeout: httpx2.Timeout | None = None,
     auth: httpx2.Auth | None = None,
+    **_: Any,
 ) -> httpx2.AsyncClient:
     """httpx client whose read timeout does not follow the per-call timeout.
 
@@ -157,6 +158,8 @@ def _idle_tolerant_http_client(
     would also cut the idle server-to-client listening stream after ``call_seconds``.
     The incoming ``timeout`` is therefore ignored: connect/write/pool keep the MCP default
     and reads may idle. Per-call limits are still enforced by the MCP session.
+    Extra kwargs (fastmcp passes ``follow_redirects=True``) are ignored, matching fastmcp's
+    own no-factory path: the MCP transport follows same-origin redirects itself.
     """
     return create_mcp_http_client(
         headers=headers,
