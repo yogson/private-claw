@@ -1309,6 +1309,16 @@ class TestDetectToolMismatch:
         ):
             assert orch._detect_tool_mismatch(records, _runtime_config()) is None
 
+    def test_legacy_mcp_tool_names_excluded_from_comparison(self) -> None:
+        """Pre-toolset cap_mcp_<server>_<tool> names in history never block the session."""
+        orch = self._make_orch()
+        records = [_tool_call_record(tool_name="cap_mcp_finance_get_exchange_rate")]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value=set(),
+        ):
+            assert orch._detect_tool_mismatch(records, _runtime_config()) is None
+
     def test_returns_none_when_tool_name_empty(self) -> None:
         """Records with an empty tool_name payload should not cause false positives."""
         orch = self._make_orch()

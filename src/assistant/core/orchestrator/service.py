@@ -80,6 +80,9 @@ COMPACTION_NOTIFICATION_TEXT: Final[str] = "🗜 История чата сжа�
 
 logger = structlog.get_logger(__name__)
 
+# MCP tool names from before whole-server toolsets; they still appear in stored history.
+_LEGACY_MCP_TOOL_PREFIXES = ("cap_mcp_", "cap.mcp.")
+
 _REPLAY_BUDGET = 50
 _SYSTEM_REMINDER = (
     "[System reminder: Follow your delegation instructions. "
@@ -815,7 +818,9 @@ class Orchestrator:
                 and record.turn_id == last_turn_id
             ):
                 tool_name = record.payload.get("tool_name", "")
-                if tool_name and not is_mcp_tool_name(tool_name):
+                if tool_name and not (
+                    is_mcp_tool_name(tool_name) or tool_name.startswith(_LEGACY_MCP_TOOL_PREFIXES)
+                ):
                     historical_tools.add(tool_name)
 
         if not historical_tools:
