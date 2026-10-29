@@ -20,15 +20,18 @@ from typing import Any, cast, get_type_hints
 import structlog
 from pydantic_ai import Tool
 from pydantic_ai.tools import ToolFuncEither
+from pydantic_ai.toolsets import AbstractToolset
 
 from assistant.agent.deps import TurnDeps
 from assistant.core.capabilities.loader import (
+    collect_mcp_server_ids,
     expand_nested_capabilities,
     load_capability_definitions,
 )
+from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.loader import resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig
-from assistant.extensions.mcp.bridge import McpBridge
+from assistant.extensions.mcp.toolsets import mcp_toolsets
 
 
 def _config_dir(config: RuntimeConfig) -> Path:
@@ -94,12 +97,39 @@ def _resolve_entrypoint(entrypoint: str) -> object:
     return obj
 
 
-def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
-    """Collect tool_ids from enabled capabilities (excluding denied).
+def _active_capabilities(
+    config: RuntimeConfig,
+) -> tuple[dict[str, CapabilityDefinition], list[str]]:
+    """Capability definitions plus the enabled list (nested expanded, denied removed)."""
+    policy = config.capabilities
+    denied = frozenset(policy.denied_capabilities)
+    definitions = load_capability_definitions(config_dir=_config_dir(config))
+    enabled = [
+        c
+        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
+        if c not in denied
+    ]
+    return definitions, enabled
 
-    MCP tools: cap.mcp.<server>.<tool> in enabled_capabilities are added directly
-    (no capability manifest required); they are gated by tool mapping and server config.
+
+def collect_enabled_mcp_server_ids(config: RuntimeConfig) -> list[str]:
+    """MCP server ids granted by the enabled capabilities (nested expanded, denied removed)."""
+    definitions, enabled = _active_capabilities(config)
+    return collect_mcp_server_ids(definitions, enabled)
+
+
+def get_agent_mcp_toolsets(config: RuntimeConfig) -> list[AbstractToolset[Any]]:
+    """Toolsets for the MCP servers the active capability set references.
+
+    Servers that are unknown or disabled in mcp_servers.yaml are skipped. The underlying
+    connections are shared process-wide and owned by the app lifespan.
     """
+    server_ids = collect_enabled_mcp_server_ids(config)
+    return mcp_toolsets.toolsets_for(config.mcp_servers, server_ids)
+
+
+def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
+    """Collect first-party tool_ids from enabled capabilities (excluding denied)."""
     policy = config.capabilities
     denied = frozenset(policy.denied_capabilities)
     definitions = load_capability_definitions(config_dir=_config_dir(config))
@@ -111,9 +141,6 @@ def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
 
     tool_ids: set[str] = set()
     for cap_id in enabled:
-        if cap_id.startswith("cap.mcp."):
-            tool_ids.add(cap_id)
-            continue
         definition = definitions.get(cap_id)
         if definition is None:
             logger.warning(
@@ -129,11 +156,12 @@ def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
 
 
 def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
-    """Return tools for the agent from tools.yaml and MCP bridge, gated by enabled capabilities."""
-    tool_ids = collect_enabled_tool_ids(config)
+    """Return first-party tools from tools.yaml, gated by enabled capabilities.
+
+    MCP servers are not tools here; see :func:`get_agent_mcp_toolsets`.
+    """
+    first_party_ids = collect_enabled_tool_ids(config)
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
-    mcp_ids = {t for t in tool_ids if t.startswith("cap.mcp.")}
-    first_party_ids = tool_ids - mcp_ids
 
     tools: list[AgentTool] = []
     for tool_id in sorted(first_party_ids):
@@ -191,9 +219,4 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
                     max_retries=definition.max_retries,
                 )
             )
-
-    if mcp_ids:
-        bridge = McpBridge(config)
-        mcp_tools = bridge.get_tools_for_capability_ids(mcp_ids)
-        tools.extend(cast(list[AgentTool], mcp_tools))
     return tools

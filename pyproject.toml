@@ -42,6 +42,8 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
     "types-pyyaml>=6.0.12",
+    # In-process FastMCP servers for MCP toolset tests.
+    "fastmcp-slim[server]<4",
 ]
 
 [tool.uv]
