@@ -32,6 +32,7 @@ from assistant.agent.message_converters import (
 from assistant.agent.session_record_builder import _new_messages_to_session_records
 from assistant.agent.system_prompt_builder import _compose_system_prompt
 from assistant.agent.tools import TurnDeps, get_agent_mcp_toolsets, get_agent_tools
+from assistant.agent.tools.registry import resolve_active_capabilities
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.first_party.memory import normalize_candidate_for_upsert
 
@@ -157,14 +158,15 @@ def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[st
 
 def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> Agent[TurnDeps, str]:
     """Create Agent with memory_propose_update tool. Output type is str (final assistant text)."""
+    active = resolve_active_capabilities(config)  # parse capability manifests once per build
     return Agent(
         model_id,
         deps_type=TurnDeps,
         system_prompt=system_prompt,
         # tools: keep at 0 to prevent loops; output: allow 1 validation retry
         retries={"tools": 0, "output": 1},
-        tools=get_agent_tools(config),
-        toolsets=get_agent_mcp_toolsets(config),
+        tools=get_agent_tools(config, active),
+        toolsets=get_agent_mcp_toolsets(config, active),
     )
 
 
