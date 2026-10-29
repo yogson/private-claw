@@ -1,5 +1,6 @@
 """Tests for the native MCP toolsets: naming, filtering, lifecycle, reconnect, confirmation."""
 
+import asyncio
 import json
 from typing import Any
 
@@ -28,6 +29,7 @@ from assistant.extensions.mcp.toolsets import (
     is_connection_error,
     is_mcp_tool_name,
     tool_requires_confirmation,
+    unwrap_arguments,
 )
 
 
@@ -335,26 +337,47 @@ def test_is_connection_error_follows_cause_chain() -> None:
     assert not is_connection_error(plain)
 
 
-async def test_dropped_session_reconnects_once_and_retries_the_call(started: Any) -> None:
+async def test_dropped_session_reconnects_but_never_replays_the_call(started: Any) -> None:
     conn, factory = started
     first = factory.built[0]
+    attempts: list[str] = []
 
     async def _dead(*args: Any, **kwargs: Any) -> Any:
+        attempts.append("call")
         raise _session_terminated()
 
     first.client.call_tool = _dead  # type: ignore[method-assign]
     agent: Agent[None, str] = Agent(
         _model_calling("mcp_demo_echo", {"text": "again"}), toolsets=[build_server_toolset(conn)]
     )
-    result = await agent.run("go")
-    assert "echo:again" in result.output
+    result = await agent.run("go")  # the turn survives; the model reads a tool error
+    assert "may or may not have executed" in result.output
+    assert "Connection to MCP server 'demo' was lost" in result.output
+    assert attempts == ["call"], "the call must not be replayed on the new connection"
     assert len(factory.built) == 2, "exactly one reconnect"
     assert not first.is_running, "the dead connection was closed"
-    # and the following turn simply reuses the new connection
+    # and the next call simply works on the new connection
     again = await Agent(
         _model_calling("mcp_demo_echo", {"text": "third"}), toolsets=[build_server_toolset(conn)]
     ).run("go")
     assert "echo:third" in again.output and len(factory.built) == 2
+
+
+async def test_lost_call_error_follows_tool_error_behavior() -> None:
+    conn, factory = _connection()
+    assert await conn.start()
+
+    async def _dead(*args: Any, **kwargs: Any) -> Any:
+        raise _session_terminated()
+
+    first = factory.built[0]
+    first.client.call_tool = _dead  # type: ignore[method-assign]
+    first.tool_error_behavior = "retry"
+    result = await Agent(
+        _model_calling("mcp_demo_echo", {"text": "x"}), toolsets=[build_server_toolset(conn)]
+    ).run("go")
+    assert "may or may not have executed" in result.output  # via ModelRetry, not a crash
+    await conn.stop()
 
 
 async def test_listing_after_dropped_session_reconnects() -> None:
@@ -501,3 +524,125 @@ async def test_streamable_http_client_read_timeout_ignores_call_timeout() -> Non
     # fastmcp passes Timeout(30, read=call_seconds); the factory must not honour the read part
     async with factory(headers={}, timeout=httpx2.Timeout(30.0, read=30.0)) as http:
         assert http.timeout.read is not None and http.timeout.read > 3600
+
+
+# --- argument unwrapping ---------------------------------------------------------------------
+
+
+def test_unwrap_arguments() -> None:
+    plain = {"properties": {"text": {}}}
+    assert unwrap_arguments({"arguments": {"text": "a"}}, plain) == {"text": "a"}
+    assert unwrap_arguments({"text": "a"}, plain) == {"text": "a"}
+    assert unwrap_arguments({"arguments": {"t": 1}, "other": 1}, plain) == {
+        "arguments": {"t": 1},
+        "other": 1,
+    }
+    own = {"properties": {"arguments": {}}}  # a real parameter called "arguments"
+    assert unwrap_arguments({"arguments": {"t": 1}}, own) == {"arguments": {"t": 1}}
+    assert unwrap_arguments({"arguments": "str"}, plain) == {"arguments": "str"}
+
+
+async def test_wrapped_arguments_are_unwrapped_before_the_call(started: Any) -> None:
+    conn, _ = started
+    result = await Agent(
+        _model_calling("mcp_demo_echo", {"arguments": {"text": "hi"}}),
+        toolsets=[build_server_toolset(conn)],
+    ).run("go")
+    assert "echo:hi" in result.output
+
+
+# --- instructions before connect ---------------------------------------------------------------
+
+
+async def test_instructions_are_available_on_first_run_of_unconnected_server() -> None:
+    conn, factory = _connection()
+    assert not conn.connected  # nothing connected yet (lazy / still starting)
+    text = await _instructions_seen(build_server_toolset(conn))
+    assert "Use demo tools carefully." in text
+    assert len(factory.built) == 1
+    await conn.stop()
+
+
+async def test_instructions_skipped_inside_backoff_window() -> None:
+    conn = McpConnection(_entry(), factory=_Factory(), clock=lambda: 0.0)
+    conn._retry_at = 1e9
+    assert await conn.get_instructions(None) is None  # type: ignore[arg-type]
+
+
+# --- config change: in-place reconfigure, idle-safe close ----------------------------------------
+
+
+class _GatedFactory(_Factory):
+    """Server with a ``slow`` tool that blocks until ``release`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    def __call__(self, entry: McpServerEntry, connect: float, call: float) -> MCPToolset[Any]:
+        server = _server()
+
+        @server.tool()
+        async def slow() -> str:
+            """Blocks until released."""
+            self.entered.set()
+            await self.release.wait()
+            return "slow-done"
+
+        ts: MCPToolset[Any] = MCPToolset(server, id=entry.id, tool_error_behavior="failed")
+        self.built.append(ts)
+        return ts
+
+
+async def test_config_change_reconnects_in_place_and_closes_old_session_when_idle() -> None:
+    factory = _GatedFactory()
+    registry = McpToolsets(factory=factory)
+    config = McpServersConfig(servers=[McpServerEntry(id="demo", url="http://h/sse")])
+    cached = registry.toolsets_for(config, ["demo"])  # what a cached agent holds
+    assert await registry.start(config, ["demo"]) == {"demo": True}
+    first = factory.built[0]
+
+    running = asyncio.create_task(
+        Agent(_model_calling("mcp_demo_slow", {}), toolsets=cached).run("go")
+    )
+    await asyncio.wait_for(factory.entered.wait(), 5)
+
+    changed = McpServersConfig(
+        servers=[McpServerEntry(id="demo", url="http://h/sse", include_tools=["echo"])]
+    )
+    again = registry.toolsets_for(changed, ["demo"])
+    await asyncio.sleep(0.05)
+    assert first.is_running, "an in-flight call must not lose its session"
+
+    factory.release.set()
+    result = await asyncio.wait_for(running, 5)
+    assert "slow-done" in result.output
+    assert not first.is_running, "old session is closed once idle"
+
+    # the agent built before the change follows the new config and the new connection
+    offered = {t.name for t in await _offered(cached[0])}
+    assert offered == {"mcp_demo_echo"}
+    assert len(factory.built) == 2 and factory.built[1].is_running
+    assert again[0] is not cached[0]
+    await registry.close()
+    assert not factory.built[1].is_running
+
+
+async def test_config_change_without_traffic_closes_old_session() -> None:
+    factory = _Factory()
+    registry = McpToolsets(factory=factory)
+    config = McpServersConfig(servers=[McpServerEntry(id="demo", url="http://h/sse")])
+    registry.toolsets_for(config, ["demo"])
+    await registry.start(config, ["demo"])
+    first = factory.built[0]
+    registry.toolsets_for(
+        McpServersConfig(servers=[McpServerEntry(id="demo", url="http://h/sse", call_seconds=99)]),
+        ["demo"],
+    )
+    for _ in range(50):
+        if not first.is_running:
+            break
+        await asyncio.sleep(0.02)
+    assert not first.is_running
+    await registry.close()
