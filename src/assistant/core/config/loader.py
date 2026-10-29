@@ -28,8 +28,8 @@ from assistant.core.config.schemas import (
 )
 
 _REDACTED = "***REDACTED***"
-_SENSITIVE_KEYS = {"bot_token", "api_key", "secret", "token", "password"}
-_SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "api_key")
+_SENSITIVE_KEYS = {"bot_token", "api_key", "secret", "token", "password", "headers", "env"}
+_SENSITIVE_KEY_MARKERS = ("secret", "token", "password", "api_key", "authorization")
 _DEFAULT_CONFIG_DIR = "config"
 _CONFIG_DIR_ENV_VAR = "ASSISTANT_CONFIG_DIR"
 _APP_LOGFIRE_TOKEN_ENV_VAR = "ASSISTANT_LOGFIRE_TOKEN"

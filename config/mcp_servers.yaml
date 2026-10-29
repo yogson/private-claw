@@ -1,68 +1,139 @@
 # MCP servers configuration
 # Environment override prefix: ASSISTANT_MCP_
 #
-# Each server entry maps to tool capabilities via plugins/mcp/<server_id>/tool_map.yaml.
-# Enabled tools must also be listed in capabilities.yaml as cap.mcp.<server_id>.<tool_name>.
+# Whole servers are connected and their tools are discovered from the server at runtime;
+# there is no per-tool mapping. A capability grants a server with
+#   mcp_servers: [<server_id>]
+# (see config/capabilities/finance_mcp.yaml). Tools reach the model as
+# mcp_<server_id>_<tool_name>, e.g. mcp_finance_get_exchange_rate.
+#
+# Connections are opened once at app startup and shared by all turns. A server that is
+# down at startup is retried lazily with backoff; it never blocks startup.
 #
 # Supported transports: sse (default), stdio, streamable-http
 #   - sse:              url points to the SSE endpoint (e.g. http://localhost:9222/sse)
-#   - stdio:            command + args to spawn the server process
+#   - stdio:            command + args (+ env) spawn the server process
 #   - streamable-http:  url points to the HTTP endpoint (e.g. http://localhost:8080/mcp)
+#
+# Per-server options:
+#   include_tools / exclude_tools  server-side tool names to expose / hide (mutually exclusive)
+#   confirm_tools                  tools that need user confirmation; tools annotated
+#                                  destructiveHint=true (and not readOnlyHint) always do
+#   include_instructions           append the server's own instructions to the prompt
+#                                  (default true; disable for servers you do not trust)
+#   call_seconds                   per-server override of timeouts.call_seconds
+#   headers                        HTTP headers for sse / streamable-http (secrets: keep
+#                                  them in config.local/, which is gitignored)
+#   env                            environment for stdio servers (same advice)
 
 servers:
+  # Finance MCP (kimnam1/finance-mcp, local clone). ~119 tools upstream; include_tools keeps
+  # the 58 we curated. Remove include_tools to expose everything.
+  #   git clone https://github.com/kimnam1/finance-mcp
+  #   python3 -m venv .venv && .venv/bin/pip install fastmcp httpx yfinance colorama
   - id: finance
     transport: stdio
     command: /Users/yogson/PycharmProjects/finance-mcp/.venv/bin/python3
     args: ["/Users/yogson/PycharmProjects/finance-mcp/server.py"]
     enabled: true
-    tool_policy: deny_by_default
+    call_seconds: 60  # some tools (e.g. treasury history) fetch large feeds
     # env:
     #   FRED_API_KEY: "your_fred_key"   # optional, free at fred.stlouisfed.org
+    include_tools:
+      - get_exchange_rate
+      - convert_currency
+      - get_historical_rates
+      - get_rate_trend
+      - list_supported_currencies
+      - get_crypto_price
+      - get_crypto_market
+      - get_crypto_historical
+      - compare_crypto
+      - get_gdp
+      - get_inflation
+      - get_macro_overview
+      - compare_gdp_growth
+      - get_interest_rate
+      - compare_interest_rates
+      - compare_population
+      - get_fed_funds_rate
+      - get_us_cpi
+      - get_us_pce
+      - get_us_m2
+      - get_us_unemployment
+      - get_commodity_price
+      - get_commodity_prices
+      - get_stock_index
+      - compare_stock_indices
+      - get_etf_info
+      - get_index_history
+      - backtest_buy_hold
+      - get_asset_correlation
+      - get_portfolio_volatility
+      - get_fear_greed_index
+      - get_dividend_info
+      - compare_sectors
+      - get_stock_summary
+      - get_analyst_ratings
+      - get_earnings_calendar
+      - get_stock_news
+      - get_market_sentiment
+      - get_market_breadth
+      - get_sec_filings
+      - get_insider_trades
+      - get_company_facts
+      - get_institutional_holdings
+      - get_short_interest
+      - get_treasury_yield_curve
+      - get_historical_treasury_yields
+      - get_options_chain
+      - get_options_flow
+      - get_macro_dashboard
+      - get_earnings_surprise
+      - get_insider_sentiment
+      - get_currency_carry
+      - get_stock_screener
+      - get_earnings_call_sentiment
+      - get_economic_surprise_index
+      - get_sector_momentum
+      - get_crypto_defi_tvl
+      - get_economic_calendar
+
 # Example server entries:
 #
-# - id: chrome_devtools
-#   url: http://localhost:9222/sse
-#   transport: sse          # optional, defaults to "sse"
+# - id: remote_api                       # HTTP server with a bearer token and confirmations
+#   transport: streamable-http
+#   url: https://api.example.com/mcp
+#   headers:
+#     Authorization: "Bearer <your-token>"   # placeholder; put the real value in config.local/
 #   enabled: true
-#   tool_policy: deny_by_default
+#   confirm_tools: [update_record, delete_record]
+#   exclude_tools: [admin_reset]
+#   call_seconds: 120
+#
+# - id: chrome_devtools
+#   transport: sse
+#   url: http://localhost:9222/sse
+#   enabled: true
+#   confirm_tools: [click, fill]
 #
 # - id: filesystem
 #   transport: stdio
 #   command: npx
-#   args: ["-y", "@anthropic/mcp-server-filesystem", "/tmp"]
+#   args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 #   enabled: true
-#   tool_policy: deny_by_default
+#   include_instructions: false
 #
-# - id: remote_api
-#   url: https://api.example.com/mcp
-#   transport: streamable-http
-#   enabled: true
-#   tool_policy: deny_by_default
-#
-# Finance MCP (kimnam1/finance-mcp) — two options:
-#
-# Option A: Local clone (stdio transport)
-#   git clone https://github.com/kimnam1/finance-mcp
-#   pip install fastmcp httpx yfinance
+# Finance MCP, Apify hosted alternative (no local install):
 # - id: finance
-#   transport: stdio
-#   command: python3
-#   args: ["/path/to/finance-mcp/server.py"]
-#   enabled: true
-#   tool_policy: deny_by_default
-#   env:
-#     FRED_API_KEY: "your_fred_key"   # optional, free at fred.stlouisfed.org
-#
-# Option B: Apify hosted (no local install required)
-# - id: finance
-#   url: "https://kimnam1--finance-mcp.apify.actor/mcp?token=YOUR_APIFY_TOKEN"
 #   transport: streamable-http
+#   url: "https://kimnam1--finance-mcp.apify.actor/mcp"
+#   headers:
+#     Authorization: "Bearer <your-apify-token>"
 #   enabled: true
-#   tool_policy: deny_by_default
 
 defaults:
   enabled: false
-  tool_policy: deny_by_default
 
 timeouts:
   connect_seconds: 10
