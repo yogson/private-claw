@@ -1300,9 +1300,9 @@ class TestDetectToolMismatch:
         assert result is None
 
     def test_mcp_tools_excluded_from_comparison(self) -> None:
-        """cap.mcp.* tool names in history are never flagged as missing."""
+        """mcp_<server>_<tool> names in history are never flagged as missing."""
         orch = self._make_orch()
-        records = [_tool_call_record(tool_name="cap.mcp.server.my_tool")]
+        records = [_tool_call_record(tool_name="mcp_server_my_tool")]
         with patch(
             "assistant.core.orchestrator.service.collect_enabled_tool_ids",
             return_value=set(),

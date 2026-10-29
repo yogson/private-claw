@@ -141,20 +141,15 @@ class TestTurnAdapterCache:
         key = TurnAdapterCache._make_key(config)
         assert key == frozenset({"a", "b", "c"})
 
-    def test_rebuilds_adapter_after_mcp_schemas_arrive(self, mock_adapter_cls: MagicMock) -> None:
-        """An adapter built before MCP schemas were fetched carries placeholder
-        schemas; it must be rebuilt once the schema cache generation moves on."""
-        generation = [0]
+    def test_adapter_is_reused_regardless_of_mcp_state(self, mock_adapter_cls: MagicMock) -> None:
+        """MCP tools are listed per run by the shared toolsets, so a cached adapter is
+        never rebuilt for MCP reasons."""
         config = _make_config(["assistant"])
         cache = TurnAdapterCache(
             model_id="anthropic:claude-3-5-sonnet-20241022",
             max_tokens=1024,
             base_config=config,
-            schema_generation=lambda: generation[0],
         )
-        stale = cache.get_or_build(config)
-        generation[0] += 1
-        fresh = cache.get_or_build(config)
-        assert fresh is not stale
-        assert cache.get_or_build(config) is fresh
-        assert mock_adapter_cls.call_count == 2
+        first = cache.get_or_build(config)
+        assert cache.get_or_build(config) is first
+        assert mock_adapter_cls.call_count == 1

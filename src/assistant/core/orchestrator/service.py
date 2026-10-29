@@ -52,6 +52,7 @@ from assistant.core.orchestrator.persistence import (
 )
 from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.core.session.factory import SessionContextFactory
+from assistant.extensions.mcp.toolsets import is_mcp_tool_name
 from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
 from assistant.memory.retrieval.models import RetrievalQuery
 from assistant.memory.store.models import MemoryType
@@ -789,9 +790,9 @@ class Orchestrator:
         after a capability change), the check short-circuits: the model has
         already adapted and must not be blocked.
 
-        MCP tools (prefixed ``cap.mcp.``) are excluded from the comparison because
-        their names differ between the capability-id representation and the
-        pydantic_ai tool name.
+        MCP tools (``mcp_<server>_<tool>``, see ``is_mcp_tool_name``) are excluded from
+        the comparison: they are discovered from the servers at runtime and are not
+        listed as tool ids.
 
         Returns ``None`` when no mismatch is detected (common path).
         """
@@ -814,17 +815,13 @@ class Orchestrator:
                 and record.turn_id == last_turn_id
             ):
                 tool_name = record.payload.get("tool_name", "")
-                if tool_name and not (
-                    tool_name.startswith("cap.mcp.") or tool_name.startswith("cap_mcp_")
-                ):
+                if tool_name and not is_mcp_tool_name(tool_name):
                     historical_tools.add(tool_name)
 
         if not historical_tools:
             return None
 
-        current_tools = {
-            t for t in collect_enabled_tool_ids(config) if not t.startswith("cap.mcp.")
-        }
+        current_tools = collect_enabled_tool_ids(config)
         missing = historical_tools - current_tools
         if not missing:
             return None

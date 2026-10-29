@@ -1,8 +1,8 @@
 """
 Component ID: CMP_TOOL_RUNTIME_REGISTRY
 
-MCP tool confirmation gate: blocks execution of tools marked requires_confirmation=true
-until an explicit approval is recorded in TurnDeps.
+MCP tool confirmation gate for tools listed in a server's ``confirm_tools`` and for tools
+annotated ``destructiveHint: true`` (see ``toolsets.McpConfirmationToolset``).
 
 The confirmation flow:
 1. Tool is invoked by the LLM.
@@ -25,8 +25,7 @@ logger = structlog.get_logger(__name__)
 class McpConfirmationDenied(Exception):
     """Raised when user denies confirmation for an MCP tool call."""
 
-    def __init__(self, capability_id: str, server_id: str, tool_name: str) -> None:
-        self.capability_id = capability_id
+    def __init__(self, server_id: str, tool_name: str) -> None:
         self.server_id = server_id
         self.tool_name = tool_name
         super().__init__(
@@ -37,12 +36,11 @@ class McpConfirmationDenied(Exception):
 
 async def check_confirmation(
     ctx: RunContext[TurnDeps],
-    capability_id: str,
     server_id: str,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
 ) -> None:
-    """Enforce requires_confirmation for MCP tools.
+    """Enforce confirmation for an MCP tool call.
 
     If a tool_call_notifier is available on TurnDeps, it is called with
     a JSON-encoded confirmation payload. The notifier is expected to raise
@@ -53,11 +51,13 @@ async def check_confirmation(
     """
     import json
 
+    # Same name the model sees (mcp_<server>_<tool>); mirrors the verbose tool-call message.
+    model_tool_name = f"mcp_{server_id}_{tool_name}"
     notifier = ctx.deps.tool_call_notifier
     if notifier is None:
         logger.debug(
             "mcp.confirmation.no_notifier",
-            capability_id=capability_id,
+            server_id=server_id,
             tool_name=tool_name,
             hint="No tool_call_notifier configured; proceeding without confirmation",
         )
@@ -66,7 +66,7 @@ async def check_confirmation(
     payload = json.dumps(
         {
             "type": "mcp_confirmation_required",
-            "capability_id": capability_id,
+            "tool": model_tool_name,
             "server_id": server_id,
             "tool_name": tool_name,
             "arguments": arguments or {},
@@ -75,8 +75,7 @@ async def check_confirmation(
     )
     logger.info(
         "mcp.confirmation.requested",
-        capability_id=capability_id,
         server_id=server_id,
         tool_name=tool_name,
     )
-    await notifier(capability_id, payload)
+    await notifier(model_tool_name, payload)

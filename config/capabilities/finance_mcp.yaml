@@ -2,7 +2,9 @@
 # Repository: https://github.com/kimnam1/finance-mcp
 # LobeHub: https://lobehub.com/mcp/kimnam1-finance-mcp
 #
-# This capability enables 59 curated finance tools covering:
+# This capability grants the `finance` MCP server (config/mcp_servers.yaml). Its tools are
+# discovered from the server and exposed as mcp_finance_<tool>; the curated 58-tool subset is
+# set by include_tools on the server entry. Topics covered:
 # - Forex exchange rates and currency conversion
 # - Cryptocurrency prices, markets, and DeFi data
 # - Macro economics (GDP, inflation, unemployment)
@@ -21,15 +23,7 @@
 #   cd ~/PycharmProjects/finance-mcp && python3 -m venv .venv
 #   .venv/bin/pip install fastmcp httpx yfinance colorama
 #
-# mcp_servers.yaml entry:
-#   - id: finance
-#     transport: stdio
-#     command: /Users/yogson/PycharmProjects/finance-mcp/.venv/bin/python3
-#     args: ["/Users/yogson/PycharmProjects/finance-mcp/server.py"]
-#     enabled: true
-#     tool_policy: deny_by_default
-#     # env:
-#     #   FRED_API_KEY: "your_fred_key"   # optional, free at fred.stlouisfed.org
+# Server entry: see the `finance` block in config/mcp_servers.yaml.
 #
 # Enable this capability in config.local/capabilities.yaml:
 #   enabled_capabilities:
@@ -39,6 +33,7 @@ capability_id: finance_mcp
 
 prompt: |
   You have access to comprehensive financial data tools via the Finance MCP server.
+  Its tools are named `mcp_finance_<tool>` (e.g. `mcp_finance_get_stock_summary`).
 
   **Available Data Categories:**
   - **Forex**: Real-time exchange rates, currency conversion, historical rates
@@ -66,152 +61,8 @@ prompt: |
   - Crypto symbols use Binance convention (BTC, ETH, SOL, etc.)
 
   **CRITICAL - Correct Parameter Names:**
-  - `get_exchange_rate`: use `from_currency` and `to_currency` (NOT `from`/`to` — those are Python reserved words and will cause errors)
-  - `get_commodity_price(commodity="gold")`: ALWAYS provide the `commodity` argument; to get ALL commodities use `get_commodity_prices()` with no args
+  - `mcp_finance_get_exchange_rate`: use `from_currency` and `to_currency` (NOT `from`/`to` — those are Python reserved words and will cause errors)
+  - `mcp_finance_get_commodity_price(commodity="gold")`: ALWAYS provide the `commodity` argument; to get ALL commodities use `mcp_finance_get_commodity_prices()` with no args
 
-tools:
-  # Forex Tools
-  - tool_id: cap.mcp.finance.get_exchange_rate
-    enabled: true
-  - tool_id: cap.mcp.finance.convert_currency
-    enabled: true
-  - tool_id: cap.mcp.finance.get_historical_rates
-    enabled: true
-  - tool_id: cap.mcp.finance.get_rate_trend
-    enabled: true
-  - tool_id: cap.mcp.finance.list_supported_currencies
-    enabled: true
-
-  # Crypto Tools
-  - tool_id: cap.mcp.finance.get_crypto_price
-    enabled: true
-  - tool_id: cap.mcp.finance.get_crypto_market
-    enabled: true
-  - tool_id: cap.mcp.finance.get_crypto_historical
-    enabled: true
-  - tool_id: cap.mcp.finance.compare_crypto
-    enabled: true
-
-  # Macro Economics Tools
-  - tool_id: cap.mcp.finance.get_gdp
-    enabled: true
-  - tool_id: cap.mcp.finance.get_inflation
-    enabled: true
-  - tool_id: cap.mcp.finance.get_macro_overview
-    enabled: true
-  - tool_id: cap.mcp.finance.compare_gdp_growth
-    enabled: true
-  - tool_id: cap.mcp.finance.get_interest_rate
-    enabled: true
-  - tool_id: cap.mcp.finance.compare_interest_rates
-    enabled: true
-  - tool_id: cap.mcp.finance.compare_population
-    enabled: true
-
-  # US Federal Reserve Tools
-  - tool_id: cap.mcp.finance.get_fed_funds_rate
-    enabled: true
-  - tool_id: cap.mcp.finance.get_us_cpi
-    enabled: true
-  - tool_id: cap.mcp.finance.get_us_pce
-    enabled: true
-  - tool_id: cap.mcp.finance.get_us_m2
-    enabled: true
-  - tool_id: cap.mcp.finance.get_us_unemployment
-    enabled: true
-
-  # Commodities Tools
-  - tool_id: cap.mcp.finance.get_commodity_price
-    enabled: true
-  - tool_id: cap.mcp.finance.get_commodity_prices
-    enabled: true
-
-  # Stock Indices Tools
-  - tool_id: cap.mcp.finance.get_stock_index
-    enabled: true
-  - tool_id: cap.mcp.finance.compare_stock_indices
-    enabled: true
-
-  # ETFs & Backtesting Tools
-  - tool_id: cap.mcp.finance.get_etf_info
-    enabled: true
-  - tool_id: cap.mcp.finance.get_index_history
-    enabled: true
-  - tool_id: cap.mcp.finance.backtest_buy_hold
-    enabled: true
-
-  # Portfolio Analytics Tools
-  - tool_id: cap.mcp.finance.get_asset_correlation
-    enabled: true
-  - tool_id: cap.mcp.finance.get_portfolio_volatility
-    enabled: true
-  - tool_id: cap.mcp.finance.get_fear_greed_index
-    enabled: true
-
-  # Stock Fundamentals & Analysis Tools
-  - tool_id: cap.mcp.finance.get_dividend_info
-    enabled: true
-  - tool_id: cap.mcp.finance.compare_sectors
-    enabled: true
-  - tool_id: cap.mcp.finance.get_stock_summary
-    enabled: true
-  - tool_id: cap.mcp.finance.get_analyst_ratings
-    enabled: true
-
-  # Earnings Tools
-  - tool_id: cap.mcp.finance.get_earnings_calendar
-    enabled: true
-
-  # News & Sentiment Tools
-  - tool_id: cap.mcp.finance.get_stock_news
-    enabled: true
-  - tool_id: cap.mcp.finance.get_market_sentiment
-    enabled: true
-  - tool_id: cap.mcp.finance.get_market_breadth
-    enabled: true
-
-  # SEC & Institutional Tools
-  - tool_id: cap.mcp.finance.get_sec_filings
-    enabled: true
-  - tool_id: cap.mcp.finance.get_insider_trades
-    enabled: true
-  - tool_id: cap.mcp.finance.get_company_facts
-    enabled: true
-  - tool_id: cap.mcp.finance.get_institutional_holdings
-    enabled: true
-  - tool_id: cap.mcp.finance.get_short_interest
-    enabled: true
-
-  # Treasury & Options Tools
-  - tool_id: cap.mcp.finance.get_treasury_yield_curve
-    enabled: true
-  - tool_id: cap.mcp.finance.get_historical_treasury_yields
-    enabled: true
-  - tool_id: cap.mcp.finance.get_options_chain
-    enabled: true
-  - tool_id: cap.mcp.finance.get_options_flow
-    enabled: true
-
-  # Advanced Analysis Tools
-  - tool_id: cap.mcp.finance.get_macro_dashboard
-    enabled: true
-  - tool_id: cap.mcp.finance.get_earnings_surprise
-    enabled: true
-  - tool_id: cap.mcp.finance.get_insider_sentiment
-    enabled: true
-  - tool_id: cap.mcp.finance.get_currency_carry
-    enabled: true
-  - tool_id: cap.mcp.finance.get_stock_screener
-    enabled: true
-  - tool_id: cap.mcp.finance.get_earnings_call_sentiment
-    enabled: true
-  - tool_id: cap.mcp.finance.get_economic_surprise_index
-    enabled: true
-  - tool_id: cap.mcp.finance.get_sector_momentum
-    enabled: true
-
-  # DeFi & Economic Calendar Tools
-  - tool_id: cap.mcp.finance.get_crypto_defi_tvl
-    enabled: true
-  - tool_id: cap.mcp.finance.get_economic_calendar
-    enabled: true
+mcp_servers:
+  - finance

@@ -13,8 +13,8 @@ Boundary note:
 Naming convention:
 - `cap.<domain>.<action>`
 - Examples: `cap.macos.notes.read`, `cap.github.gh.pr.list`
-- External MCP mapping convention: `cap.mcp.<server>.<tool>`
-- Example: `cap.mcp.chrome_devtools.browser_snapshot`
+- External MCP servers are granted whole via `mcp_servers: [<server_id>]` in a capability manifest; tools are discovered at runtime and exposed as `mcp_<server>_<tool>`
+- Example: `mcp_chrome_devtools_browser_snapshot`
 
 Catalog usage model:
 - Startup: load and validate full catalog/manifests.
@@ -115,18 +115,8 @@ Optional future additions:
 ### 11) External MCP Capabilities
 
 Namespace rule:
-- One capability per approved MCP tool.
-- Server ID and tool name must be stable and lowercase in capability ID path.
-- Capability descriptors for MCP tools must include `mcp_server` and `mcp_tool` metadata.
-
-Chrome-devtools MCP example set:
-- `cap.mcp.chrome_devtools.browser_navigate`
-- `cap.mcp.chrome_devtools.browser_snapshot`
-- `cap.mcp.chrome_devtools.browser_click`
-- `cap.mcp.chrome_devtools.browser_type`
-- `cap.mcp.chrome_devtools.browser_fill`
-- `cap.mcp.chrome_devtools.browser_scroll`
-- `cap.mcp.chrome_devtools.browser_wait`
+- One capability (manifest) grants one or more MCP servers; `include_tools` / `exclude_tools` on the server entry curate the tool set.
+- Tool names are `mcp_<server_id>_<tool_name>`; `mcp_` is reserved for MCP tools.
 
 ### 12) Delegation Capabilities
 

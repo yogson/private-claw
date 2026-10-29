@@ -95,6 +95,8 @@ class CapabilityDefinition(BaseModel):
     tool_overrides: dict[str, CapabilityToolOverride] = Field(default_factory=dict)
     claude_code_settings: ClaudeCodeSettings | None = None
     nested_capabilities: list[str] = Field(default_factory=list)
+    # Whole MCP servers (ids from config/mcp_servers.yaml) whose tools this capability grants.
+    mcp_servers: list[str] = Field(default_factory=list)
 
     def get_effective_tool_overrides(self, tool_id: str) -> dict[str, Any]:
         """Merge tool_overrides[tool_id] with any inline params from tools list."""

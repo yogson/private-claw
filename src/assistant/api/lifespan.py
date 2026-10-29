@@ -8,7 +8,7 @@ import structlog
 from fastapi import FastAPI
 
 from assistant.agent.adapter_cache import TurnAdapterCache
-from assistant.agent.tools.registry import collect_enabled_tool_ids
+from assistant.agent.tools.registry import collect_enabled_mcp_server_ids
 from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.deps import set_runtime_config
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
@@ -36,7 +36,7 @@ from assistant.core.session_context import (
     SessionModelContextService,
 )
 from assistant.extensions.language_learning import VocabularyStore
-from assistant.extensions.mcp.bridge import McpBridge, mcp_pool
+from assistant.extensions.mcp.toolsets import mcp_toolsets
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService
 from assistant.observability.logfire import configure_logfire
 from assistant.observability.logging import configure_logging
@@ -65,6 +65,17 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     store: StoreFacade | None = None
     polling_task: asyncio.Task[None] | None = None
     polling_stop = asyncio.Event()
+
+    # Connect the MCP servers the active capabilities reference once, for the whole app
+    # lifetime (stdio servers are spawned here, not per turn). Runs in the background so a
+    # slow or dead server never delays startup; a failed server is retried lazily with
+    # backoff by the first turn that needs it. Servers only reachable through per-session
+    # capability overrides connect on first use.
+    mcp_start_task = asyncio.create_task(
+        mcp_toolsets.start(
+            runtime_config.mcp_servers, collect_enabled_mcp_server_ids(runtime_config)
+        )
+    )
 
     if runtime_config.telegram.enabled:
         data_root = Path(runtime_config.app.data_root)
@@ -219,21 +230,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         )
 
-    await mcp_pool.start_sweeper(interval=60.0)
-    # Warm up in the background so a slow MCP server does not delay startup.
-    mcp_bridge = McpBridge(runtime_config)
-    schema_refresh_task = asyncio.create_task(
-        mcp_bridge.refresh_schemas(collect_enabled_tool_ids(runtime_config))
-    )
-
     try:
         yield
     finally:
-        schema_refresh_task.cancel()
+        mcp_start_task.cancel()
         with suppress(asyncio.CancelledError):
-            await schema_refresh_task
-        await mcp_bridge.close()
-        await mcp_pool.close()
+            await mcp_start_task
+        await mcp_toolsets.close()
         if polling_task is not None:
             polling_stop.set()
             try:

@@ -1,48 +1,35 @@
-"""Tests for MCP-related bootstrap validation (P1 + P5)."""
+"""Capability mcp_servers collection and bootstrap validation."""
 
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from assistant.core.capabilities.loader import collect_mcp_server_ids
+from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import (
-    McpDefaults,
+    AppConfig,
+    CapabilitiesPolicyConfig,
     McpServerEntry,
     McpServersConfig,
-    McpTimeouts,
+    MemoryConfig,
+    ModelConfig,
     RuntimeConfig,
+    SchedulerConfig,
+    StoreConfig,
+    TelegramChannelConfig,
+    ToolsConfig,
 )
 
 
-def _make_runtime_config(
-    tmp_path: Path, servers: list[McpServerEntry] | None = None
-) -> RuntimeConfig:
-    from assistant.core.config.schemas import (
-        AppConfig,
-        CapabilitiesPolicyConfig,
-        MemoryConfig,
-        ModelConfig,
-        SchedulerConfig,
-        StoreConfig,
-        TelegramChannelConfig,
-        ToolsConfig,
-    )
-
+def _config(tmp_path: Path, servers: list[McpServerEntry]) -> RuntimeConfig:
     return RuntimeConfig(
         app=AppConfig(data_root=str(tmp_path), timezone="UTC"),
         telegram=TelegramChannelConfig(),
-        model=ModelConfig(
-            default_model_id="claude-3-5-haiku", model_allowlist=["claude-3-5-haiku"]
-        ),
-        capabilities=CapabilitiesPolicyConfig(
-            enabled_capabilities=["assistant", "cap.mcp.chrome_devtools.browser_navigate"]
-        ),
+        model=ModelConfig(default_model_id="m", model_allowlist=["m"]),
+        capabilities=CapabilitiesPolicyConfig(enabled_capabilities=["a"]),
         tools=ToolsConfig(tools=[]),
-        mcp_servers=McpServersConfig(
-            servers=servers or [],
-            defaults=McpDefaults(),
-            timeouts=McpTimeouts(),
-        ),
+        mcp_servers=McpServersConfig(servers=servers),
         scheduler=SchedulerConfig(),
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
@@ -50,70 +37,88 @@ def _make_runtime_config(
     )
 
 
-def test_bootstrap_mcp_exemption_does_not_crash(tmp_path: Path) -> None:
-    """P1: cap.mcp.* IDs should not cause SystemExit in bootstrap validation loop."""
+def test_collect_mcp_server_ids_follows_nested_and_dedupes() -> None:
+    from assistant.core.capabilities.loader import expand_nested_capabilities
+
+    defs = {
+        "a": CapabilityDefinition(
+            capability_id="a", mcp_servers=["finance"], nested_capabilities=["b"]
+        ),
+        "b": CapabilityDefinition(capability_id="b", mcp_servers=["opgraph", "finance"]),
+        "c": CapabilityDefinition(capability_id="c", mcp_servers=["other"]),
+    }
+    enabled = expand_nested_capabilities(["a"], defs)
+    assert collect_mcp_server_ids(defs, enabled) == ["finance", "opgraph"]
+
+
+def test_unknown_server_warns_without_crashing(tmp_path: Path) -> None:
     from assistant.core.bootstrap import _validate_mcp_capabilities
 
-    config = _make_runtime_config(tmp_path)
-    all_enabled = ["assistant", "cap.mcp.chrome_devtools.browser_navigate"]
-    # Should NOT raise — mcp caps are exempted from manifest check
-    _validate_mcp_capabilities(config, all_enabled)
-
-
-def test_bootstrap_mcp_cross_validation_warns_missing_server(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """P5: Warning when cap.mcp.* references a server not in mcp_servers.yaml."""
-    from assistant.core.bootstrap import _validate_mcp_capabilities
-
-    config = _make_runtime_config(tmp_path, servers=[])
-    all_enabled = ["cap.mcp.chrome_devtools.browser_navigate"]
+    defs = {"a": CapabilityDefinition(capability_id="a", mcp_servers=["ghost"])}
     with patch("assistant.core.bootstrap.logger") as mock_logger:
-        _validate_mcp_capabilities(config, all_enabled)
-        mock_logger.warning.assert_called_once()
-        call_args = mock_logger.warning.call_args
-        assert call_args[0][0] == "bootstrap.mcp.server_not_configured"
+        _validate_mcp_capabilities(_config(tmp_path, []), defs, ["a"])
+    mock_logger.warning.assert_called_once()
+    assert mock_logger.warning.call_args[0][0] == "bootstrap.mcp.server_not_configured"
 
 
-def test_bootstrap_mcp_cross_validation_warns_disabled_server(tmp_path: Path) -> None:
-    """P5: Warning when cap.mcp.* references a disabled server."""
+def test_disabled_server_warns_without_crashing(tmp_path: Path) -> None:
     from assistant.core.bootstrap import _validate_mcp_capabilities
 
-    config = _make_runtime_config(
-        tmp_path,
-        servers=[
-            McpServerEntry(
-                id="chrome_devtools",
-                url="http://localhost:9222/sse",
-                enabled=False,
-            )
-        ],
-    )
-    all_enabled = ["cap.mcp.chrome_devtools.browser_navigate"]
+    defs = {"a": CapabilityDefinition(capability_id="a", mcp_servers=["off"])}
+    servers = [McpServerEntry(id="off", url="http://h/sse", enabled=False)]
     with patch("assistant.core.bootstrap.logger") as mock_logger:
-        _validate_mcp_capabilities(config, all_enabled)
-        mock_logger.warning.assert_called_once()
-        call_args = mock_logger.warning.call_args
-        assert call_args[0][0] == "bootstrap.mcp.server_disabled"
+        _validate_mcp_capabilities(_config(tmp_path, servers), defs, ["a"])
+    assert mock_logger.warning.call_args[0][0] == "bootstrap.mcp.server_disabled"
 
 
-def test_bootstrap_mcp_cross_validation_no_warning_when_server_enabled(
-    tmp_path: Path,
-) -> None:
-    """P5: No warning when server is properly configured and enabled."""
+def test_known_enabled_server_is_silent(tmp_path: Path) -> None:
     from assistant.core.bootstrap import _validate_mcp_capabilities
 
-    config = _make_runtime_config(
-        tmp_path,
-        servers=[
-            McpServerEntry(
-                id="chrome_devtools",
-                url="http://localhost:9222/sse",
-                enabled=True,
-            )
-        ],
-    )
-    all_enabled = ["cap.mcp.chrome_devtools.browser_navigate"]
+    defs = {"a": CapabilityDefinition(capability_id="a", mcp_servers=["ok"])}
+    servers = [McpServerEntry(id="ok", url="http://h/sse")]
     with patch("assistant.core.bootstrap.logger") as mock_logger:
-        _validate_mcp_capabilities(config, all_enabled)
-        mock_logger.warning.assert_not_called()
+        _validate_mcp_capabilities(_config(tmp_path, servers), defs, ["a"])
+    mock_logger.warning.assert_not_called()
+
+
+def test_no_first_party_tool_uses_the_mcp_prefix() -> None:
+    """mcp_ must unambiguously mean 'MCP tool' (orchestrator mismatch check relies on it)."""
+    from importlib import import_module
+
+    import yaml
+
+    from assistant.extensions.mcp.toolsets import MCP_TOOL_PREFIX
+
+    root = Path(__file__).resolve().parents[4] / "config"
+    tools = yaml.safe_load((root / "tools.yaml").read_text())["tools"]
+    for tool in tools:
+        assert not tool["tool_id"].startswith(MCP_TOOL_PREFIX)
+        module_path, attr = tool["entrypoint"].split(":")
+        func = getattr(import_module(module_path), attr)
+        assert not getattr(func, "__name__", attr).startswith(MCP_TOOL_PREFIX)
+
+
+def test_tracked_capabilities_reference_servers_not_tools() -> None:
+    import yaml
+
+    root = Path(__file__).resolve().parents[4] / "config" / "capabilities"
+    finance = yaml.safe_load((root / "finance_mcp.yaml").read_text())
+    assert finance["mcp_servers"] == ["finance"]
+    assert "tools" not in finance
+    for path in root.glob("*.yaml"):
+        assert "cap.mcp." not in path.read_text(), path.name
+
+
+def test_bootstrap_rejects_first_party_tool_with_mcp_prefix(tmp_path: Path) -> None:
+    from assistant.core.bootstrap import _validate_tools_and_capabilities
+    from assistant.core.capabilities.schemas import CapabilityToolBinding
+
+    config = _config(tmp_path, [])
+    config.capabilities.enabled_capabilities = ["a"]
+    defs = {
+        "a": CapabilityDefinition(
+            capability_id="a", tools=[CapabilityToolBinding(tool_id="mcp_sneaky")]
+        )
+    }
+    with pytest.raises(SystemExit, match="reserved for MCP"):
+        _validate_tools_and_capabilities(config, defs)

@@ -67,6 +67,43 @@ class TestEffectiveConfig:
         result = ConfigLoader(config_dir).effective_config()
         assert result["config"]["telegram"]["bot_token"] == "***REDACTED***"
 
+    def test_redacts_mcp_headers_and_env(self, config_dir: Path) -> None:
+        (config_dir / "mcp_servers.yaml").write_text(
+            yaml.dump(
+                {
+                    "servers": [
+                        {
+                            "id": "remote",
+                            "transport": "streamable-http",
+                            "url": "https://example.com/mcp",
+                            "headers": {"Authorization": "Bearer s3cr3t", "X-Api-Thing": "abc"},
+                        },
+                        {
+                            "id": "local",
+                            "transport": "stdio",
+                            "command": "python3",
+                            "env": {"FRED_API_KEY": "k3y", "PLAIN": "v"},
+                        },
+                    ]
+                }
+            )
+        )
+        result = ConfigLoader(config_dir).effective_config()
+        servers = result["config"]["mcp_servers"]["servers"]
+        assert servers[0]["headers"] == "***REDACTED***"
+        assert servers[1]["env"] == "***REDACTED***"
+        assert servers[0]["url"] == "https://example.com/mcp"
+        dumped = str(result)
+        for secret in ("s3cr3t", "abc", "k3y"):
+            assert secret not in dumped
+
+    @pytest.mark.parametrize("key", ["Authorization", "proxy_authorization", "x_token"])
+    def test_authorization_like_keys_are_sensitive(self, key: str) -> None:
+        redacted = ConfigLoader._redact_dict(  # type: ignore[arg-type]
+            ConfigLoader.__new__(ConfigLoader), {key: "value", "other": "ok"}
+        )
+        assert redacted == {key: "***REDACTED***", "other": "ok"}
+
     def test_provenance_file_for_yaml_fields(self, config_dir: Path) -> None:
         result = ConfigLoader(config_dir).effective_config()
         assert result["provenance"]["app.timezone"] == "file"

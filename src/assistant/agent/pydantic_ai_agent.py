@@ -31,7 +31,7 @@ from assistant.agent.message_converters import (
 )
 from assistant.agent.session_record_builder import _new_messages_to_session_records
 from assistant.agent.system_prompt_builder import _compose_system_prompt
-from assistant.agent.tools import TurnDeps, get_agent_tools
+from assistant.agent.tools import TurnDeps, get_agent_mcp_toolsets, get_agent_tools
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.first_party.memory import normalize_candidate_for_upsert
 
@@ -164,6 +164,7 @@ def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> A
         # tools: keep at 0 to prevent loops; output: allow 1 validation retry
         retries={"tools": 0, "output": 1},
         tools=get_agent_tools(config),
+        toolsets=get_agent_mcp_toolsets(config),
     )
 
 

@@ -19,6 +19,7 @@ from assistant.core.capabilities.loader import (
 )
 from assistant.core.config.loader import ConfigLoader, ConfigLoadError, resolve_config_dir
 from assistant.core.config.schemas import RuntimeConfig, ToolDefinition
+from assistant.extensions.mcp.toolsets import MCP_TOOL_PREFIX
 
 logger = structlog.get_logger(__name__)
 
@@ -47,8 +48,12 @@ def _validate_tools_and_capabilities(
             if not binding.enabled:
                 continue
             tool_id = binding.tool_id
-            if tool_id.startswith("cap.mcp."):
-                continue  # MCP tools are resolved by McpBridge, not registered in tools.yaml
+            if tool_id.startswith(MCP_TOOL_PREFIX):
+                raise SystemExit(
+                    f"Capability '{cap_id}' binds tool '{tool_id}': first-party tool ids must not "
+                    f"start with '{MCP_TOOL_PREFIX}' (reserved for MCP tools). "
+                    "Grant MCP servers through the capability's mcp_servers list."
+                ) from None
             if tool_id not in catalog:
                 raise SystemExit(
                     f"Capability '{cap_id}' references tool '{tool_id}' which is not in tools.yaml"
@@ -93,44 +98,38 @@ def _validate_delegation_defaults(
 
 def _validate_mcp_capabilities(
     runtime_config: RuntimeConfig,
+    definitions: dict[str, Any],
     all_enabled: list[str],
 ) -> None:
-    """Cross-validate cap.mcp.* IDs against mcp_servers.yaml.
+    """Cross-validate capability ``mcp_servers`` against mcp_servers.yaml.
 
-    Logs warnings for MCP capability IDs that reference servers not present
-    or not enabled in the MCP servers configuration.
+    Logs warnings (never fails startup) for referenced servers that are missing from
+    mcp_servers.yaml or disabled there.
     """
     server_index = {srv.id: srv for srv in runtime_config.mcp_servers.servers}
     for cap_id in all_enabled:
-        if not cap_id.startswith("cap.mcp."):
+        definition = definitions.get(cap_id)
+        if definition is None:
             continue
-        parts = cap_id.split(".")
-        if len(parts) < 3:
-            logger.warning(
-                "bootstrap.mcp.malformed_capability_id",
-                capability_id=cap_id,
-                hint="Expected format: cap.mcp.<server_id>.<tool_name>",
-            )
-            continue
-        server_id = parts[2]
-        srv = server_index.get(server_id)
-        if srv is None:
-            logger.warning(
-                "bootstrap.mcp.server_not_configured",
-                capability_id=cap_id,
-                server_id=server_id,
-                hint=(
-                    f"Server '{server_id}' is referenced in capabilities "
-                    "but not in mcp_servers.yaml"
-                ),
-            )
-        elif not srv.enabled:
-            logger.warning(
-                "bootstrap.mcp.server_disabled",
-                capability_id=cap_id,
-                server_id=server_id,
-                hint=f"Server '{server_id}' is in mcp_servers.yaml but enabled=false",
-            )
+        for server_id in definition.mcp_servers:
+            srv = server_index.get(server_id)
+            if srv is None:
+                logger.warning(
+                    "bootstrap.mcp.server_not_configured",
+                    capability_id=cap_id,
+                    server_id=server_id,
+                    hint=(
+                        f"Server '{server_id}' is referenced in capabilities "
+                        "but not in mcp_servers.yaml"
+                    ),
+                )
+            elif not srv.enabled:
+                logger.warning(
+                    "bootstrap.mcp.server_disabled",
+                    capability_id=cap_id,
+                    server_id=server_id,
+                    hint=f"Server '{server_id}' is in mcp_servers.yaml but enabled=false",
+                )
 
 
 def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
@@ -155,15 +154,13 @@ def bootstrap(config_dir: str | Path | None = None) -> RuntimeConfig:
         runtime_config.capabilities.enabled_capabilities, definitions
     )
     for cap_id in all_enabled:
-        if cap_id.startswith("cap.mcp."):
-            continue  # MCP tools are validated by McpBridge, not capability manifests
         if cap_id not in definitions:
             raise SystemExit(
                 f"Enabled capability '{cap_id}' has no manifest in config/capabilities/*.yaml"
             ) from None
 
     _validate_tools_and_capabilities(runtime_config, definitions)
-    _validate_mcp_capabilities(runtime_config, all_enabled)
+    _validate_mcp_capabilities(runtime_config, definitions, all_enabled)
     _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)
     denied = frozenset(runtime_config.capabilities.denied_capabilities)
     apply_claude_code_settings(

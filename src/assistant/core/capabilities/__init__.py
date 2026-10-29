@@ -6,6 +6,7 @@ Capability definition loader and schemas for config/capabilities/*.yaml.
 
 from assistant.core.capabilities.loader import (
     collect_claude_code_mcp_servers,
+    collect_mcp_server_ids,
     expand_nested_capabilities,
     load_capability_definitions,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "CapabilityToolBinding",
     "CapabilityToolOverride",
     "collect_claude_code_mcp_servers",
+    "collect_mcp_server_ids",
     "expand_nested_capabilities",
     "load_capability_definitions",
 ]

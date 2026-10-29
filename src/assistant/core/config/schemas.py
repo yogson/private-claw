@@ -195,20 +195,32 @@ class CapabilitiesPolicyConfig(BaseModel):
 class McpServerEntry(BaseModel):
     """Single MCP server entry.
 
+    The whole server is connected and its tools are discovered at runtime; there is no
+    per-tool mapping. Tools reach the model as ``mcp_<id>_<tool>``.
+
     Supports three transports:
     - sse (default): url points to the SSE endpoint.
     - stdio: command + args spawn the server process.
     - streamable-http: url points to the HTTP endpoint.
     """
 
-    id: str
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    transport: Literal["stdio", "streamable-http", "sse"] = "sse"
     url: str = ""
-    transport: str = "sse"
     command: str = ""
     args: list[str] = Field(default_factory=list)
+    # Environment for stdio servers.
     env: dict[str, str] = Field(default_factory=dict)
+    # Extra HTTP headers for sse / streamable-http (e.g. Authorization).
+    headers: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
-    tool_policy: str = "deny_by_default"
+    # Server-side tool names. At most one of the two may be set.
+    include_tools: list[str] | None = None
+    exclude_tools: list[str] | None = None
+    # Server-side tool names that need user confirmation before they run.
+    confirm_tools: list[str] = Field(default_factory=list)
+    # Append the server's own instructions to the agent's instructions.
+    include_instructions: bool = True
     # Per-server override of timeouts.call_seconds (e.g. for slow data sources).
     call_seconds: int | None = Field(default=None, ge=1)
 
@@ -219,8 +231,19 @@ class McpServerEntry(BaseModel):
                 raise ValueError(
                     f"url is required for transport={self.transport!r} (server: {self.id})"
                 )
-        elif self.transport == "stdio" and not self.command:
-            raise ValueError(f"command is required for transport='stdio' (server: {self.id})")
+            if self.command or self.args or self.env:
+                raise ValueError(
+                    f"command/args/env apply to transport='stdio' only (server: {self.id})"
+                )
+        else:
+            if not self.command:
+                raise ValueError(f"command is required for transport='stdio' (server: {self.id})")
+            if self.url or self.headers:
+                raise ValueError(f"url/headers apply to HTTP transports only (server: {self.id})")
+        if self.include_tools is not None and self.exclude_tools is not None:
+            raise ValueError(
+                f"include_tools and exclude_tools are mutually exclusive (server: {self.id})"
+            )
         return self
 
 
@@ -228,7 +251,6 @@ class McpDefaults(BaseModel):
     """Default settings applied to all MCP servers."""
 
     enabled: bool = False
-    tool_policy: str = "deny_by_default"
 
 
 class McpTimeouts(BaseModel):

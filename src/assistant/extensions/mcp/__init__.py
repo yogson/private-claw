@@ -1,23 +1,26 @@
 """
 Component ID: CMP_TOOL_RUNTIME_REGISTRY
 
-MCP bridge: server discovery, tool mapping, risk-class policy, normalized invocation.
+Native MCP integration: whole servers connected through pydantic-ai's ``MCPToolset``.
 """
 
-from assistant.extensions.mcp.bridge import McpBridge
 from assistant.extensions.mcp.confirmation import McpConfirmationDenied, check_confirmation
-from assistant.extensions.mcp.loader import capability_id_for_mcp_tool, load_tool_mappings
-from assistant.extensions.mcp.models import McpMappedTool, McpToolMapping, RiskClass
-from assistant.extensions.mcp.session_pool import McpSessionPool
+from assistant.extensions.mcp.toolsets import (
+    MCP_TOOL_PREFIX,
+    McpConnection,
+    McpToolsets,
+    is_connection_error,
+    is_mcp_tool_name,
+    mcp_toolsets,
+)
 
 __all__ = [
-    "McpBridge",
+    "MCP_TOOL_PREFIX",
     "McpConfirmationDenied",
-    "McpMappedTool",
-    "McpSessionPool",
-    "McpToolMapping",
-    "RiskClass",
-    "capability_id_for_mcp_tool",
+    "McpConnection",
+    "McpToolsets",
     "check_confirmation",
-    "load_tool_mappings",
+    "is_connection_error",
+    "is_mcp_tool_name",
+    "mcp_toolsets",
 ]

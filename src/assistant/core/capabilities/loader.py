@@ -101,6 +101,26 @@ def expand_nested_capabilities(
     return result
 
 
+def collect_mcp_server_ids(
+    definitions: dict[str, CapabilityDefinition],
+    enabled_capabilities: list[str],
+) -> list[str]:
+    """Return the MCP server ids granted by the given capabilities (first-seen order, deduped).
+
+    ``enabled_capabilities`` must already be nested-expanded and denied-filtered, as with the
+    other collectors.
+    """
+    server_ids: list[str] = []
+    for cap_id in enabled_capabilities:
+        definition = definitions.get(cap_id)
+        if definition is None:
+            continue
+        for server_id in definition.mcp_servers:
+            if server_id not in server_ids:
+                server_ids.append(server_id)
+    return server_ids
+
+
 def collect_claude_code_mcp_servers(
     definitions: dict[str, CapabilityDefinition],
     enabled_capabilities: list[str],
