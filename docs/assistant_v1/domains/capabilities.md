@@ -40,7 +40,6 @@ Define the manifest-driven capability and skill ecosystem for v1, including disc
 | `CMP_DATA_MODEL_CAPABILITY_POLICY` | `config/capabilities.yaml` | `enabled_capabilities`, `denied_capabilities` | Operator policy: which capability manifests are active |
 | `CMP_DATA_MODEL_SKILL_MANIFEST` | `plugins/skills/*/manifest.yaml` | `skill_id`, `version`, `entrypoint`, `required_capabilities`, `capabilities` | Skill registration and dependencies |
 | `CMP_DATA_MODEL_MCP_SERVER_REGISTRY` | `config/mcp_servers.yaml` | `server_id`, `transport`, `enabled`, `connection` | External MCP server registration and connection policy |
-| `CMP_DATA_MODEL_MCP_TOOL_MAPPING` | `plugins/mcp/*/tool_map.yaml` | `server_id`, `tools`, `capability_id_pattern`, `risk_class` | MCP tool-to-capability mapping and descriptor synthesis |
 
 Tool definition schema (`config/tools.yaml`):
 - `tool_id`: stable identifier (e.g. `shell_execute_readonly`, `memory_search`).
@@ -133,23 +132,17 @@ Capability policy schema (`config/capabilities.yaml`):
 - `denied_capabilities`: list of capability IDs to block (overrides enabled).
 
 MCP server registry schema requirements (`config/mcp_servers.yaml`):
-- `id`: stable identifier, lower snake case (runtime uses `id`; docs may refer to `server_id`).
-- `url`: SSE endpoint URL (v1 supports HTTP/SSE transport).
+- `id`: stable identifier (letters, digits, `_`, `-`); it prefixes the tool names (`mcp_<id>_<tool>`).
+- `transport`: `stdio` (`command`, `args`, `env`), `streamable-http` or `sse` (`url`, optional `headers`).
 - `enabled`: bool.
-- `tool_policy`: server-level policy. `deny` blocks all mapped tools; `deny_by_default` or `allow` permits allowlisted tools. Defaults from `defaults.tool_policy` apply when server has no override.
+- `include_tools` / `exclude_tools`: server-side tool names to expose / hide (mutually exclusive).
+- `confirm_tools`: tools needing user confirmation; tools annotated `destructiveHint: true` (and not `readOnlyHint: true`) always need it.
+- `include_instructions`: append the server's own instructions to the agent instructions (default true).
+- `call_seconds`: per-server override of `timeouts.call_seconds`.
 
-MCP tool mapping schema requirements (`plugins/mcp/*/tool_map.yaml`):
-- `server_id`: must reference a registered MCP server.
-- `tools`: explicit allowlisted tool definitions with:
-  - `tool_name` (required),
-  - `summary` (optional),
-  - `input_schema` (optional, JSON schema for tool args),
-  - `risk_class` (`readonly`, `interactive`, `side_effecting`),
-  - `requires_confirmation` (bool override).
+Whole servers are connected and their tools discovered at runtime (pydantic-ai `MCPToolset`); there is no per-tool mapping and no `cap.mcp.*` ID scheme. Connections are opened once at app startup and shared by all turns; a server that is down is retried lazily with backoff, and a dead long-lived session is reconnected once per failing call.
 
-Capability IDs are derived as `cap.mcp.<server_id>.<tool_name>`. The runtime does not support `capability_id_pattern` or `descriptor_overrides` in v1; these may be added in a future release.
-
-MCP activation: Add `cap.mcp.<server>.<tool>` to `enabled_capabilities` in `config/capabilities.yaml` to expose allowlisted MCP tools. No separate capability manifest is required; tool mapping and server config gate availability.
+MCP activation: a capability manifest grants servers with `mcp_servers: [<server_id>]` (nested capabilities are followed). Unknown or disabled server IDs log a warning at bootstrap. The model sees the tools as `mcp_<server_id>_<tool_name>`; `mcp_` is reserved and no first-party tool may use it.
 
 ## Dynamic Activation Model (Normative)
 
@@ -248,7 +241,7 @@ External MCP servers are integrated through `CMP_TOOL_RUNTIME_REGISTRY` as capab
 Required bridge behavior:
 - Discover enabled MCP servers from `config/mcp_servers.yaml` at startup.
 - Establish MCP client sessions and fetch tool metadata.
-- Map allowlisted MCP tools to internal capability IDs (`cap.mcp.<server>.<tool>`).
+- Expose server tools to the agent as `mcp_<server>_<tool>` (filtered by `include_tools` / `exclude_tools`).
 - Synthesize or load capability descriptors for mapped MCP tools.
 - Apply capability policy gates before model exposure and invocation.
 - Normalize MCP responses/errors into standard capability result/error format.
@@ -265,10 +258,10 @@ Audit requirements for MCP invocations:
 - record execution outcome and latency.
 
 Example mapping (chrome-devtools):
-- `cap.mcp.chrome_devtools.browser_navigate`
-- `cap.mcp.chrome_devtools.browser_snapshot`
-- `cap.mcp.chrome_devtools.browser_click`
-- `cap.mcp.chrome_devtools.browser_type`
+- `mcp_chrome_devtools_browser_navigate`
+- `mcp_chrome_devtools_browser_snapshot`
+- `mcp_chrome_devtools_browser_click`
+- `mcp_chrome_devtools_browser_type`
 
 ## Capability vs Memory Boundary
 
