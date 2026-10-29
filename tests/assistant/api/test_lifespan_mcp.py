@@ -24,9 +24,9 @@ async def test_failed_init_does_not_leave_mcp_started_without_cleanup() -> None:
         patch("assistant.api.lifespan.StoreFacade", return_value=store),
         patch("assistant.api.lifespan.mcp_toolsets", fake),
         patch("assistant.api.lifespan.collect_enabled_mcp_server_ids", return_value=["s"]),
+        pytest.raises(SystemExit),
     ):
-        with pytest.raises(SystemExit):
-            async with _lifespan(FastAPI()):
-                pass  # pragma: no cover
+        async with _lifespan(FastAPI()):
+            pass  # pragma: no cover
     # Either MCP was never started, or it was started and closed; never started and leaked.
     assert fake.start.call_count == 0 or fake.close.await_count >= 1
