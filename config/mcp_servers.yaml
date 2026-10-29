@@ -17,8 +17,11 @@
 #
 # Per-server options:
 #   include_tools / exclude_tools  server-side tool names to expose / hide (mutually exclusive)
-#   confirm_tools                  tools that need user confirmation; tools annotated
-#                                  destructiveHint=true (and not readOnlyHint) always do
+#   confirm_tools                  tools that trigger the "notify before call" hook; tools
+#                                  annotated destructiveHint=true (and not readOnlyHint)
+#                                  always do. In verbose mode the call is announced in the
+#                                  chat first. It does NOT block the call or wait for
+#                                  approval today (a real approval flow is future work).
 #   include_instructions           append the server's own instructions to the prompt
 #                                  (default true; disable for servers you do not trust)
 #   call_seconds                   per-server override of timeouts.call_seconds
@@ -101,7 +104,7 @@ servers:
 
 # Example server entries:
 #
-# - id: remote_api                       # HTTP server with a bearer token and confirmations
+# - id: remote_api                       # HTTP server with a bearer token and notify-before-call tools
 #   transport: streamable-http
 #   url: https://api.example.com/mcp
 #   headers:
