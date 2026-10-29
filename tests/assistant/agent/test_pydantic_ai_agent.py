@@ -11,6 +11,7 @@ import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     BinaryContent,
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -517,3 +518,76 @@ class TestRunTurnExceptionWrapping:
         assert isinstance(wrapped, ToolCallFailedWithPartial)
         assert wrapped.partial_messages == []
         assert wrapped.recovered_text == ""
+
+
+def _retried_then_ok_messages(tool_name: str) -> list[ModelMessage]:
+    return [
+        ModelResponse(parts=[ToolCallPart(tool_name=tool_name, tool_call_id="tc-r", args={})]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name=tool_name,
+                    tool_call_id="tc-r",
+                    content="Invalid arguments, please retry",
+                    outcome="retried",
+                )
+            ]
+        ),
+    ]
+
+
+def test_new_messages_to_session_records_skips_retried_tool_returns() -> None:
+    """pydantic-ai v2 reports retried tool calls as ToolReturnPart(outcome='retried')."""
+    records = _new_messages_to_session_records(
+        _retried_then_ok_messages("some_tool"),
+        session_id="s1",
+        turn_id="t1",
+        timestamp=datetime.now(UTC),
+        assistant_msg_id="msg-t1-assistant",
+    )
+    assert [r for r in records if r.record_type == SessionRecordType.TOOL_RESULT] == []
+
+
+def test_new_messages_to_plans_ignores_retried_memory_tool_returns() -> None:
+    plans = _new_messages_to_plans(_retried_then_ok_messages("memory_propose_update"))
+    # The retried return must not count as a result (same as RetryPromptPart before v2).
+    assert [p.reason for p in plans] == ["missing tool result"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_reports_usage_end_to_end_with_real_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Build adapter from the real config dir and run a turn on a FunctionModel."""
+    from pathlib import Path
+
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
+    from assistant.core.config.loader import ConfigLoader
+
+    config_dir = Path(__file__).resolve().parents[3] / "config"
+    # Dummy key: the Anthropic provider is built eagerly; no request is ever sent.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    config = ConfigLoader(config_dir).load()
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content="hello")])
+
+    adapter = PydanticAITurnAdapter(
+        model_id="anthropic:claude-3-5-sonnet-20241022", max_tokens=256, config=config
+    )
+    deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
+    with adapter._agent.override(model=FunctionModel(respond)):
+        text, new_msgs, usage = await adapter.run_turn(
+            messages=[{"role": "user", "content": "hi"}],
+            deps=deps,
+            trace_id="trace-1",
+            model_id=None,
+        )
+    assert text == "hello"
+    assert new_msgs
+    assert usage is not None
+    assert set(usage) == {"input_tokens", "output_tokens"}
+    assert usage["input_tokens"] > 0
+    assert usage["output_tokens"] > 0

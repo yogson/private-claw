@@ -32,7 +32,7 @@ class ChatCompactionService:
 
     def __init__(self, model_id: str, max_tokens: int = 2048, prompt: str = "") -> None:
         effective_prompt = prompt.strip() if prompt.strip() else SUMMARIZER_PROMPT
-        self._agent: Agent[None, str] = Agent(
+        self._agent: Agent[object, str] = Agent(
             f"anthropic:{model_id}",
             system_prompt=effective_prompt,
             output_type=str,

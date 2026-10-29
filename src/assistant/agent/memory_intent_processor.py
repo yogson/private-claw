@@ -44,11 +44,16 @@ def _collect_memory_tool_events(
         if isinstance(msg, ModelResponse):
             for resp_part in msg.parts:
                 if isinstance(resp_part, ToolCallPart) and resp_part.tool_name == MEMORY_TOOL_NAME:
-                    args = resp_part.args if isinstance(resp_part.args, dict) else {}
+                    raw_args = resp_part.args
+                    args: dict[str, Any] = dict(raw_args) if isinstance(raw_args, dict) else {}
                     tool_calls[resp_part.tool_call_id] = args
         elif isinstance(msg, ModelRequest):
             for req_part in msg.parts:
-                if isinstance(req_part, ToolReturnPart) and req_part.tool_name == MEMORY_TOOL_NAME:
+                if (
+                    isinstance(req_part, ToolReturnPart)
+                    and req_part.tool_name == MEMORY_TOOL_NAME
+                    and req_part.outcome != "retried"
+                ):
                     tool_results[req_part.tool_call_id] = _parse_tool_result_content(
                         req_part.content
                     )

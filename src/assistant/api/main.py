@@ -4,6 +4,8 @@ Component ID: CMP_API_FASTAPI_GATEWAY
 FastAPI application entry point: bootstraps config and mounts routers.
 """
 
+import os
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
@@ -17,6 +19,8 @@ from assistant.api.routers import tasks as tasks_router
 # Load .env before the lifespan starts so env overrides and ASSISTANT_ADMIN_TOKEN
 # are available to bootstrap() and the auth layer.
 load_dotenv()
+# pydantic-ai v2 prints a startup banner when observability is off; keep logs clean.
+os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 app = FastAPI(
     title="Private Claw 🦞 v1",
