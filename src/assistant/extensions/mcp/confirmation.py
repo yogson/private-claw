@@ -1,15 +1,18 @@
 """
 Component ID: CMP_TOOL_RUNTIME_REGISTRY
 
-MCP tool confirmation gate for tools listed in a server's ``confirm_tools`` and for tools
+"Notify before call" hook for MCP tools listed in a server's ``confirm_tools`` and for tools
 annotated ``destructiveHint: true`` (see ``toolsets.McpConfirmationToolset``).
 
-The confirmation flow:
+This is NOT an approval gate today. It does not block the call:
 1. Tool is invoked by the LLM.
-2. check_confirmation() fires tool_call_notifier (if set) with a confirmation request.
-3. If no notifier is configured, the tool proceeds (fail-open for non-interactive contexts).
-4. When notifier is present: it is responsible for user-facing confirmation and raises
-   McpConfirmationDenied if the user declines.
+2. check_confirmation() hands a "confirmation required" payload to tool_call_notifier, if
+   one is set (verbose mode). The notifier only posts a message to the chat.
+3. The call then proceeds, whether or not a notifier exists.
+
+McpConfirmationDenied is honoured when a ``confirm`` callable raises it (the call is skipped
+and the model gets a tool error), but nothing raises it yet. A real approval flow (pause,
+ask the user, resume) is future work.
 """
 
 from typing import Any
@@ -29,8 +32,7 @@ class McpConfirmationDenied(Exception):
         self.server_id = server_id
         self.tool_name = tool_name
         super().__init__(
-            f"MCP tool '{tool_name}' (server={server_id}) requires confirmation "
-            f"but was denied or no confirmation handler is available."
+            f"MCP tool '{tool_name}' (server={server_id}) requires confirmation but it was denied."
         )
 
 
@@ -40,14 +42,15 @@ async def check_confirmation(
     tool_name: str,
     arguments: dict[str, Any] | None = None,
 ) -> None:
-    """Enforce confirmation for an MCP tool call.
+    """Notify before an MCP tool call that is marked as sensitive; does not block it.
 
-    If a tool_call_notifier is available on TurnDeps, it is called with
-    a JSON-encoded confirmation payload. The notifier is expected to raise
-    McpConfirmationDenied if the user declines.
+    If a tool_call_notifier is available on TurnDeps (verbose mode), it is called with a
+    JSON-encoded "confirmation required" payload so the user can see the call. The notifier
+    only posts a message; it does not wait for or collect an answer, and the call proceeds
+    afterwards. With no notifier the call proceeds silently, which also keeps non-interactive
+    contexts (e.g. scheduled tasks) running.
 
-    If no notifier is configured, the call proceeds (fail-open). This allows
-    non-interactive contexts (e.g. scheduled tasks) to run without blocking.
+    A future approval flow would raise McpConfirmationDenied from here to veto the call.
     """
     import json
 
@@ -59,7 +62,7 @@ async def check_confirmation(
             "mcp.confirmation.no_notifier",
             server_id=server_id,
             tool_name=tool_name,
-            hint="No tool_call_notifier configured; proceeding without confirmation",
+            hint="No tool_call_notifier configured; proceeding without notifying",
         )
         return
 

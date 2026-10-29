@@ -140,7 +140,9 @@ MCP server registry schema requirements (`config/mcp_servers.yaml`):
 - `include_instructions`: append the server's own instructions to the agent instructions (default true).
 - `call_seconds`: per-server override of `timeouts.call_seconds`.
 
-Whole servers are connected and their tools discovered at runtime (pydantic-ai `MCPToolset`); there is no per-tool mapping and no `cap.mcp.*` ID scheme. Connections are opened once at app startup and shared by all turns; a server that is down is retried lazily with backoff, and a dead long-lived session is reconnected once per failing call.
+Whole servers are connected and their tools discovered at runtime (pydantic-ai `MCPToolset`); there is no per-tool mapping and no `cap.mcp.*` ID scheme. Connections are opened once at app startup and shared by all turns; a server that is down is retried lazily with backoff, and a dead long-lived session is re-established on the failing operation. Listing operations (tools, instructions) are retried once on the new session; a tool call is never replayed (the server may already have executed it) - the model receives a tool error saying the outcome is unknown. A changed server config reconnects in place; the old session is closed once idle. SSE / streamable-http streams use a long idle limit so they survive gaps between turns; `call_seconds` only bounds individual calls. Servers that return failures as a successful `{"error": ...}` payload must be fixed at the server; the client does not guess.
+
+`confirm_tools` and `destructiveHint` tools trigger a "notify before call" hook: in verbose mode the call is announced in the chat first. It does not block the call or wait for approval today; a real approval flow is future work.
 
 MCP activation: a capability manifest grants servers with `mcp_servers: [<server_id>]` (nested capabilities are followed). Unknown or disabled server IDs log a warning at bootstrap. The model sees the tools as `mcp_<server_id>_<tool_name>`; `mcp_` is reserved and no first-party tool may use it.
 
@@ -248,7 +250,7 @@ Required bridge behavior:
 
 Risk and policy handling:
 - `readonly` MCP tools may run without confirmation when policy allows.
-- `interactive` and `side_effecting` MCP tools must enforce confirmation policy before execution.
+- `interactive` and `side_effecting` MCP tools must enforce confirmation policy before execution (target behaviour; the current runtime only notifies before the call and does not block it).
 - Server-level deny policy must block all mapped tools regardless of per-tool configuration.
 
 Audit requirements for MCP invocations:

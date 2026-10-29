@@ -66,17 +66,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     polling_task: asyncio.Task[None] | None = None
     polling_stop = asyncio.Event()
 
-    # Connect the MCP servers the active capabilities reference once, for the whole app
-    # lifetime (stdio servers are spawned here, not per turn). Runs in the background so a
-    # slow or dead server never delays startup; a failed server is retried lazily with
-    # backoff by the first turn that needs it. Servers only reachable through per-session
-    # capability overrides connect on first use.
-    mcp_start_task = asyncio.create_task(
-        mcp_toolsets.start(
-            runtime_config.mcp_servers, collect_enabled_mcp_server_ids(runtime_config)
-        )
-    )
-
     if runtime_config.telegram.enabled:
         data_root = Path(runtime_config.app.data_root)
 
@@ -229,6 +218,18 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 cancellation_registry=cancellation_registry,
             )
         )
+
+    # Connect the MCP servers the active capabilities reference once, for the whole app
+    # lifetime (stdio servers are spawned here, not per turn). Runs in the background so a
+    # slow or dead server never delays startup; a failed server is retried lazily with
+    # backoff by the first turn that needs it. Servers only reachable through per-session
+    # capability overrides connect on first use. Started right before the try/finally that
+    # cancels it, so no failed init step above can leave a spawned stdio server orphaned.
+    mcp_start_task = asyncio.create_task(
+        mcp_toolsets.start(
+            runtime_config.mcp_servers, collect_enabled_mcp_server_ids(runtime_config)
+        )
+    )
 
     try:
         yield

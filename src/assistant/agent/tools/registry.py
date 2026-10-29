@@ -13,6 +13,7 @@ Tool registration for Pydantic AI agent. Capability-first activation model:
 """
 
 from collections.abc import Sequence
+from contextlib import suppress
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast, get_type_hints
@@ -46,16 +47,9 @@ type AgentTool = Tool[TurnDeps] | ToolFuncEither[TurnDeps, ...]
 
 def build_tool_runtime_params(config: RuntimeConfig) -> dict[str, dict[str, Any]]:
     """Build merged per-tool params from tools.yaml defaults + capability overrides."""
-    tool_ids = collect_enabled_tool_ids(config)
+    definitions, enabled = _active_capabilities(config)
+    tool_ids = collect_enabled_tool_ids(config, active=(definitions, enabled))
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
-    definitions = load_capability_definitions(config_dir=_config_dir(config))
-    policy = config.capabilities
-    denied = frozenset(policy.denied_capabilities)
-    enabled = [
-        c
-        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
-        if c not in denied
-    ]
 
     result: dict[str, dict[str, Any]] = {}
     for tool_id in tool_ids:
@@ -112,32 +106,43 @@ def _active_capabilities(
     return definitions, enabled
 
 
-def collect_enabled_mcp_server_ids(config: RuntimeConfig) -> list[str]:
+type ActiveCapabilities = tuple[dict[str, CapabilityDefinition], list[str]]
+
+
+def resolve_active_capabilities(config: RuntimeConfig) -> ActiveCapabilities:
+    """Public entry point of :func:`_active_capabilities`.
+
+    Parses ``config/capabilities/*.yaml`` once; pass the result as ``active=`` to
+    :func:`get_agent_tools` / :func:`get_agent_mcp_toolsets` to avoid parsing it again.
+    """
+    return _active_capabilities(config)
+
+
+def collect_enabled_mcp_server_ids(
+    config: RuntimeConfig, active: ActiveCapabilities | None = None
+) -> list[str]:
     """MCP server ids granted by the enabled capabilities (nested expanded, denied removed)."""
-    definitions, enabled = _active_capabilities(config)
+    definitions, enabled = active or _active_capabilities(config)
     return collect_mcp_server_ids(definitions, enabled)
 
 
-def get_agent_mcp_toolsets(config: RuntimeConfig) -> list[AbstractToolset[Any]]:
+def get_agent_mcp_toolsets(
+    config: RuntimeConfig, active: ActiveCapabilities | None = None
+) -> list[AbstractToolset[Any]]:
     """Toolsets for the MCP servers the active capability set references.
 
     Servers that are unknown or disabled in mcp_servers.yaml are skipped. The underlying
     connections are shared process-wide and owned by the app lifespan.
     """
-    server_ids = collect_enabled_mcp_server_ids(config)
+    server_ids = collect_enabled_mcp_server_ids(config, active)
     return mcp_toolsets.toolsets_for(config.mcp_servers, server_ids)
 
 
-def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
+def collect_enabled_tool_ids(
+    config: RuntimeConfig, active: ActiveCapabilities | None = None
+) -> set[str]:
     """Collect first-party tool_ids from enabled capabilities (excluding denied)."""
-    policy = config.capabilities
-    denied = frozenset(policy.denied_capabilities)
-    definitions = load_capability_definitions(config_dir=_config_dir(config))
-    enabled = [
-        c
-        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
-        if c not in denied
-    ]
+    definitions, enabled = active or _active_capabilities(config)
 
     tool_ids: set[str] = set()
     for cap_id in enabled:
@@ -155,12 +160,14 @@ def collect_enabled_tool_ids(config: RuntimeConfig) -> set[str]:
     return tool_ids
 
 
-def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
+def get_agent_tools(
+    config: RuntimeConfig, active: ActiveCapabilities | None = None
+) -> Sequence[AgentTool]:
     """Return first-party tools from tools.yaml, gated by enabled capabilities.
 
     MCP servers are not tools here; see :func:`get_agent_mcp_toolsets`.
     """
-    first_party_ids = collect_enabled_tool_ids(config)
+    first_party_ids = collect_enabled_tool_ids(config, active)
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
 
     tools: list[AgentTool] = []
@@ -185,11 +192,9 @@ def get_agent_tools(config: RuntimeConfig) -> Sequence[AgentTool]:
             continue
         # If the entrypoint is a factory (returns a Tool or None), call it.
         # Factories signal this by having a return annotation of `Tool | None` or `Any | None`.
-        hints = {}
-        try:
+        hints: dict[str, Any] = {}
+        with suppress(Exception):
             hints = get_type_hints(resolved)
-        except Exception:
-            pass
         return_hint = hints.get("return")
         is_factory = return_hint is not None and (
             hasattr(return_hint, "__args__")

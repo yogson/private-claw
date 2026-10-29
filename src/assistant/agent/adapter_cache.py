@@ -30,8 +30,10 @@ class TurnAdapterCache:
     capability override pay the build cost once; all later turns reuse the
     cached adapter.
 
-    MCP tools need no invalidation here: adapters hold shared MCP toolsets, which
-    list tools per run and refresh their own cache on ``tools/list_changed``.
+    MCP tools need no invalidation here: adapters hold shared per-server MCP connections,
+    which list tools per run, refresh their own cache on ``tools/list_changed`` and are
+    reconfigured in place (filters / confirm_tools read live from the connection) when the
+    server's config changes.
 
     Thread-safety: not required — the application runs on a single asyncio
     event loop and adapters are built synchronously.
