@@ -5,6 +5,7 @@ from typing import Any
 
 import anyio
 import httpx
+import httpx2
 import pytest
 from fastmcp import FastMCP
 from fastmcp.exceptions import McpError
@@ -22,6 +23,7 @@ from assistant.extensions.mcp.confirmation import McpConfirmationDenied
 from assistant.extensions.mcp.toolsets import (
     McpConnection,
     McpToolsets,
+    build_mcp_toolset,
     build_server_toolset,
     is_connection_error,
     is_mcp_tool_name,
@@ -481,3 +483,21 @@ async def test_call_to_unavailable_server_is_tool_failed() -> None:
     conn._retry_at = 1e9  # inside the backoff window
     with pytest.raises(ToolFailed, match="unavailable"):
         await conn._run(lambda ts: ts.list_tools())
+
+
+# --- idle timeouts of long-lived HTTP streams ----------------------------------------------
+
+
+def test_sse_stream_idle_timeout_is_not_the_call_timeout() -> None:
+    entry = McpServerEntry(id="s", transport="sse", url="http://localhost/sse")
+    ts = build_mcp_toolset(entry, 10.0, 30.0)
+    assert ts.client.transport.sse_read_timeout.total_seconds() > 3600  # type: ignore[union-attr]
+
+
+async def test_streamable_http_client_read_timeout_ignores_call_timeout() -> None:
+    entry = McpServerEntry(id="h", transport="streamable-http", url="http://localhost/mcp")
+    ts = build_mcp_toolset(entry, 10.0, 30.0)
+    factory = ts.client.transport.httpx_client_factory  # type: ignore[union-attr]
+    # fastmcp passes Timeout(30, read=call_seconds); the factory must not honour the read part
+    async with factory(headers={}, timeout=httpx2.Timeout(30.0, read=30.0)) as http:
+        assert http.timeout.read is not None and http.timeout.read > 3600

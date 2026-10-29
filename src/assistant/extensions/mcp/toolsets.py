@@ -22,9 +22,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar
 
 import anyio
+import httpx2
 import structlog
 from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
 from fastmcp.exceptions import McpError  # type: ignore[attr-defined]
+from mcp.shared._httpx_utils import MCP_DEFAULT_TIMEOUT, create_mcp_http_client
 from pydantic_ai import RunContext, ToolDefinition
 from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.mcp import MCPToolset
@@ -48,6 +50,11 @@ _CONNECT_BACKOFF_BASE_SECONDS = 5.0
 _CONNECT_BACKOFF_MAX_SECONDS = 300.0
 _CLOSE_TIMEOUT_SECONDS = 5.0
 _LOG_ERROR_MAX_CHARS = 300
+# Transport-level idle limit of the long-lived HTTP streams (SSE stream, streamable-http
+# listening stream). Connections are shared across turns, so they sit idle between them;
+# this must stay far above any realistic gap. Per-call limits are separate (``call_seconds``
+# -> the MCP session's ``read_timeout_seconds``).
+_STREAM_IDLE_SECONDS = 24 * 3600.0
 
 # Phrases of runtime errors raised by fastmcp / the MCP SDK for a session that is gone.
 _DEAD_SESSION_MARKERS = (
@@ -135,6 +142,25 @@ def is_connection_error(exc: BaseException) -> bool:
 ToolsetFactory = Callable[[McpServerEntry, float, float], MCPToolset[Any]]
 
 
+def _idle_tolerant_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
+) -> httpx2.AsyncClient:
+    """httpx client whose read timeout does not follow the per-call timeout.
+
+    fastmcp derives the HTTP read timeout from ``call_seconds``; for streamable-http that
+    would also cut the idle server-to-client listening stream after ``call_seconds``.
+    The incoming ``timeout`` is therefore ignored: connect/write/pool keep the MCP default
+    and reads may idle. Per-call limits are still enforced by the MCP session.
+    """
+    return create_mcp_http_client(
+        headers=headers,
+        timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=_STREAM_IDLE_SECONDS),
+        auth=auth,
+    )
+
+
 def build_mcp_toolset(
     entry: McpServerEntry, connect_seconds: float, call_seconds: float
 ) -> MCPToolset[Any]:
@@ -150,10 +176,16 @@ def build_mcp_toolset(
         )
     elif entry.transport == "sse":
         transport = SSETransport(
-            url=entry.url, headers=dict(entry.headers) or None, sse_read_timeout=call_seconds
+            url=entry.url,
+            headers=dict(entry.headers) or None,
+            sse_read_timeout=_STREAM_IDLE_SECONDS,
         )
     else:
-        transport = StreamableHttpTransport(url=entry.url, headers=dict(entry.headers) or None)
+        transport = StreamableHttpTransport(
+            url=entry.url,
+            headers=dict(entry.headers) or None,
+            httpx_client_factory=_idle_tolerant_http_client,
+        )
     return MCPToolset(
         transport,
         id=entry.id,

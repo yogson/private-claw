@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
+from tests.assistant.api.test_telegram_lifecycle import _runtime_config
 
 from assistant.api.lifespan import _lifespan
-from tests.assistant.api.test_telegram_lifecycle import _runtime_config
 
 
 async def test_failed_init_does_not_leave_mcp_started_without_cleanup() -> None:
