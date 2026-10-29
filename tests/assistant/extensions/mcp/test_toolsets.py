@@ -280,8 +280,16 @@ async def test_ordinary_tool_error_goes_to_model_without_reconnect(started: Any)
     assert len(factory.built) == 1, "a tool error must not trigger a reconnect"
 
 
+def _mcp_error(code: int, message: str) -> McpError:
+    """Build the SDK's protocol error (positional ErrorData in mcp 1, code/message in mcp 2)."""
+    try:
+        return McpError(ErrorData(code=code, message=message))
+    except TypeError:
+        return McpError(code, message)  # type: ignore[call-arg,arg-type]
+
+
 def _session_terminated() -> McpError:
-    return McpError(ErrorData(code=32600, message="Session terminated"))
+    return _mcp_error(32600, "Session terminated")
 
 
 @pytest.mark.parametrize(
@@ -297,13 +305,13 @@ def _session_terminated() -> McpError:
         (httpx.ReadTimeout("slow"), False),
         (httpx.ConnectTimeout("slow"), False),
         (_session_terminated(), True),
-        (McpError(ErrorData(code=-32000, message="Connection closed")), True),
+        (_mcp_error(-32000, "Connection closed"), True),
         (
             RuntimeError("Client is not connected. Use the 'async with client:' context manager"),
             True,
         ),
-        (McpError(ErrorData(code=408, message="Timed out while waiting for response")), False),
-        (McpError(ErrorData(code=-32602, message="Invalid params")), False),
+        (_mcp_error(408, "Timed out while waiting for response"), False),
+        (_mcp_error(-32602, "Invalid params"), False),
         (ValueError("kaboom"), False),
         (RuntimeError("something else"), False),
         (TimeoutError(), False),

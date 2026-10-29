@@ -10,10 +10,6 @@ dependencies = [
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "pydantic-ai-slim[anthropic,mcp]>=2.63.0,<3",
-    # Temporary pins until the MCP bridge is replaced by pydantic-ai's native MCPToolset:
-    # mcp 2 renames streamablehttp_client and inputSchema/isError, breaking our client.
-    "mcp>=1.26,<2",
-    "fastmcp-slim<4",
     "anthropic>=0.40.0",
     "pyyaml>=6.0.2",
     "python-multipart>=0.0.12",
@@ -43,7 +39,7 @@ dev = [
     "pytest-cov>=6.0.0",
     "types-pyyaml>=6.0.12",
     # In-process FastMCP servers for MCP toolset tests.
-    "fastmcp-slim[server]<4",
+    "fastmcp-slim[server]",
 ]
 
 [tool.uv]
