@@ -115,6 +115,9 @@ def _new_messages_to_session_records(
             for req_part in msg.parts:
                 if not isinstance(req_part, ToolReturnPart):
                     continue
+                if req_part.outcome == "retried":
+                    # v2 represents a retried tool call as a ToolReturnPart; not a real result.
+                    continue
                 if skip_memory_tool_results and req_part.tool_name == MEMORY_TOOL_NAME:
                     continue
                 result = _parse_tool_result_content(req_part.content)

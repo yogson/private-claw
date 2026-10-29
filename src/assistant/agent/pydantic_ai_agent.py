@@ -161,8 +161,8 @@ def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> A
         model_id,
         deps_type=TurnDeps,
         system_prompt=system_prompt,
-        retries=0,  # tool call retries: keep at 0 to prevent loops
-        output_retries=1,  # output validation retries: allow 1 retry
+        # tools: keep at 0 to prevent loops; output: allow 1 validation retry
+        retries={"tools": 0, "output": 1},
         tools=get_agent_tools(config),
     )
 
@@ -361,14 +361,10 @@ class PydanticAITurnAdapter:
             else:
                 response_text = "\n\n".join(intermediate_texts)
         usage = None
-        usage_obj = result.usage()
+        usage_obj = result.usage
         if usage_obj is not None:
             usage = {
-                "input_tokens": getattr(usage_obj, "input_tokens", 0)
-                or getattr(usage_obj, "request_tokens", 0)
-                or 0,
-                "output_tokens": getattr(usage_obj, "output_tokens", 0)
-                or getattr(usage_obj, "response_tokens", 0)
-                or 0,
+                "input_tokens": usage_obj.input_tokens or 0,
+                "output_tokens": usage_obj.output_tokens or 0,
             }
         return response_text, list(new_msgs), usage
