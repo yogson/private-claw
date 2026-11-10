@@ -23,6 +23,7 @@ from assistant.subagents.interfaces import (
     DelegationBackendAdapterInterface,
     DelegationCoordinatorInterface,
 )
+from assistant.subagents.permission_modes import clamp_permission_mode, resolve_permission_mode
 
 logger = structlog.get_logger(__name__)
 
@@ -213,7 +214,11 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "trace_id": trace_id,
             "chat_id": self._chat_id_from_session(session_id),
             "projected_tokens": projected_tokens,
-            "backend_params": self._resolve_backend_params(request, tool_params),
+            "backend_params": self._resolve_backend_params(
+                request,
+                tool_params,
+                log_context={"task_id": task_id, "trace_id": trace_id, "session_id": session_id},
+            ),
         }
         logfire_ctx = request.get("logfire_context")
         if isinstance(logfire_ctx, dict) and logfire_ctx:
@@ -408,6 +413,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "subagent.run.progress",
             task_id=task.task_id,
             backend=backend_id,
+            permission_mode=run.backend_params.get("permission_mode"),
         )
         # For backends that support AskUserQuestion relay, register
         # a per-task relay closure before executing and clean it up afterwards.
@@ -779,7 +785,12 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         return 8
 
     @staticmethod
-    def _resolve_backend_params(request: dict[str, Any], tool_params: object) -> dict[str, Any]:
+    def _resolve_backend_params(
+        request: dict[str, Any],
+        tool_params: object,
+        *,
+        log_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raw = request.get("backend_params")
         backend_params = dict(raw) if isinstance(raw, dict) else {}
         # Models often fill optional fields with "" or null; treat those as unset.
@@ -790,6 +801,26 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 default_effort = tool_params.get("delegation_default_effort")
                 if isinstance(default_effort, str) and default_effort.strip():
                     backend_params["effort"] = default_effort.strip()
+        # Always pin the mode on the task so the backend never guesses and the
+        # stored task records what the run was allowed to do.  The configured
+        # mode is a ceiling: a request may only make the run more restrictive.
+        context = log_context or {}
+        configured_mode = resolve_permission_mode(
+            tool_params.get("delegation_default_permission_mode")
+            if isinstance(tool_params, dict)
+            else None,
+            source="delegation_default_permission_mode",
+            **context,
+        )
+        requested_mode = resolve_permission_mode(
+            backend_params.get("permission_mode"),
+            configured_mode,
+            source="backend_params.permission_mode",
+            **context,
+        )
+        backend_params["permission_mode"] = clamp_permission_mode(
+            requested_mode, configured_mode, **context
+        )
         return backend_params
 
     @staticmethod

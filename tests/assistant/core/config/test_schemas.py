@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from assistant.core.config.schemas import (
     ModelConfig,
     TelegramChannelConfig,
+    ToolDefaultParams,
 )
 
 
@@ -78,3 +79,38 @@ class TestModelConfig:
             model_allowlist=["claude-sonnet", "claude-haiku"],
         )
         assert cfg.default_model_id == "claude-sonnet"
+
+
+class TestDelegationPermissionMode:
+    def test_unset_by_default(self) -> None:
+        assert ToolDefaultParams().delegation_default_permission_mode is None
+
+    @pytest.mark.parametrize("mode", ["auto", "acceptEdits", "dontAsk", "bypassPermissions"])
+    def test_accepts_claude_code_modes(self, mode: str) -> None:
+        params = ToolDefaultParams.model_validate({"delegation_default_permission_mode": mode})
+        assert params.delegation_default_permission_mode == mode
+
+    @pytest.mark.parametrize("mode", ["yolo", "", "AUTO", "BypassPermissions", "bypass"])
+    def test_rejects_unknown_mode_at_startup(self, mode: str) -> None:
+        with pytest.raises(ValidationError):
+            ToolDefaultParams.model_validate({"delegation_default_permission_mode": mode})
+
+    @pytest.mark.parametrize("alias", ["manual", "Manual", " manual "])
+    def test_manual_alias_maps_to_default(self, alias: str) -> None:
+        """Config accepts the same "manual" alias as per-request values."""
+        params = ToolDefaultParams.model_validate({"delegation_default_permission_mode": alias})
+        assert params.delegation_default_permission_mode == "default"
+
+    def test_capability_override_accepts_manual_alias(self) -> None:
+        from assistant.core.capabilities.schemas import CapabilityToolOverride
+
+        override = CapabilityToolOverride.model_validate(
+            {"delegation_default_permission_mode": "manual"}
+        )
+        assert override.delegation_default_permission_mode == "default"
+
+    def test_yaml_null_means_unset(self) -> None:
+        import yaml
+
+        raw = yaml.safe_load("delegation_default_permission_mode: null\n")
+        assert ToolDefaultParams.model_validate(raw).delegation_default_permission_mode is None

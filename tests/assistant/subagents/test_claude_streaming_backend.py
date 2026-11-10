@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.subagents.backends.claude_code_streaming import (
     ClaudeCodeStreamingBackendAdapter,
@@ -201,12 +202,8 @@ async def test_ask_user_question_maps_numeric_and_label_replies_to_labels() -> N
     assert result.updated_input["answers"] == {"q0": "Blue", "q1": "Blue", "q2": "something else"}
 
 
-@pytest.mark.asyncio
-async def test_other_tools_are_auto_approved() -> None:
-    """Tools other than AskUserQuestion should be auto-approved without relay."""
-    from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
-
-    captured_can_use_tool: list[Any] = []
+async def _captured_can_use_tool(backend_params: dict[str, Any]) -> Any:
+    captured: list[Any] = []
 
     async def _fake_query(
         *,
@@ -214,14 +211,35 @@ async def test_other_tools_are_auto_approved() -> None:
         options: Any,
         transport: Any = None,
     ) -> AsyncGenerator[Any, None]:
-        captured_can_use_tool.append(options.can_use_tool)
+        captured.append(options.can_use_tool)
         yield _make_result_msg()
 
     with _patch_query_side_effect(_fake_query):
         adapter = ClaudeCodeStreamingBackendAdapter()
-        await adapter.execute(_make_request())
+        await adapter.execute(_make_request(backend_params=backend_params))
+    return captured[0]
 
-    can_use_tool_fn = captured_can_use_tool[0]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "auto", "default", "acceptEdits"])
+async def test_unresolved_permission_prompts_are_denied(mode: str | None) -> None:
+    """Prompts the permission mode leaves open (e.g. auto-mode classifier fallback)
+    must not be auto-approved: that would silently amount to bypassPermissions."""
+    from claude_agent_sdk import PermissionResultDeny, ToolPermissionContext
+
+    can_use_tool_fn = await _captured_can_use_tool({"permission_mode": mode} if mode else {})
+    context = ToolPermissionContext(signal=None, suggestions=[])
+    result = await can_use_tool_fn("Bash", {"command": "rm -rf build"}, context)
+
+    assert isinstance(result, PermissionResultDeny)
+    assert "Do not retry" in result.message
+
+
+@pytest.mark.asyncio
+async def test_bypass_permissions_mode_approves_prompts() -> None:
+    from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
+
+    can_use_tool_fn = await _captured_can_use_tool({"permission_mode": "bypassPermissions"})
     context = ToolPermissionContext(signal=None, suggestions=[])
     result = await can_use_tool_fn("Bash", {"command": "ls"}, context)
 
@@ -340,7 +358,7 @@ async def test_xhigh_effort_forwarded_via_extra_args() -> None:
 
     opts = captured_options[0]
     assert opts.effort is None
-    assert opts.extra_args == {"effort": "xhigh"}
+    assert opts.extra_args == {"effort": "xhigh", "permission-mode": "auto"}
 
 
 def test_backend_id() -> None:
@@ -508,7 +526,7 @@ def test_build_options_includes_capability_mcp_servers() -> None:
     async def _noop(_tool: str, _input: dict[str, Any], _ctx: Any) -> Any:
         return None
 
-    options = adapter._build_options(_make_request(), _noop)
+    options = adapter._build_options(_make_request(), _noop, "auto")
     assert options.mcp_servers == servers
     # Defensive copy: mutating the options must not corrupt the adapter's config.
     options.mcp_servers.clear()
@@ -521,7 +539,7 @@ def test_build_options_without_mcp_servers_is_empty() -> None:
     async def _noop(_tool: str, _input: dict[str, Any], _ctx: Any) -> Any:
         return None
 
-    assert adapter._build_options(_make_request(), _noop).mcp_servers == {}
+    assert adapter._build_options(_make_request(), _noop, "auto").mcp_servers == {}
 
 
 # ---------------------------------------------------------------------------
@@ -675,3 +693,217 @@ async def test_execute_fails_when_stream_ends_with_pending_background_tasks() ->
     assert result.ok is False
     assert "background task" in (result.error or "")
     assert "waiting for the watch" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Permission mode
+# ---------------------------------------------------------------------------
+
+
+async def _captured_options(backend_params: dict[str, Any]) -> Any:
+    captured: list[Any] = []
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        captured.append(options)
+        yield _make_result_msg()
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        await adapter.execute(_make_request(backend_params=backend_params))
+    return captured[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend_params", "typed", "extra"),
+    [
+        # "auto"/"dontAsk" are not in the SDK's PermissionMode Literal: extra_args.
+        ({}, None, "auto"),
+        ({"permission_mode": "auto"}, None, "auto"),
+        ({"permission_mode": "dontAsk"}, None, "dontAsk"),
+        # Modes the SDK types natively use the typed field, never both.
+        ({"permission_mode": "acceptEdits"}, "acceptEdits", None),
+        ({"permission_mode": "bypassPermissions"}, "bypassPermissions", None),
+        ({"permission_mode": "manual"}, "default", None),
+    ],
+)
+async def test_permission_mode_defaults_to_auto_and_honours_override(
+    backend_params: dict[str, Any], typed: str | None, extra: str | None
+) -> None:
+    opts = await _captured_options(backend_params)
+    assert opts.permission_mode == typed
+    assert opts.extra_args.get("permission-mode") == extra
+
+
+@pytest.mark.asyncio
+async def test_unknown_permission_mode_warns_and_uses_auto_not_bypass() -> None:
+    with capture_logs() as logs:
+        opts = await _captured_options({"permission_mode": "yolo"})
+    assert opts.permission_mode is None
+    assert opts.extra_args == {"permission-mode": "auto"}
+    warning = next(e for e in logs if e["event"] == "subagent.permission_mode.unknown")
+    assert warning["requested"] == "yolo"
+    assert warning["fallback"] == "auto"
+
+
+def _system_init(
+    permission_mode: str, subtype: str = "init", model: str | None = "claude-sonnet-4-5"
+) -> Any:
+    from claude_agent_sdk import SystemMessage
+
+    data: dict[str, Any] = {"permissionMode": permission_mode}
+    if model is not None:
+        data["model"] = model
+    return SystemMessage(subtype=subtype, data=data)
+
+
+def _rate_limit_event() -> Any:
+    from claude_agent_sdk import RateLimitEvent
+    from claude_agent_sdk.types import RateLimitInfo
+
+    return RateLimitEvent(
+        rate_limit_info=RateLimitInfo(status="allowed"), uuid="u1", session_id="s1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_silently_unavailable_aborts_run() -> None:
+    """The CLI starts in Manual when auto mode is unavailable: stop at once and
+    shut the SDK stream down from inside (its cleanup closes the CLI)."""
+    cleanup_ran = asyncio.Event()
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        try:
+            yield _system_init("default")
+            await asyncio.sleep(60)  # the CLI would keep working in Manual mode
+            yield _make_result_msg()
+        finally:
+            cleanup_ran.set()
+
+    with _patch_query_side_effect(_fake_query):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(
+            _make_request(timeout_seconds=30)
+        )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert "'default' permission mode instead of the requested 'auto'" in result.error
+    assert cleanup_ran.is_set()
+
+
+@pytest.mark.asyncio
+async def test_status_downgrade_after_init_aborts_run() -> None:
+    """Over stream-json input the CLI reports init=auto, then status=default."""
+    stream = _async_iter(
+        _system_init("auto"), _system_init("default", subtype="status"), _make_result_msg()
+    )
+    with _patch_query(stream):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is False
+    assert result.error is not None
+    assert "instead of the requested 'auto'" in result.error
+
+
+@pytest.mark.asyncio
+async def test_non_model_events_before_downgrade_still_abort() -> None:
+    """RateLimitEvent / StreamEvent are not model output: keep checking the mode."""
+    from claude_agent_sdk import StreamEvent
+
+    stream = _async_iter(
+        _system_init("auto"),
+        _rate_limit_event(),
+        StreamEvent(uuid="u2", session_id="s1", event={"type": "message_start"}),
+        _system_init("default", subtype="status"),
+        _make_result_msg(result="ran in Manual"),
+    )
+    with capture_logs() as logs, _patch_query(stream):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is False
+    assert result.error is not None
+    assert "instead of the requested 'auto'" in result.error
+    assert "aborted before the model's first response" in result.error
+    mismatch = next(e for e in logs if e["event"] == "subagent.permission_mode.mismatch")
+    assert mismatch["task_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_mismatch_without_model_in_event_names_the_requested_model() -> None:
+    stream = _async_iter(_system_init("default", subtype="status", model=None))
+    with _patch_query(stream):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.error is not None
+    assert "model 'claude-sonnet-4-5'" in result.error
+
+
+@pytest.mark.asyncio
+async def test_cli_stderr_is_logged_with_task_id() -> None:
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        options.stderr("some CLI diagnostic")
+        yield _make_result_msg(result="ok")
+
+    with capture_logs() as logs, _patch_query_side_effect(_fake_query):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is True
+    line = next(e for e in logs if e["event"] == "claude_streaming.stderr")
+    assert line["task_id"] == "t1"
+    assert line["line"] == "some CLI diagnostic"
+
+
+@pytest.mark.asyncio
+async def test_mode_change_after_first_assistant_message_is_only_logged() -> None:
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    assistant = AssistantMessage(content=[TextBlock(text="working")], model="m")
+    stream = _async_iter(
+        _system_init("auto"),
+        assistant,
+        _system_init("default", subtype="status"),
+        _make_result_msg(result="ok"),
+    )
+    with capture_logs() as logs, _patch_query(stream):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is True
+    assert any(e["event"] == "subagent.permission_mode.changed" for e in logs)
+
+
+@pytest.mark.asyncio
+async def test_matching_init_permission_mode_runs_normally() -> None:
+    with _patch_query(_async_iter(_system_init("auto"), _make_result_msg(result="ok"))):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is True
+    assert result.output_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_cli_rejecting_permission_mode_gives_actionable_error() -> None:
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        options.stderr("error: option '--permission-mode <mode>' argument 'auto' is invalid.")
+        raise RuntimeError("Command failed with exit code 1")
+        yield  # pragma: no cover
+
+    with _patch_query_side_effect(_fake_query):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.startswith("Claude Code CLI rejected --permission-mode auto")

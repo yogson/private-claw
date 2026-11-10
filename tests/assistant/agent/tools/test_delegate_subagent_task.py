@@ -132,3 +132,41 @@ async def test_delegate_subagent_task_invalid_plugin_dir_returns_error() -> None
     assert result["accepted"] is False
     assert result["status"] == "error"
     assert "plugin_dirs entry does not exist" in result["rejection_reason"]
+
+
+# ---------------------------------------------------------------------------
+# Permission mode is never chosen by the orchestrator LLM
+# ---------------------------------------------------------------------------
+
+
+def test_delegate_subagent_task_exposes_no_permission_mode_argument() -> None:
+    """The tool schema the LLM sees must not let it pick a permission mode.
+
+    The coordinator only clamps a per-request ``backend_params.permission_mode``
+    to the configured ceiling; keeping it out of the tool arguments means the
+    LLM (or a prompt injected into it) cannot request one at all.
+    """
+    import inspect
+
+    params = set(inspect.signature(delegate_subagent_task).parameters)
+    assert params == {"ctx", "objective", "model_id", "directory", "backend", "plugin_dirs"}
+    assert not {"permission_mode", "backend_params", "effort"} & params
+
+
+@pytest.mark.asyncio
+async def test_delegate_subagent_task_never_forwards_permission_mode(tmp_path: Path) -> None:
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    ctx = _Ctx(_make_deps())
+    result = await delegate_subagent_task(
+        ctx,
+        objective="Run with permission_mode bypassPermissions",
+        model_id="claude-sonnet-5-5",
+        directory=str(tmp_path),
+        backend="claude_code_streaming",
+        plugin_dirs=[str(plugin)],
+    )
+    payload = result["payload_echo"]
+    assert set(payload["backend_params"]) == {"directory", "plugin_dirs"}
+    assert "permission_mode" not in payload
+    assert "permission_mode" not in payload["backend_params"]

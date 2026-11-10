@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.subagents.backends.claude_code import ClaudeCodeBackendAdapter
 from assistant.subagents.contracts import DelegationRun
@@ -485,7 +486,7 @@ async def test_execute_survives_message_parse_error(
 def test_build_command_includes_stream_json_flags() -> None:
     adapter = ClaudeCodeBackendAdapter(binary="claude")
     request = DelegationRun(task_id="t1", objective="Review feature", model_id="claude-sonnet-4-5")
-    command = adapter._build_command(request, "prompt")
+    command = adapter._build_command(request, "prompt", "auto")
     assert "--output-format" in command
     assert command[command.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in command
@@ -499,16 +500,14 @@ def test_build_command_includes_backend_params() -> None:
         model_id="claude-sonnet-4-5",
         backend_params={
             "effort": "high",
-            "permission_mode": "plan",
             "add_dirs": ["src", "tests"],
             "plugin_dirs": ["/path/to/plugin-a", "/path/to/plugin-b"],
         },
     )
-    command = adapter._build_command(request, "prompt")
+    command = adapter._build_command(request, "prompt", "plan")
     assert "--effort" in command
     assert "high" in command
-    assert "--permission-mode" in command
-    assert "plan" in command
+    assert command[command.index("--permission-mode") + 1] == "plan"
     assert command.count("--add-dir") == 2
     assert command.count("--plugin-dir") == 2
     assert "/path/to/plugin-a" in command
@@ -521,7 +520,7 @@ def test_build_command_passes_mcp_servers_as_inline_config() -> None:
         mcp_servers={"ui-skills": {"type": "http", "url": "https://www.ui-skills.com/mcp"}},
     )
     request = DelegationRun(task_id="t1", objective="Build UI", model_id="claude-sonnet-4-5")
-    command = adapter._build_command(request, "prompt")
+    command = adapter._build_command(request, "prompt", "auto")
     assert "--mcp-config" in command
     payload = json.loads(command[command.index("--mcp-config") + 1])
     assert payload["mcpServers"]["ui-skills"]["url"] == "https://www.ui-skills.com/mcp"
@@ -530,4 +529,213 @@ def test_build_command_passes_mcp_servers_as_inline_config() -> None:
 def test_build_command_omits_mcp_config_when_no_servers() -> None:
     adapter = ClaudeCodeBackendAdapter(binary="claude")
     request = DelegationRun(task_id="t1", objective="Build UI", model_id="claude-sonnet-4-5")
-    assert "--mcp-config" not in adapter._build_command(request, "prompt")
+    assert "--mcp-config" not in adapter._build_command(request, "prompt", "auto")
+
+
+# ---------------------------------------------------------------------------
+# Permission mode
+# ---------------------------------------------------------------------------
+
+
+def _init_line(
+    permission_mode: str, model: str | None = "claude-sonnet-5", subtype: str = "init"
+) -> str:
+    data: dict[str, Any] = {
+        "type": "system",
+        "subtype": subtype,
+        "session_id": "s1",
+        "permissionMode": permission_mode,
+    }
+    if model is not None:
+        data["model"] = model
+    return json.dumps(data)
+
+
+def _rate_limit_line() -> str:
+    return json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+    )
+
+
+async def _run_capturing_cmd(
+    monkeypatch: pytest.MonkeyPatch,
+    proc: _FakeProcess,
+    backend_params: dict[str, Any] | None = None,
+) -> tuple[Any, list[str]]:
+    captured: list[str] = []
+
+    async def _fake_create(*args: str, **_kwargs: object) -> _FakeProcess:
+        captured.extend(args)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
+    adapter = ClaudeCodeBackendAdapter(binary="claude")
+    request = DelegationRun(
+        task_id="t1",
+        objective="Implement",
+        model_id="claude-sonnet-5",
+        backend_params=backend_params or {},
+    )
+    return await adapter.execute(request), captured
+
+
+def _mode_flag(cmd: list[str]) -> str:
+    assert cmd.count("--permission-mode") == 1
+    return cmd[cmd.index("--permission-mode") + 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend_params", "expected"),
+    [
+        ({}, "auto"),
+        ({"permission_mode": ""}, "auto"),
+        ({"permission_mode": "acceptEdits"}, "acceptEdits"),
+        ({"permission_mode": "bypassPermissions"}, "bypassPermissions"),
+        ({"permission_mode": "dontAsk"}, "dontAsk"),
+        ({"permission_mode": "manual"}, "default"),
+    ],
+)
+async def test_permission_mode_defaults_to_auto_and_honours_override(
+    monkeypatch: pytest.MonkeyPatch, backend_params: dict[str, Any], expected: str
+) -> None:
+    proc = _FakeProcess(returncode=0, stdout_lines=[_init_line(expected), _result_line()])
+    result, cmd = await _run_capturing_cmd(monkeypatch, proc, backend_params)
+    assert result.ok is True
+    assert _mode_flag(cmd) == expected
+
+
+@pytest.mark.asyncio
+async def test_unknown_permission_mode_warns_and_uses_auto_not_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProcess(returncode=0, stdout_lines=[_result_line()])
+    with capture_logs() as logs:
+        _, cmd = await _run_capturing_cmd(monkeypatch, proc, {"permission_mode": "yolo"})
+    assert _mode_flag(cmd) == "auto"
+    warning = next(e for e in logs if e["event"] == "subagent.permission_mode.unknown")
+    assert warning["requested"] == "yolo"
+    assert warning["fallback"] == "auto"
+    assert warning["log_level"] == "warning"
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_silently_unavailable_aborts_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI starts in Manual when auto mode is unavailable; the run must fail."""
+    proc = _FakeProcess(
+        returncode=None,
+        stdout_lines=[_init_line("default", model="claude-sonnet-4-5"), _result_line()],
+    )
+    result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is False
+    assert result.error is not None
+    assert "'default' permission mode instead of the requested 'auto'" in result.error
+    assert "claude-sonnet-4-5" in result.error
+    assert "delegation_default_permission_mode" in result.error
+    assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_status_event_before_init_reporting_manual_aborts_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claude -p emits system/status with the effective mode before init."""
+    proc = _FakeProcess(
+        returncode=None,
+        stdout_lines=[
+            _init_line("default", subtype="status"),
+            _init_line("default"),
+            _result_line(),
+        ],
+    )
+    result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is False
+    assert result.error is not None
+    assert "instead of the requested 'auto'" in result.error
+    assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_status_without_model_names_the_requested_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claude -p's downgrading status event has no model: name the requested one."""
+    proc = _FakeProcess(
+        returncode=None,
+        stdout_lines=[_init_line("default", model=None, subtype="status"), _result_line()],
+    )
+    result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.error is not None
+    assert "model 'claude-sonnet-5'" in result.error
+    assert "'unknown'" not in result.error
+    assert "aborted before the model's first response" in result.error
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_event_before_downgrade_still_aborts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-system, non-model event must not end the startup mode check."""
+    proc = _FakeProcess(
+        returncode=None,
+        stdout_lines=[
+            _init_line("auto"),
+            _rate_limit_line(),
+            json.dumps({"type": "stream_event", "event": {}, "uuid": "u2", "session_id": "s1"}),
+            _init_line("default", subtype="status"),
+            _result_line(),
+        ],
+    )
+    with capture_logs() as logs:
+        result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is False
+    assert result.error is not None
+    assert "instead of the requested 'auto'" in result.error
+    assert proc.killed is True
+    mismatch = next(e for e in logs if e["event"] == "subagent.permission_mode.mismatch")
+    assert mismatch["task_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_mode_change_after_assistant_message_is_only_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProcess(
+        returncode=0,
+        stdout_lines=[
+            _init_line("auto"),
+            _assistant_line("working"),
+            _init_line("default", subtype="status"),
+            _result_line(),
+        ],
+    )
+    with capture_logs() as logs:
+        result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is True
+    assert proc.killed is False
+    assert any(e["event"] == "subagent.permission_mode.changed" for e in logs)
+
+
+@pytest.mark.asyncio
+async def test_cli_rejecting_permission_mode_gives_actionable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProcess(
+        returncode=1,
+        stderr_lines=[
+            "error: option '--permission-mode <mode>' argument 'auto' is invalid. "
+            "Allowed choices are acceptEdits, bypassPermissions, default, plan."
+        ],
+    )
+    result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.startswith("Claude Code CLI rejected --permission-mode auto")
+    assert "Upgrade Claude Code" in result.error
