@@ -37,6 +37,10 @@ Current v1 implementation mapping:
 - Runtime defaults (for example `delegation_default_model_id`) come from
   `delegate_subagent_task` tool configuration.
 - Backend-specific parameters are carried through `backend_params` while keeping core contracts backend-agnostic.
+- The Claude Code permission mode (`backend_params.permission_mode`, default from
+  `delegation_default_permission_mode`, built-in default `auto`) is resolved by the coordinator at
+  enqueue time. It never escalates to `bypassPermissions` implicitly. See
+  `docs/assistant_v1/domains/subagents.md` ("Claude Code permission mode").
 - Claude Code is implemented as the first provider adapter behind a reusable backend interface.
 
 Normative precedence:

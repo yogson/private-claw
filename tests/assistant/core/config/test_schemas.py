@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from assistant.core.config.schemas import (
     ModelConfig,
     TelegramChannelConfig,
+    ToolDefaultParams,
 )
 
 
@@ -78,3 +79,17 @@ class TestModelConfig:
             model_allowlist=["claude-sonnet", "claude-haiku"],
         )
         assert cfg.default_model_id == "claude-sonnet"
+
+
+class TestDelegationPermissionMode:
+    def test_unset_by_default(self) -> None:
+        assert ToolDefaultParams().delegation_default_permission_mode is None
+
+    @pytest.mark.parametrize("mode", ["auto", "acceptEdits", "dontAsk", "bypassPermissions"])
+    def test_accepts_claude_code_modes(self, mode: str) -> None:
+        params = ToolDefaultParams.model_validate({"delegation_default_permission_mode": mode})
+        assert params.delegation_default_permission_mode == mode
+
+    def test_rejects_unknown_mode_at_startup(self) -> None:
+        with pytest.raises(ValidationError):
+            ToolDefaultParams.model_validate({"delegation_default_permission_mode": "yolo"})

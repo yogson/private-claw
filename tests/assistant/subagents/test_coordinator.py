@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.core.config.schemas import (
     AppConfig,
@@ -370,7 +371,92 @@ async def test_tool_default_effort_applied_unless_request_sets_it(
     assert accepted["accepted"] is True
     task = await coordinator.get_task(accepted["task_id"])
     assert task is not None
-    assert task.metadata["backend_params"] == {"directory": "/tmp", "effort": expected_effort}
+    assert task.metadata["backend_params"] == {
+        "directory": "/tmp",
+        "effort": expected_effort,
+        "permission_mode": "auto",
+    }
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_params", "backend_params", "expected_mode"),
+    [
+        # Built-in default when nothing is configured.
+        ({}, {}, "auto"),
+        # Config-driven default.
+        ({"delegation_default_permission_mode": "acceptEdits"}, {}, "acceptEdits"),
+        (
+            {"delegation_default_permission_mode": "acceptEdits"},
+            {"permission_mode": ""},
+            "acceptEdits",
+        ),
+        # Explicit per-request override wins over the configured default.
+        (
+            {"delegation_default_permission_mode": "acceptEdits"},
+            {"permission_mode": "bypassPermissions"},
+            "bypassPermissions",
+        ),
+        ({}, {"permission_mode": "plan"}, "plan"),
+    ],
+)
+async def test_permission_mode_resolved_from_request_then_config_then_auto(
+    tmp_path: Path,
+    tool_params: dict[str, str],
+    backend_params: dict[str, str],
+    expected_mode: str,
+) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store, config=_config(tmp_path), backends=[_FakeBackend()]
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="tg:123",
+        turn_id="turn-1",
+        trace_id="trace-1",
+        user_id="u1",
+        request={
+            "objective": "Implement",
+            "backend_params": backend_params,
+            "tool_params": tool_params,
+        },
+    )
+    assert accepted["accepted"] is True
+    task = await coordinator.get_task(accepted["task_id"])
+    assert task is not None
+    assert task.metadata["backend_params"]["permission_mode"] == expected_mode
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unknown_requested_permission_mode_falls_back_to_configured_default(
+    tmp_path: Path,
+) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store, config=_config(tmp_path), backends=[_FakeBackend()]
+    )
+    with capture_logs() as logs:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={
+                "objective": "Implement",
+                "backend_params": {"permission_mode": "yolo"},
+                "tool_params": {"delegation_default_permission_mode": "dontAsk"},
+            },
+        )
+    task = await coordinator.get_task(accepted["task_id"])
+    assert task is not None
+    assert task.metadata["backend_params"]["permission_mode"] == "dontAsk"
+    warning = next(e for e in logs if e["event"] == "subagent.permission_mode.unknown")
+    assert warning["requested"] == "yolo"
+    assert warning["fallback"] == "dontAsk"
     await store.shutdown()
 
 

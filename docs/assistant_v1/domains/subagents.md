@@ -139,3 +139,54 @@ Coordinator enforcement rules:
 - First backend implementation: `ClaudeCodeBackendAdapter` (`src/assistant/subagents/backends/claude_code.py`).
 - Completion notifications are currently disabled and will be rebuilt.
 
+- SDK streaming backend: `ClaudeCodeStreamingBackendAdapter`
+  (`src/assistant/subagents/backends/claude_code_streaming.py`), with the AskUserQuestion relay.
+
+### Claude Code permission mode
+
+Both Claude Code backends start every run with an explicit `--permission-mode`. The coordinator
+resolves the mode when it accepts a task and stores it in the task's `backend_params`:
+
+1. `backend_params.permission_mode` on the request, if it names a known mode.
+2. Otherwise the `delegation_default_permission_mode` tool param (`config/tools.yaml`, or a
+   capability `tool_overrides` entry). Pydantic validates the value at startup.
+3. Otherwise `auto`.
+
+Supported values: `default` (`manual` is accepted as an alias), `acceptEdits`, `plan`, `auto`,
+`dontAsk`, `bypassPermissions`. An unknown requested value logs `subagent.permission_mode.unknown`
+and falls back to the configured default. It never falls back to `bypassPermissions`, which is
+used only when it is configured or requested explicitly. The shared resolver lives in
+`src/assistant/subagents/permission_modes.py`.
+
+Auto mode (see https://code.claude.com/docs/en/permission-modes) lets a classifier approve
+actions with no prompts and blocks irreversible, destructive or outward-facing ones. In a
+delegated run nobody can answer a prompt, so:
+
+- A call the classifier blocks is denied, and the sub-agent receives the reason and keeps
+  working. Repeated blocks (3 in a row or 20 in total) make Claude Code fall back to prompting.
+  `claude -p` then denies those calls. The streaming backend's `can_use_tool` callback denies
+  every prompt it gets in every mode except `bypassPermissions`, AskUserQuestion apart.
+  Approving those prompts would silently turn the run into `bypassPermissions`.
+- Claude Code does not fail when auto mode is unavailable, for example with an unsupported model
+  (it needs Opus/Sonnet 4.6+, Haiku 5.5 or a Fable model, so the `*-4-5` models in the example
+  config do not qualify) or with `permissions.disableAutoMode`. Instead it starts in Manual
+  (`default`) mode. Both backends compare the mode reported by the CLI's `system/init` event with
+  the requested one. On a mismatch they abort the run before any tool call, log
+  `subagent.permission_mode.mismatch`, and fail the task with an actionable error.
+- A CLI too old to know a mode rejects `--permission-mode`, and the task fails with a hint to
+  upgrade Claude Code or change `delegation_default_permission_mode`.
+- claude-agent-sdk 0.1.50 types `permission_mode` as
+  `Literal["default", "acceptEdits", "plan", "bypassPermissions"]`. The streaming backend
+  therefore passes `auto` and `dontAsk` through `ClaudeAgentOptions.extra_args`
+  (`--permission-mode auto`), the same way it already passes the `xhigh` effort.
+
+The classifier trusts only the working directory and the repo's own remotes. To trust more
+infrastructure (source-control orgs, internal domains, buckets), add prose entries to
+`autoMode.environment` in `~/.claude/settings.json`. Project `.claude/settings*.json` files are
+ignored for `autoMode`. See https://code.claude.com/docs/en/auto-mode-config, and use
+`claude auto-mode config` to inspect the effective rules. The `claude_code` backend loads user
+settings, so these entries apply to it. The streaming backend runs with the SDK default
+`--setting-sources ""`, so it does not read `~/.claude/settings.json`, and the classifier uses
+its built-in environment defaults there. Auto mode also ignores broad allow rules such as
+`Bash(python:*)` (wildcarded interpreters) from the capability `claude_code_settings`, so the
+classifier decides those commands. Narrow rules and deny rules still apply.

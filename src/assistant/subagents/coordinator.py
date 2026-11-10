@@ -23,6 +23,7 @@ from assistant.subagents.interfaces import (
     DelegationBackendAdapterInterface,
     DelegationCoordinatorInterface,
 )
+from assistant.subagents.permission_modes import resolve_permission_mode
 
 logger = structlog.get_logger(__name__)
 
@@ -408,6 +409,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "subagent.run.progress",
             task_id=task.task_id,
             backend=backend_id,
+            permission_mode=run.backend_params.get("permission_mode"),
         )
         # For backends that support AskUserQuestion relay, register
         # a per-task relay closure before executing and clean it up afterwards.
@@ -790,6 +792,20 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 default_effort = tool_params.get("delegation_default_effort")
                 if isinstance(default_effort, str) and default_effort.strip():
                     backend_params["effort"] = default_effort.strip()
+        # Always pin the mode on the task so the backend never guesses and the
+        # stored task records what the run was allowed to do.
+        configured_default = resolve_permission_mode(
+            tool_params.get("delegation_default_permission_mode")
+            if isinstance(tool_params, dict)
+            else None,
+            source="delegation_default_permission_mode",
+        )
+        backend_params["permission_mode"] = resolve_permission_mode(
+            backend_params.get("permission_mode"),
+            configured_default,
+            source="backend_params.permission_mode",
+            task_id=str(request.get("task_id") or "") or None,
+        )
         return backend_params
 
     @staticmethod

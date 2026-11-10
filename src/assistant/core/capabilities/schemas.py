@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from assistant.core.config.schemas import CommandAllowlistEntry
+from assistant.core.config.schemas import CommandAllowlistEntry, SubagentPermissionMode
 
 
 def _coerce_command_allowlist(v: object) -> list[CommandAllowlistEntry]:
@@ -51,6 +51,7 @@ class CapabilityToolOverride(BaseModel):
     delegation_default_max_turns: int | None = None
     delegation_default_timeout_seconds: int | None = None
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    delegation_default_permission_mode: SubagentPermissionMode | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

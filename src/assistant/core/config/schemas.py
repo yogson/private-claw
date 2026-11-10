@@ -11,6 +11,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Claude Code permission modes a delegated sub-agent may run in (CLI config
+# values; the CLI's "manual" is an alias of "default").  See
+# assistant.subagents.permission_modes for how they are resolved per run.
+SubagentPermissionMode = Literal[
+    "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"
+]
+
 
 class RuntimeMode(StrEnum):
     PROD = "prod"
@@ -150,6 +157,9 @@ class ToolDefaultParams(BaseModel):
     delegation_default_max_turns: int | None = Field(default=None, ge=1)
     delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    # Claude Code permission mode for sub-agents unless the call sets its own;
+    # unset means "auto".  "bypassPermissions" only when set explicitly.
+    delegation_default_permission_mode: SubagentPermissionMode | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

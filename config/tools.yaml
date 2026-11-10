@@ -51,6 +51,13 @@ tools:
       delegation_default_timeout_seconds: 300
       # Passed to the sub-agent CLI as --effort unless the call sets its own.
       delegation_default_effort: high
+      # Claude Code permission mode for sub-agents (both backends) unless the call
+      # sets backend_params.permission_mode: default | acceptEdits | plan | auto |
+      # dontAsk | bypassPermissions. Unset means auto. Unknown request values fall
+      # back to this default with a warning, never to bypassPermissions.
+      # auto needs a model that supports it (Opus/Sonnet 4.6+, Haiku 5.5, Fable);
+      # if the CLI cannot enter auto mode, the run fails instead of continuing.
+      delegation_default_permission_mode: auto
 
   - tool_id: check_subagent_status
     entrypoint: assistant.agent.tools.check_subagent_status:check_subagent_status

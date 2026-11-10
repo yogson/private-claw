@@ -12,8 +12,14 @@ from typing import Any
 
 import structlog
 
+from assistant.core.config.schemas import SubagentPermissionMode
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
+from assistant.subagents.permission_modes import (
+    PermissionModeMonitor,
+    explain_cli_rejection,
+    resolve_permission_mode,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -60,16 +66,23 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
 
     async def execute(self, request: DelegationRun) -> DelegationResult:
         prompt = self._build_prompt(request)
-        cmd = self._build_command(request, prompt)
+        permission_mode = resolve_permission_mode(
+            request.backend_params.get("permission_mode"),
+            source="claude_code",
+            task_id=request.task_id,
+        )
+        cmd = self._build_command(request, prompt, permission_mode)
         cwd = request.backend_params.get("directory")
         log_path = Path(request.log_path) if request.log_path else None
         process: asyncio.subprocess.Process | None = None
         result_line: dict[str, Any] | None = None
+        mode_monitor = PermissionModeMonitor(permission_mode, request.task_id)
+        mode_error: str | None = None
         raw_lines: list[str] = []
         stderr_chunks: list[bytes] = []
 
         async def _drain_stdout(proc: asyncio.subprocess.Process) -> None:
-            nonlocal result_line
+            nonlocal result_line, mode_error
             assert proc.stdout is not None
             async for raw_line in proc.stdout:
                 line = raw_line.decode("utf-8", errors="replace").strip()
@@ -84,8 +97,15 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
                     continue
                 if data.get("type") == "result":
                     result_line = data
+                mode_error = mode_monitor.observe(data.get("type") == "system", data)
                 if log_path is not None:
                     await self._log_stream_json_line(log_path, data, request.task_id)
+                if mode_error is not None:
+                    # Never let the run continue in a mode nobody asked for
+                    # (e.g. Manual instead of an unavailable auto mode).
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                    return
 
         async def _drain_stderr(proc: asyncio.subprocess.Process) -> None:
             assert proc.stderr is not None
@@ -129,6 +149,8 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             return DelegationResult(ok=False, error=f"claude execution failed: {exc}")
 
         assert process is not None
+        if mode_error is not None:
+            return DelegationResult(ok=False, error=mode_error)
         stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
         if process.returncode != 0:
             # A structured result line, if we got one before the process died,
@@ -138,6 +160,7 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             result_error = result_line.get("result") if result_line else None
             msg = (
                 (str(result_error) if result_error else None)
+                or explain_cli_rejection(permission_mode, stderr_text)
                 or stderr_text
                 or f"claude exited with code {process.returncode}"
             )
@@ -196,7 +219,12 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         with contextlib.suppress(Exception):
             await process.wait()
 
-    def _build_command(self, request: DelegationRun, prompt: str) -> list[str]:
+    def _build_command(
+        self,
+        request: DelegationRun,
+        prompt: str,
+        permission_mode: SubagentPermissionMode,
+    ) -> list[str]:
         cmd = [
             self._binary,
             "-p",
@@ -208,15 +236,16 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             "--output-format",
             "stream-json",
             "--verbose",
+            # Always explicit: without it a headless run uses the settings
+            # default (Manual), which denies everything outside the allow list.
+            "--permission-mode",
+            permission_mode,
         ]
         if self._mcp_servers:
             cmd += ["--mcp-config", json.dumps({"mcpServers": self._mcp_servers})]
         effort = str(request.backend_params.get("effort", "")).strip()
         if effort:
             cmd += ["--effort", effort]
-        permission_mode = str(request.backend_params.get("permission_mode", "")).strip()
-        if permission_mode:
-            cmd += ["--permission-mode", permission_mode]
         add_dirs = request.backend_params.get("add_dirs")
         if isinstance(add_dirs, list):
             for item in add_dirs:
