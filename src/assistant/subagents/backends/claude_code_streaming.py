@@ -13,7 +13,6 @@ import contextlib
 import dataclasses
 import os
 import shutil
-import sys
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
@@ -38,6 +37,7 @@ from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 from assistant.subagents.permission_modes import (
     PermissionModeMonitor,
+    StreamEventKind,
     explain_cli_rejection,
     resolve_permission_mode,
 )
@@ -48,6 +48,7 @@ logger = structlog.get_logger(__name__)
 # Import failures are caught at execution time in execute().
 try:
     from claude_agent_sdk import (
+        AssistantMessage,
         ClaudeAgentOptions,
         PermissionMode,
         PermissionResultAllow,
@@ -57,6 +58,7 @@ try:
         TaskNotificationMessage,
         TaskStartedMessage,
         ToolPermissionContext,
+        UserMessage,
         query,
     )
 
@@ -76,6 +78,16 @@ def _is_sdk_permission_mode(mode: str) -> "TypeGuard[PermissionMode]":
     # The SDK's typed PermissionMode lags behind the CLI (0.1.50 lacks "auto"
     # and "dontAsk"); modes it does not know go through extra_args instead.
     return mode in get_args(PermissionMode)
+
+
+def _stream_event_kind(msg: Any) -> StreamEventKind:
+    # Only model output ends the startup permission-mode check; other events
+    # (RateLimitEvent, StreamEvent, ...) may still precede a downgrading status.
+    if isinstance(msg, SystemMessage):
+        return "system"
+    if isinstance(msg, (AssistantMessage, UserMessage, ResultMessage)):
+        return "model_output"
+    return "other"
 
 
 def _normalize_answer(reply: str, labels: list[str]) -> str:
@@ -155,9 +167,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
         def _on_stderr(line: str) -> None:
             # Piping stderr (needed to read it) stops the CLI inheriting ours;
-            # forward each line so it still reaches the service log.
+            # log each line, tagged with the task, so it still reaches the
+            # service log.
             stderr_tail.append(line)
-            print(line, file=sys.stderr)
+            logger.info("claude_streaming.stderr", task_id=request.task_id, line=line)
 
         async def _answer_ask_user_question(
             input_data: dict[str, Any],
@@ -207,6 +220,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             context: "ToolPermissionContext",
         ) -> "PermissionResultAllow | PermissionResultDeny":
             if tool_name == "AskUserQuestion":
+                # Never reached under dontAsk: the CLI denies AskUserQuestion
+                # itself there, so the relay only works in the other modes.
                 return await _answer_ask_user_question(input_data)
             if permission_mode == "bypassPermissions":
                 # Explicitly requested: the few prompts bypass mode still
@@ -241,7 +256,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             # Background tasks (run_in_background / Monitor) started but not yet
             # reported finished via a task_notification.
             pending_bg: set[str] = set()
-            mode_monitor = PermissionModeMonitor(permission_mode, request.task_id)
+            mode_monitor = PermissionModeMonitor(permission_mode, request.task_id, request.model_id)
             mode_error: str | None = None
 
             # Set once the run is genuinely over (a ResultMessage with no
@@ -276,8 +291,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                     return  # draining until the cancellation lands
                 if log_path is not None:
                     await write_log_lines(log_path, msg, request.task_id)
-                is_system = isinstance(msg, SystemMessage)
-                mode_error = mode_monitor.observe(is_system, msg.data if is_system else {})
+                kind = _stream_event_kind(msg)
+                mode_error = mode_monitor.observe(kind, msg.data if kind == "system" else {})
                 if mode_error is not None:
                     # Never let the run continue in a mode nobody asked for
                     # (e.g. Manual instead of an unavailable auto mode).
@@ -337,6 +352,9 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                         await task
 
         except Exception as exc:
+            # Best effort: the SDK feeds stderr_tail from its own reader task,
+            # so the rejection line may not have arrived yet when the error
+            # propagates; then the generic message below is returned.
             rejection = explain_cli_rejection(permission_mode, "\n".join(stderr_tail))
             return DelegationResult(
                 ok=False, error=rejection or f"claude-agent-sdk execution failed: {exc}"

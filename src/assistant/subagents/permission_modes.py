@@ -4,41 +4,70 @@ Component ID: CMP_AGENT_SUBAGENT_COORDINATOR
 Claude Code permission-mode resolution shared by the coordinator and the
 Claude Code delegation backends.
 
-The mode a sub-agent runs in comes from ``backend_params["permission_mode"]``
-(explicit per-request override), else the configured
-``delegation_default_permission_mode`` tool param, else ``"auto"``.  Unknown
-values never escalate to ``bypassPermissions``: they fall back to the default
-with a structured warning.
+The configured ``delegation_default_permission_mode`` tool param (built-in
+default ``"auto"``) is both the default and the ceiling.  A per-request
+``backend_params["permission_mode"]`` may only pick a mode that is as
+restrictive or more (see ``PERMISSION_MODE_RANK``); a less restrictive one is
+refused with a structured warning and clamped to the configured mode.  Unknown
+values never escalate either: they fall back to the configured mode with a
+structured warning.
 """
 
 from collections.abc import Mapping
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 import structlog
 
-from assistant.core.config.schemas import SubagentPermissionMode
+from assistant.core.config.schemas import SubagentPermissionMode, normalize_permission_mode_alias
 
 logger = structlog.get_logger(__name__)
 
 DEFAULT_PERMISSION_MODE: SubagentPermissionMode = "auto"
 SUPPORTED_PERMISSION_MODES: tuple[SubagentPermissionMode, ...] = get_args(SubagentPermissionMode)
-# The CLI shows "default" as "Manual" and accepts "manual" as an alias, but
-# older CLIs (e.g. the copy bundled with claude-agent-sdk) only know "default".
-_ALIASES: dict[str, SubagentPermissionMode] = {"manual": "default"}
+# The CLI shows "default" as "Manual" and newer CLIs accept "manual" as an
+# alias, but older ones (e.g. 2.1.81, bundled with claude-agent-sdk 0.1.50) do
+# not, so "manual" is mapped to "default" before anything reaches the CLI.
 _MODES_BY_NAME: dict[str, SubagentPermissionMode] = {m: m for m in SUPPORTED_PERMISSION_MODES}
+
+# Restrictiveness order, most restrictive first; a higher rank means the
+# sub-agent may do more without anyone approving it.  In a delegated run nobody
+# can answer a permission prompt (``claude -p`` denies it, the streaming
+# backend's can_use_tool denies everything outside bypassPermissions), so:
+# - plan: read-only analysis; no file edits or commands that change anything.
+# - dontAsk: the Manual rules, but every call that would prompt is denied up
+#   front - including AskUserQuestion, so even the user relay is unavailable.
+# - default (Manual): allow/deny rules decide; prompts are denied, except
+#   AskUserQuestion, which the streaming backend relays to the user.
+# - acceptEdits: as default, plus file edits in the working directories are
+#   approved without a prompt.
+# - auto: a classifier approves most actions, Bash included, and blocks only
+#   destructive, irreversible or outward-facing ones.
+# - bypassPermissions: no checks at all (only protected-path safeguards).
+PERMISSION_MODE_RANK: dict[SubagentPermissionMode, int] = {
+    "plan": 0,
+    "dontAsk": 1,
+    "default": 2,
+    "acceptEdits": 3,
+    "auto": 4,
+    "bypassPermissions": 5,
+}
 
 _CONFIG_HINT = (
     "set delegation_default_permission_mode (tools.yaml, delegate_subagent_task) "
-    "to another mode, e.g. 'acceptEdits' or 'dontAsk'"
+    "to another mode, e.g. 'acceptEdits' (file edits are approved, but Bash commands "
+    "outside the Claude Code allow list are denied, and the claude_code_streaming "
+    "backend loads no allow list)"
 )
+
+StreamEventKind = Literal["system", "model_output", "other"]
 
 
 def parse_permission_mode(raw: object) -> SubagentPermissionMode | None:
     """Return the canonical mode for ``raw``, or None if it is not a known mode."""
-    if not isinstance(raw, str):
+    value = normalize_permission_mode_alias(raw)
+    if not isinstance(value, str):
         return None
-    value = raw.strip()
-    return _MODES_BY_NAME.get(value) or _ALIASES.get(value.lower())
+    return _MODES_BY_NAME.get(value)
 
 
 def resolve_permission_mode(
@@ -46,12 +75,13 @@ def resolve_permission_mode(
     default: SubagentPermissionMode = DEFAULT_PERMISSION_MODE,
     *,
     source: str,
-    task_id: str | None = None,
+    **log_context: Any,
 ) -> SubagentPermissionMode:
     """Resolve a requested permission mode, falling back to ``default``.
 
     Empty/None means "not requested" and silently yields ``default``; any other
     unknown value logs ``subagent.permission_mode.unknown`` and yields ``default``.
+    ``log_context`` (task_id, trace_id, session_id, ...) is added to the warning.
     """
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return default
@@ -61,12 +91,35 @@ def resolve_permission_mode(
     logger.warning(
         "subagent.permission_mode.unknown",
         source=source,
-        task_id=task_id,
         requested=str(raw),
         fallback=default,
         supported=list(SUPPORTED_PERMISSION_MODES),
+        **log_context,
     )
     return default
+
+
+def clamp_permission_mode(
+    requested: SubagentPermissionMode,
+    ceiling: SubagentPermissionMode,
+    **log_context: Any,
+) -> SubagentPermissionMode:
+    """Return ``requested`` unless it is less restrictive than ``ceiling``.
+
+    A less restrictive request is refused: it logs
+    ``subagent.permission_mode.clamped`` (with ``log_context``) and yields
+    ``ceiling``, so no caller can raise a run above the configured mode.
+    """
+    if PERMISSION_MODE_RANK[requested] <= PERMISSION_MODE_RANK[ceiling]:
+        return requested
+    logger.warning(
+        "subagent.permission_mode.clamped",
+        requested=requested,
+        ceiling=ceiling,
+        reason="per-request permission_mode is less restrictive than the configured mode",
+        **log_context,
+    )
+    return ceiling
 
 
 def permission_mode_mismatch_error(
@@ -79,7 +132,8 @@ def permission_mode_mismatch_error(
     Claude Code does not fail when ``--permission-mode auto`` is unavailable
     (unsupported model, disabled by settings/organization): it silently starts
     in Manual ("default") mode, where a headless run denies everything outside
-    the allow list.  The ``system/init`` event reports the effective mode.
+    the allow list.  ``system`` events (``init``, ``status``) report the
+    effective mode.
     """
     if not isinstance(reported, str) or not reported:
         return None  # older CLI without the field: nothing to compare against
@@ -87,7 +141,7 @@ def permission_mode_mismatch_error(
         return None
     message = (
         f"Claude Code started the sub-agent in '{reported}' permission mode instead of "
-        f"the requested '{requested}'; the run was aborted before any tool call."
+        f"the requested '{requested}'; the run was aborted before the model's first response."
     )
     if requested == "auto":
         message += (
@@ -108,23 +162,38 @@ class PermissionModeMonitor:
     an order that depends on the input mode: with ``claude -p`` a ``status``
     event saying "default" precedes ``init``; over the SDK's stream-json input
     ``init`` still says "auto" and a following ``status`` downgrades it.  Both
-    come before the first assistant message, so every report up to the first
-    non-system message is checked - no tool can have run by then.  Later
-    changes are only logged: the backends never auto-approve prompts outside
-    bypassPermissions, so a mid-run downgrade cannot escalate anything.
+    come before the model's first output, so every report until the first
+    model output (assistant/user/result message) is checked.  Other events
+    (``rate_limit_event``, partial ``stream_event`` ...) do not end the check.
+
+    This is about message order only: the CLI does not wait for us, so it may
+    already be waiting on the first API round-trip when we kill it.  It cannot
+    have acted on a model response yet, so no tool call can have been made
+    based on one.  Later changes are only logged: the backends never
+    auto-approve prompts outside bypassPermissions, so a mid-run downgrade
+    cannot escalate anything.
     """
 
-    def __init__(self, requested: SubagentPermissionMode, task_id: str) -> None:
+    def __init__(
+        self,
+        requested: SubagentPermissionMode,
+        task_id: str,
+        model: str | None = None,
+    ) -> None:
         self._requested = requested
         self._task_id = task_id
         self._started = False
-        self._model: object = None
+        # Fallback until a system event names the model: `claude -p` sends
+        # the downgrading `status` event before `init`, and it has no model.
+        self._model: object = model or None
         self._last_reported: object = None
 
-    def observe(self, is_system: bool, data: Mapping[str, Any]) -> str | None:
+    def observe(self, kind: StreamEventKind, data: Mapping[str, Any]) -> str | None:
         """Feed one stream message; return an error if the run must be aborted."""
-        if not is_system:
+        if kind == "model_output":
             self._started = True
+            return None
+        if kind != "system":
             return None
         self._model = data.get("model") or self._model
         reported = data.get("permissionMode")
@@ -141,6 +210,7 @@ class PermissionModeMonitor:
             task_id=self._task_id,
             requested=self._requested,
             reported=reported,
+            model=self._model,
         )
         return None if self._started else error
 
@@ -151,5 +221,6 @@ def explain_cli_rejection(requested: SubagentPermissionMode, stderr: str) -> str
         return None
     return (
         f"Claude Code CLI rejected --permission-mode {requested}: {stderr.strip()}"
-        " Upgrade Claude Code (auto mode needs v2.1.228+), or " + _CONFIG_HINT + "."
+        f" Upgrade Claude Code to a version that supports --permission-mode {requested},"
+        f" or {_CONFIG_HINT}."
     )

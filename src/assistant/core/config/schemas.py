@@ -7,15 +7,34 @@ Each schema corresponds to one config/*.yaml file.
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 
 # Claude Code permission modes a delegated sub-agent may run in (CLI config
 # values; the CLI's "manual" is an alias of "default").  See
 # assistant.subagents.permission_modes for how they are resolved per run.
 SubagentPermissionMode = Literal[
     "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"
+]
+
+
+def normalize_permission_mode_alias(value: object) -> object:
+    """Strip a permission-mode string and map the CLI alias "manual" to "default".
+
+    Shared by config validation and the per-request resolver so both accept the
+    same spellings.  Anything else is returned as-is for the caller to validate
+    (mode names are case-sensitive, as in the CLI).
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    return "default" if stripped.lower() == "manual" else stripped
+
+
+# Config field type: same values as SubagentPermissionMode, plus the "manual" alias.
+SubagentPermissionModeSetting = Annotated[
+    SubagentPermissionMode, BeforeValidator(normalize_permission_mode_alias)
 ]
 
 
@@ -158,8 +177,9 @@ class ToolDefaultParams(BaseModel):
     delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     # Claude Code permission mode for sub-agents unless the call sets its own;
-    # unset means "auto".  "bypassPermissions" only when set explicitly.
-    delegation_default_permission_mode: SubagentPermissionMode | None = None
+    # unset means "auto".  It is also the ceiling: a per-request mode may only be
+    # as restrictive or more.  "bypassPermissions" only when set explicitly.
+    delegation_default_permission_mode: SubagentPermissionModeSetting | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

@@ -537,14 +537,27 @@ def test_build_command_omits_mcp_config_when_no_servers() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _init_line(permission_mode: str, model: str = "claude-sonnet-5", subtype: str = "init") -> str:
+def _init_line(
+    permission_mode: str, model: str | None = "claude-sonnet-5", subtype: str = "init"
+) -> str:
+    data: dict[str, Any] = {
+        "type": "system",
+        "subtype": subtype,
+        "session_id": "s1",
+        "permissionMode": permission_mode,
+    }
+    if model is not None:
+        data["model"] = model
+    return json.dumps(data)
+
+
+def _rate_limit_line() -> str:
     return json.dumps(
         {
-            "type": "system",
-            "subtype": subtype,
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
+            "uuid": "u1",
             "session_id": "s1",
-            "model": model,
-            "permissionMode": permission_mode,
         }
     )
 
@@ -647,6 +660,67 @@ async def test_status_event_before_init_reporting_manual_aborts_run(
     assert result.error is not None
     assert "instead of the requested 'auto'" in result.error
     assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_status_without_model_names_the_requested_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claude -p's downgrading status event has no model: name the requested one."""
+    proc = _FakeProcess(
+        returncode=None,
+        stdout_lines=[_init_line("default", model=None, subtype="status"), _result_line()],
+    )
+    result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.error is not None
+    assert "model 'claude-sonnet-5'" in result.error
+    assert "'unknown'" not in result.error
+    assert "aborted before the model's first response" in result.error
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_event_before_downgrade_still_aborts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-system, non-model event must not end the startup mode check."""
+    proc = _FakeProcess(
+        returncode=None,
+        stdout_lines=[
+            _init_line("auto"),
+            _rate_limit_line(),
+            json.dumps({"type": "stream_event", "event": {}, "uuid": "u2", "session_id": "s1"}),
+            _init_line("default", subtype="status"),
+            _result_line(),
+        ],
+    )
+    with capture_logs() as logs:
+        result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is False
+    assert result.error is not None
+    assert "instead of the requested 'auto'" in result.error
+    assert proc.killed is True
+    mismatch = next(e for e in logs if e["event"] == "subagent.permission_mode.mismatch")
+    assert mismatch["task_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_mode_change_after_assistant_message_is_only_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProcess(
+        returncode=0,
+        stdout_lines=[
+            _init_line("auto"),
+            _assistant_line("working"),
+            _init_line("default", subtype="status"),
+            _result_line(),
+        ],
+    )
+    with capture_logs() as logs:
+        result, _ = await _run_capturing_cmd(monkeypatch, proc)
+    assert result.ok is True
+    assert proc.killed is False
+    assert any(e["event"] == "subagent.permission_mode.changed" for e in logs)
 
 
 @pytest.mark.asyncio

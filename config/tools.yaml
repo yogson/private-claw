@@ -37,7 +37,9 @@ tools:
       delegation_allowed_backends:
         - claude_code
         - claude_code_streaming
-      delegation_default_model_id: claude-sonnet-4-5
+      # Must support Claude Code auto mode (Opus/Sonnet 4.6+, Haiku 5.5, Fable)
+      # while delegation_default_permission_mode is auto; *-4-5 models do not.
+      delegation_default_model_id: claude-sonnet-5-5
       delegation_model_allowlist: []
       delegation_default_ttl_seconds: 3600
       delegation_max_ttl_seconds: 21600
@@ -51,12 +53,15 @@ tools:
       delegation_default_timeout_seconds: 300
       # Passed to the sub-agent CLI as --effort unless the call sets its own.
       delegation_default_effort: high
-      # Claude Code permission mode for sub-agents (both backends) unless the call
-      # sets backend_params.permission_mode: default | acceptEdits | plan | auto |
-      # dontAsk | bypassPermissions. Unset means auto. Unknown request values fall
-      # back to this default with a warning, never to bypassPermissions.
+      # Claude Code permission mode for sub-agents (both backends): plan | dontAsk |
+      # default (alias manual) | acceptEdits | auto | bypassPermissions, from most
+      # to least restrictive. Unset means auto. It is also the ceiling: a call's
+      # backend_params.permission_mode may only be as restrictive or more; a less
+      # restrictive or unknown one is refused with a warning and this mode is used.
       # auto needs a model that supports it (Opus/Sonnet 4.6+, Haiku 5.5, Fable);
       # if the CLI cannot enter auto mode, the run fails instead of continuing.
+      # dontAsk also denies AskUserQuestion, so the streaming backend's question
+      # relay does not work in it.
       delegation_default_permission_mode: auto
 
   - tool_id: check_subagent_status

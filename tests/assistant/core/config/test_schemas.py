@@ -90,6 +90,27 @@ class TestDelegationPermissionMode:
         params = ToolDefaultParams.model_validate({"delegation_default_permission_mode": mode})
         assert params.delegation_default_permission_mode == mode
 
-    def test_rejects_unknown_mode_at_startup(self) -> None:
+    @pytest.mark.parametrize("mode", ["yolo", "", "AUTO", "BypassPermissions", "bypass"])
+    def test_rejects_unknown_mode_at_startup(self, mode: str) -> None:
         with pytest.raises(ValidationError):
-            ToolDefaultParams.model_validate({"delegation_default_permission_mode": "yolo"})
+            ToolDefaultParams.model_validate({"delegation_default_permission_mode": mode})
+
+    @pytest.mark.parametrize("alias", ["manual", "Manual", " manual "])
+    def test_manual_alias_maps_to_default(self, alias: str) -> None:
+        """Config accepts the same "manual" alias as per-request values."""
+        params = ToolDefaultParams.model_validate({"delegation_default_permission_mode": alias})
+        assert params.delegation_default_permission_mode == "default"
+
+    def test_capability_override_accepts_manual_alias(self) -> None:
+        from assistant.core.capabilities.schemas import CapabilityToolOverride
+
+        override = CapabilityToolOverride.model_validate(
+            {"delegation_default_permission_mode": "manual"}
+        )
+        assert override.delegation_default_permission_mode == "default"
+
+    def test_yaml_null_means_unset(self) -> None:
+        import yaml
+
+        raw = yaml.safe_load("delegation_default_permission_mode: null\n")
+        assert ToolDefaultParams.model_validate(raw).delegation_default_permission_mode is None

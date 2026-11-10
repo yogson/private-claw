@@ -17,11 +17,25 @@ from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 from assistant.subagents.permission_modes import (
     PermissionModeMonitor,
+    StreamEventKind,
     explain_cli_rejection,
     resolve_permission_mode,
 )
 
 logger = structlog.get_logger(__name__)
+
+# stream-json message types that carry model output; anything else that is not
+# "system" (rate_limit_event, stream_event, ...) does not end the mode check.
+_MODEL_OUTPUT_TYPES = frozenset({"assistant", "user", "result"})
+
+
+def _stream_event_kind(message_type: object) -> StreamEventKind:
+    if message_type == "system":
+        return "system"
+    if message_type in _MODEL_OUTPUT_TYPES:
+        return "model_output"
+    return "other"
+
 
 _DEFAULT_CLAUDE_BINARY = "claude"
 # StreamReader's default per-line buffer is 64KiB (asyncio.create_subprocess_exec's
@@ -76,7 +90,7 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         log_path = Path(request.log_path) if request.log_path else None
         process: asyncio.subprocess.Process | None = None
         result_line: dict[str, Any] | None = None
-        mode_monitor = PermissionModeMonitor(permission_mode, request.task_id)
+        mode_monitor = PermissionModeMonitor(permission_mode, request.task_id, request.model_id)
         mode_error: str | None = None
         raw_lines: list[str] = []
         stderr_chunks: list[bytes] = []
@@ -97,7 +111,7 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
                     continue
                 if data.get("type") == "result":
                     result_line = data
-                mode_error = mode_monitor.observe(data.get("type") == "system", data)
+                mode_error = mode_monitor.observe(_stream_event_kind(data.get("type")), data)
                 if log_path is not None:
                     await self._log_stream_json_line(log_path, data, request.task_id)
                 if mode_error is not None:

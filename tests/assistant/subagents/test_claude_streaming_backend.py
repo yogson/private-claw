@@ -751,12 +751,23 @@ async def test_unknown_permission_mode_warns_and_uses_auto_not_bypass() -> None:
     assert warning["fallback"] == "auto"
 
 
-def _system_init(permission_mode: str, subtype: str = "init") -> Any:
+def _system_init(
+    permission_mode: str, subtype: str = "init", model: str | None = "claude-sonnet-4-5"
+) -> Any:
     from claude_agent_sdk import SystemMessage
 
-    return SystemMessage(
-        subtype=subtype,
-        data={"permissionMode": permission_mode, "model": "claude-sonnet-4-5"},
+    data: dict[str, Any] = {"permissionMode": permission_mode}
+    if model is not None:
+        data["model"] = model
+    return SystemMessage(subtype=subtype, data=data)
+
+
+def _rate_limit_event() -> Any:
+    from claude_agent_sdk import RateLimitEvent
+    from claude_agent_sdk.types import RateLimitInfo
+
+    return RateLimitEvent(
+        rate_limit_info=RateLimitInfo(status="allowed"), uuid="u1", session_id="s1"
     )
 
 
@@ -801,6 +812,56 @@ async def test_status_downgrade_after_init_aborts_run() -> None:
     assert result.ok is False
     assert result.error is not None
     assert "instead of the requested 'auto'" in result.error
+
+
+@pytest.mark.asyncio
+async def test_non_model_events_before_downgrade_still_abort() -> None:
+    """RateLimitEvent / StreamEvent are not model output: keep checking the mode."""
+    from claude_agent_sdk import StreamEvent
+
+    stream = _async_iter(
+        _system_init("auto"),
+        _rate_limit_event(),
+        StreamEvent(uuid="u2", session_id="s1", event={"type": "message_start"}),
+        _system_init("default", subtype="status"),
+        _make_result_msg(result="ran in Manual"),
+    )
+    with capture_logs() as logs, _patch_query(stream):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is False
+    assert result.error is not None
+    assert "instead of the requested 'auto'" in result.error
+    assert "aborted before the model's first response" in result.error
+    mismatch = next(e for e in logs if e["event"] == "subagent.permission_mode.mismatch")
+    assert mismatch["task_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_mismatch_without_model_in_event_names_the_requested_model() -> None:
+    stream = _async_iter(_system_init("default", subtype="status", model=None))
+    with _patch_query(stream):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.error is not None
+    assert "model 'claude-sonnet-4-5'" in result.error
+
+
+@pytest.mark.asyncio
+async def test_cli_stderr_is_logged_with_task_id() -> None:
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        options.stderr("some CLI diagnostic")
+        yield _make_result_msg(result="ok")
+
+    with capture_logs() as logs, _patch_query_side_effect(_fake_query):
+        result = await ClaudeCodeStreamingBackendAdapter().execute(_make_request())
+    assert result.ok is True
+    line = next(e for e in logs if e["event"] == "claude_streaming.stderr")
+    assert line["task_id"] == "t1"
+    assert line["line"] == "some CLI diagnostic"
 
 
 @pytest.mark.asyncio
