@@ -198,8 +198,13 @@ API:
 - `reload(reason)`: re-reads every file regardless of stat (e.g. right after an approved
   write), still bumping the revision only if content changed.
 - `subscribe(callback)`: called after every swap to a new revision, after the catalog lock
-  is released (a subscriber may call `refresh()`/`reload()`); each revision is delivered at
-  most once and never after a newer one. Subscriber errors are logged, never raised.
+  is released. Delivery is serialized: one delivery loop runs at a time and keeps going
+  until every subscriber has received the latest revision. Each subscriber gets a revision
+  at most once, never an older one after a newer one, and always ends on the latest; an
+  intermediate revision may be skipped. A subscriber may call `refresh()`/`reload()`: a
+  revision produced meanwhile (by a subscriber, or by another thread) is only recorded and
+  handed to the running loop, so that call can return before its revision has reached
+  every subscriber. Subscriber errors are logged, never raised.
 
 Change detection is polling at turn start; there is no background watcher, because
 nothing consumes the snapshot between turns. Editors, `git pull`, sub-agents and future

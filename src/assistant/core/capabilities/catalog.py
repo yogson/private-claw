@@ -47,8 +47,12 @@ class CapabilityCatalog(CapabilityCatalogInterface):
 
     Thread-safety: refresh/reload are serialized by a lock; readers get the current
     snapshot through a single attribute read (atomic swap). Subscribers are called after
-    the lock is released (so they may call ``refresh()``/``reload()`` themselves), each
-    new revision at most once and never after a newer revision.
+    the lock is released, by a single serialized dispatcher (see :meth:`_notify`): each
+    subscriber receives a revision at most once, never one older than a revision it has
+    already received, and always ends on the latest revision. Subscribers may call
+    ``refresh()``/``reload()`` themselves; a revision produced while a delivery is running
+    (re-entrantly or in another thread) is handed to that delivery, so such a call may
+    return before its revision has reached every subscriber.
     """
 
     def __init__(
@@ -65,8 +69,11 @@ class CapabilityCatalog(CapabilityCatalogInterface):
         self._min_refresh_interval = min_refresh_interval
         self._clock = clock
         self._lock = threading.Lock()
+        # Subscriber dispatch state, guarded by _notify_lock (see _notify).
         self._notify_lock = threading.Lock()
-        self._notified_revision = 1
+        self._notified_revision = 1  # newest revision handed to the dispatcher
+        self._pending: CapabilitySnapshot | None = None  # newest revision not yet delivered
+        self._delivering = False  # a delivery loop is running (in some thread)
         self._subscribers: list[SnapshotSubscriber] = []
         self._reported: frozenset[str] = frozenset()
         self._blocked = False
@@ -198,20 +205,47 @@ class CapabilityCatalog(CapabilityCatalogInterface):
         self._reported = messages
 
     def _notify(self, snapshot: CapabilitySnapshot) -> None:
-        # Called without self._lock held; the guard drops repeats and stale revisions.
+        # Called without self._lock held. Only one delivery loop runs at a time: a caller
+        # that finds one running (a subscriber calling reload(), or another thread) only
+        # records its revision as pending and returns; the running loop picks it up.
         with self._notify_lock:
             if snapshot.revision <= self._notified_revision:
-                return
+                return  # a repeat, or older than a revision already handed over
             self._notified_revision = snapshot.revision
-        for callback in list(self._subscribers):
-            try:
-                callback(snapshot)
-            except Exception:
-                logger.exception(
-                    "capabilities.subscriber_failed",
-                    revision=snapshot.revision,
-                    subscriber=getattr(callback, "__qualname__", repr(callback)),
-                )
+            self._pending = snapshot
+            if self._delivering:
+                return
+            self._delivering = True
+        try:
+            self._deliver_pending()
+        except BaseException:
+            with self._notify_lock:
+                self._delivering = False
+            raise
+
+    def _deliver_pending(self) -> None:
+        while True:
+            with self._notify_lock:
+                snapshot, self._pending = self._pending, None
+                if snapshot is None:
+                    # Cleared together with the empty check, so a revision recorded by
+                    # another caller is never left behind without a delivery loop.
+                    self._delivering = False
+                    return
+            for callback in list(self._subscribers):
+                if self._pending is not None:
+                    break  # a newer revision arrived: start over with it for everyone
+                self._deliver(callback, snapshot)
+
+    def _deliver(self, callback: SnapshotSubscriber, snapshot: CapabilitySnapshot) -> None:
+        try:
+            callback(snapshot)
+        except Exception:
+            logger.exception(
+                "capabilities.subscriber_failed",
+                revision=snapshot.revision,
+                subscriber=getattr(callback, "__qualname__", repr(callback)),
+            )
 
 
 def _changed_ids(

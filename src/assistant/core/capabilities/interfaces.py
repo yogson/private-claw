@@ -35,6 +35,11 @@ class CapabilityCatalogInterface(ABC):
     def subscribe(self, callback: SnapshotSubscriber) -> None:
         """Call ``callback(snapshot)`` after every successful swap to a new revision.
 
-        Callbacks run after the catalog's lock is released, so they may call back into the
-        catalog; their exceptions are logged and never raised.
+        Callbacks run after the catalog's lock is released, one delivery at a time: each
+        callback receives a revision at most once, never an older revision after a newer
+        one, and always ends on the latest revision (intermediate revisions may be
+        skipped). Callbacks may call back into the catalog; a revision produced meanwhile
+        (by a callback or another thread) is delivered by the delivery already running, so
+        that ``refresh()``/``reload()`` may return before its revision reached every
+        callback. Callback exceptions are logged and never raised.
         """

@@ -414,6 +414,92 @@ def test_subscriber_may_call_back_into_the_catalog(
     assert seen == [2]
 
 
+def _assert_in_order_ending_on(log: list[tuple[str, int]], names: list[str], last: int) -> None:
+    for name in names:
+        revisions = [revision for who, revision in log if who == name]
+        assert revisions == sorted(set(revisions)), f"{name} got {revisions}"
+        assert revisions[-1] == last, f"{name} did not end on revision {last}: {revisions}"
+
+
+def test_reentrant_reload_never_delivers_a_stale_revision(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    log: list[tuple[str, int]] = []
+
+    def s1(snapshot: CapabilitySnapshot) -> None:
+        log.append(("s1", snapshot.revision))
+        if snapshot.revision == 2:
+            _write(tmp_path, "b.yaml", _manifest("b", "beta v3"))
+            assert catalog.reload("from subscriber").revision == 3
+
+    catalog.subscribe(s1)
+    catalog.subscribe(lambda snapshot: log.append(("s2", snapshot.revision)))
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    catalog.refresh()
+
+    # Before the fix: [('s1', 2), ('s1', 3), ('s2', 3), ('s2', 2)], s2 ending on 2.
+    assert log == [("s1", 2), ("s1", 3), ("s2", 3)]
+    _assert_in_order_ending_on(log, ["s1", "s2"], last=3)
+
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v4"))
+    catalog.refresh()  # the dispatcher is idle again and delivers the next revision
+    assert log[-2:] == [("s1", 4), ("s2", 4)]
+
+
+def test_concurrent_reload_never_delivers_a_stale_revision(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    log: list[tuple[str, int]] = []
+    s1_entered = threading.Event()
+    release_s1 = threading.Event()
+
+    def s1(snapshot: CapabilitySnapshot) -> None:
+        log.append(("s1", snapshot.revision))
+        if snapshot.revision == 2:
+            s1_entered.set()
+            assert release_s1.wait(timeout=5)
+
+    catalog.subscribe(s1)
+    catalog.subscribe(lambda snapshot: log.append(("s2", snapshot.revision)))
+
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    thread_a = threading.Thread(target=catalog.refresh, daemon=True)
+    thread_a.start()
+    assert s1_entered.wait(timeout=5)  # thread A is delivering revision 2, stuck in s1
+
+    _write(tmp_path, "b.yaml", _manifest("b", "beta v3"))
+    assert catalog.reload("thread b").revision == 3  # thread B: revision 3, handed to A
+    assert log == [("s1", 2)]  # B did not deliver revision 3 behind A's back
+
+    release_s1.set()
+    thread_a.join(timeout=5)
+    assert not thread_a.is_alive()
+    # Before the fix: [('s1', 2), ('s1', 3), ('s2', 3), ('s2', 2)].
+    assert log == [("s1", 2), ("s1", 3), ("s2", 3)]
+    _assert_in_order_ending_on(log, ["s1", "s2"], last=3)
+
+
+def test_failing_subscriber_does_not_stall_the_dispatcher(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    seen: list[int] = []
+
+    def failing(snapshot: CapabilitySnapshot) -> None:
+        if snapshot.revision == 2:
+            _write(tmp_path, "b.yaml", _manifest("b", "beta v3"))
+            catalog.reload("from failing subscriber")
+        raise RuntimeError("subscriber bug")
+
+    catalog.subscribe(failing)
+    catalog.subscribe(lambda snapshot: seen.append(snapshot.revision))
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    with capture_logs() as logs:
+        catalog.refresh()
+    assert seen == [3]
+    failures = [e["revision"] for e in logs if e["event"] == "capabilities.subscriber_failed"]
+    assert failures == [2, 3]
+
+
 def test_scan_failure_is_logged_once_and_recovery_is_logged(
     catalog: CapabilityCatalog, tmp_path: Path
 ) -> None:
