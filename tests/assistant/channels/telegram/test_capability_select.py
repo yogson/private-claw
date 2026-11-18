@@ -2,22 +2,27 @@
 Unit tests for CapabilitySelectService and capability selection callbacks.
 """
 
+import errno
 import hashlib
 import hmac as _hmac_module
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.capability_select_callbacks import (
     sign_capability_callback,
     verify_capability_callback,
 )
-from assistant.channels.telegram.capability_select_service import CapabilitySelectService
+from assistant.channels.telegram.capability_select_service import (
+    CapabilitySelectService,
+    _display_message,
+)
 from assistant.channels.telegram.models import (
     CallbackQueryMeta,
     EventSource,
@@ -32,6 +37,7 @@ from tests.assistant.capability_helpers import StaticCatalog, snapshot_of
 
 _SECRET = "test-hmac-secret"
 _CHAT_ID = 123456
+_SCANNER = "assistant.core.capabilities.manifest_scanner"
 _NOW = datetime(2026, 1, 15, 10, 0, 0, tzinfo=UTC)
 
 _CAP_DEFS: dict[str, CapabilityDefinition] = {
@@ -200,6 +206,46 @@ class TestCapabilityMenuFollowsCatalog:
         assert (
             "`[a.yaml] YAML parse error: while parsing a flow mapping (line 2, column 6)`" in text
         )
+
+    def test_read_error_shows_the_file_name_but_no_absolute_path(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\n")
+        svc = CapabilitySelectService(
+            CapabilityCatalog(tmp_path, min_refresh_interval=0), hmac_secret=_SECRET
+        )
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\nprompt: v2\n")
+        error = PermissionError(errno.EACCES, "Permission denied", str(tmp_path / "a.yaml"))
+        with patch.object(Path, "read_bytes", side_effect=error):
+            text = self._menu(svc)
+        assert "`[a.yaml] read error: Permission denied`" in text
+        assert str(tmp_path) not in text
+
+    def test_scan_error_shows_no_absolute_path(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\n")
+        svc = CapabilitySelectService(
+            CapabilityCatalog(tmp_path, min_refresh_interval=0), hmac_secret=_SECRET
+        )
+        error = PermissionError(errno.EACCES, "Permission denied", str(tmp_path / "capabilities"))
+        with (
+            patch(f"{_SCANNER}.discover_capability_manifests", side_effect=error),
+            capture_logs(),  # the traceback goes to the log, not to the view
+        ):
+            text = self._menu(svc)
+        assert "`refresh failed: Permission denied: 'capabilities'`" in text
+        assert str(tmp_path) not in text
+
+    @pytest.mark.parametrize(
+        ("message", "shown"),
+        [
+            (
+                "validator failed: cannot open '/home/me/x/tools.py'",
+                "validator failed: cannot open 'tools.py'",
+            ),
+            ("boom at /home/me/caps/a.yaml line 3", "boom at a.yaml line 3"),
+            ("see https://example.com/a/b and a/b/c", "see https://example.com/a/b and a/b/c"),
+        ],
+    )
+    def test_any_absolute_path_is_cut_to_its_file_name(self, message: str, shown: str) -> None:
+        assert _display_message(message) == shown
 
 
 class TestAdapterCapabilitySelect:

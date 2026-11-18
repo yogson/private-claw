@@ -26,6 +26,7 @@ from assistant.core.capabilities.manifest_scanner import (
     ManifestScanner,
     ScannedFile,
     StatSignature,
+    describe_os_error,
 )
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilityLoadIssue, CapabilitySnapshot
@@ -143,7 +144,8 @@ class CapabilityCatalog(CapabilityCatalogInterface):
                 return self._snapshot
             return self._apply(signature, files, force=force, reason=reason)
         except Exception as exc:
-            issue = CapabilityLoadIssue("validation", f"refresh failed: {exc}")
+            detail = describe_os_error(exc) if isinstance(exc, OSError) else str(exc)
+            issue = CapabilityLoadIssue("validation", f"refresh failed: {detail}")
             self._signature = None  # retry on the next refresh
             if self._snapshot.errors != (issue,):
                 self._snapshot = replace(self._snapshot, errors=(issue,))

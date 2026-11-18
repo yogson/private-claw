@@ -15,6 +15,7 @@ from bumping the revision.
 """
 
 import hashlib
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -66,6 +67,23 @@ class ManifestCandidate:
     def blocking(self) -> bool:
         """True when any issue rejects this candidate."""
         return any(issue.blocking for issue in self.issues)
+
+
+def describe_os_error(exc: OSError, *, file_names: bool = True) -> str:
+    """``exc`` for the owner-facing issue text: the OS message plus file base names only.
+
+    ``str(exc)`` carries absolute paths (home directory, user name), which would reach the
+    Telegram ``/capabilities`` view. An error without ``strerror`` has no file name set and
+    is shown as is.
+    """
+    if not exc.strerror:
+        return str(exc) or type(exc).__name__
+    names = [
+        repr(os.path.basename(os.fsdecode(name)))
+        for name in (exc.filename, exc.filename2)
+        if file_names and isinstance(name, str | bytes | os.PathLike)
+    ]
+    return ": ".join([exc.strerror, *names])
 
 
 class ManifestScanner:
@@ -149,7 +167,9 @@ class ManifestScanner:
         except OSError as exc:
             state = ManifestFileState(path=path, mtime_ns=mtime_ns, size=size, sha256="")
             # Not cached: fixing the cause (chmod, remount) changes neither mtime nor size.
-            return _ParsedFile(state, None, (f"[{path.name}] read error: {exc}",), retry=True)
+            reason = describe_os_error(exc, file_names=False)  # the name is in the prefix
+            message = f"[{path.name}] read error: {reason}"
+            return _ParsedFile(state, None, (message,), retry=True)
         state = ManifestFileState(
             path=path, mtime_ns=mtime_ns, size=size, sha256=hashlib.sha256(raw).hexdigest()
         )

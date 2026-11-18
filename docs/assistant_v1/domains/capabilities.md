@@ -239,7 +239,9 @@ Validation and last-known-good (LKG):
   later comes back is logged again. `capabilities.reload_recovered` is logged once the
   reload succeeds again. The Telegram `/capabilities` picker shows a warning block with the
   revision still in use and, per error, only its first line and line/column (PyYAML puts
-  the offending source line after the first line, and it may hold secrets); the full
+  the offending source line after the first line, and it may hold secrets). Paths are shown
+  as the file name only: read and scan errors carry the OS message (`[a.yaml] read error:
+  Permission denied`), and any other absolute path is cut to its last component. The full
   message is in the log. There is no proactive Telegram notification.
 
 One snapshot per turn: the orchestrator calls `refresh()` once and passes that snapshot to

@@ -23,6 +23,8 @@ _BUTTON_LABEL_MAX = 64
 _MAX_ERRORS_SHOWN = 3
 _ERROR_MAX_CHARS = 200
 _LOCATION_RE = re.compile(r"line (\d+), column (\d+)")
+# An absolute POSIX path; group 1 is its last component (the file name).
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~/:-])/(?:[^\s/'\"`]+/)*([^\s/'\"`]+)")
 
 
 class CapabilitySelectService:
@@ -134,6 +136,9 @@ def _display_message(message: str) -> str:
     location = _LOCATION_RE.search(rest)
     if location is not None and _LOCATION_RE.search(first) is None:
         first += f" (line {location[1]}, column {location[2]})"
+    # Read and scan errors name only the file; anything else that still carries an absolute
+    # path (home directory, user name) is cut down to the file name as well.
+    first = _ABSOLUTE_PATH_RE.sub(r"\1", first)
     if len(first) > _ERROR_MAX_CHARS:
         first = first[: _ERROR_MAX_CHARS - 1] + "…"
     return first.replace("`", "'")
