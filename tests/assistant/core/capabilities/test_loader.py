@@ -30,6 +30,17 @@ def test_discover_skips_index_yaml(tmp_path: Path) -> None:
     assert paths[0].name == "assistant.yaml"
 
 
+@pytest.mark.parametrize(
+    "name", ["._assistant.yaml", ".#assistant.yaml", "assistant.yaml~", ".assistant.yaml.swp"]
+)
+def test_discover_skips_hidden_and_editor_temp_files(tmp_path: Path, name: str) -> None:
+    cap_dir = tmp_path / "capabilities"
+    cap_dir.mkdir()
+    (cap_dir / "assistant.yaml").write_text("capability_id: assistant\n")
+    (cap_dir / name).write_bytes(b"\x00\x05\x16\x07 not: [yaml")
+    assert [p.name for p in discover_capability_manifests(cap_dir)] == ["assistant.yaml"]
+
+
 def test_load_returns_empty_when_no_capabilities_dir(tmp_path: Path) -> None:
     result = load_capability_definitions(config_dir=tmp_path)
     assert result == {}

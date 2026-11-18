@@ -428,3 +428,12 @@ def test_scan_failure_is_logged_once_and_recovery_is_logged(
     assert len(failed) == 1
     assert isinstance(failed[0]["exc_info"], PermissionError)  # traceback kept, once
     assert [e["event"] for e in logs].count("capabilities.reload_recovered") == 1
+
+
+def test_editor_temp_files_never_block_a_reload(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    for name in ("._a.yaml", ".#a.yaml", "a.yaml~", ".a.yaml.swp"):
+        _write(tmp_path, name, "not: [valid")
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.errors == ()

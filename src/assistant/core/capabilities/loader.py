@@ -26,15 +26,23 @@ class ManifestParseError(Exception):
         self.messages = messages
 
 
+def is_capability_manifest_name(name: str) -> bool:
+    """True for ``*.yaml``/``*.yml`` manifest names (not ``index.yaml``).
+
+    Hidden names are never manifests: macOS AppleDouble ``._x.yaml``, Emacs lock files
+    ``.#x.yaml`` and dot-prefixed editor/writer temp files. Backup and swap files
+    (``x.yaml~``, ``.x.yaml.swp``) are excluded by the suffix check.
+    """
+    return (
+        not name.startswith(".") and name != "index.yaml" and Path(name).suffix in (".yaml", ".yml")
+    )
+
+
 def discover_capability_manifests(capabilities_dir: Path) -> list[Path]:
     """Discover capability manifest paths under config/capabilities/*.yaml."""
     if not capabilities_dir.is_dir():
         return []
-    paths: list[Path] = []
-    for path in sorted(capabilities_dir.iterdir()):
-        if path.suffix in (".yaml", ".yml") and path.name != "index.yaml":
-            paths.append(path)
-    return paths
+    return [p for p in sorted(capabilities_dir.iterdir()) if is_capability_manifest_name(p.name)]
 
 
 def format_validation_error(file_name: str, exc: ValidationError) -> list[str]:
