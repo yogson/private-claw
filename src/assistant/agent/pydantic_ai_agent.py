@@ -7,6 +7,8 @@ Replaces manual provider tool protocol handling with Agent-managed tool loop.
 
 import asyncio
 import contextlib
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -30,9 +32,10 @@ from assistant.agent.message_converters import (
     _message_to_user_prompt_content,
 )
 from assistant.agent.session_record_builder import _new_messages_to_session_records
-from assistant.agent.system_prompt_builder import _compose_system_prompt
+from assistant.agent.system_prompt_builder import _compose_system_prompt, current_date_instruction
 from assistant.agent.tools import TurnDeps, get_agent_mcp_toolsets, get_agent_tools
-from assistant.agent.tools.registry import resolve_active_capabilities
+from assistant.agent.tools.registry import ActiveCapabilities, active_capabilities_for
+from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.first_party.memory import normalize_candidate_for_upsert
 
@@ -156,13 +159,27 @@ def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[st
     return normalize_candidate_for_upsert(candidate)
 
 
-def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> Agent[TurnDeps, str]:
-    """Create Agent with memory_propose_update tool. Output type is str (final assistant text)."""
-    active = resolve_active_capabilities(config)  # parse capability manifests once per build
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _create_agent(
+    model_id: str,
+    system_prompt: str,
+    config: RuntimeConfig,
+    active: ActiveCapabilities,
+    instructions: Callable[[], str] | None = None,
+) -> Agent[TurnDeps, str]:
+    """Create Agent with memory_propose_update tool. Output type is str (final assistant text).
+
+    ``instructions`` is evaluated on every run (a dynamic instruction placed after the
+    cached static system prompt), so per-turn facts never go stale in a cached adapter.
+    """
     return Agent(
         model_id,
         deps_type=TurnDeps,
         system_prompt=system_prompt,
+        instructions=instructions,
         # tools: keep at 0 to prevent loops; output: allow 1 validation retry
         retries={"tools": 0, "output": 1},
         tools=get_agent_tools(config, active),
@@ -171,25 +188,48 @@ def _create_agent(model_id: str, system_prompt: str, config: RuntimeConfig) -> A
 
 
 class PydanticAITurnAdapter:
-    """Runs one orchestrator turn via Pydantic AI Agent."""
+    """Runs one orchestrator turn via Pydantic AI Agent.
+
+    The system prompt and tool set are built once from ``snapshot`` (one capability
+    revision); the adapter cache builds a new adapter when the revision changes. The
+    current date is injected per run from ``clock``.
+    """
 
     def __init__(
         self,
         model_id: str,
         max_tokens: int = 1024,
         config: RuntimeConfig | None = None,
+        snapshot: CapabilitySnapshot | None = None,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._model_id = model_id
         self._max_tokens = max_tokens
-        if config is None:
-            raise ValueError("PydanticAITurnAdapter requires config for capability-gated tools")
-        self._system_prompt = _compose_system_prompt(config)
-        self._agent = _create_agent(model_id, self._system_prompt, config)
+        if config is None or snapshot is None:
+            raise ValueError(
+                "PydanticAITurnAdapter requires config and a capability snapshot "
+                "for capability-gated tools"
+            )
+        active = active_capabilities_for(config, snapshot)
+        self._clock = clock
+        self._revision = snapshot.revision
+        self._system_prompt = _compose_system_prompt(active)
+        self._agent = _create_agent(
+            model_id, self._system_prompt, config, active, instructions=self._date_instruction
+        )
+
+    def _date_instruction(self) -> str:
+        return current_date_instruction(self._clock())
 
     @property
     def system_prompt(self) -> str:
-        """System prompt used for each turn."""
+        """Static (cached) system prompt used for each turn."""
         return self._system_prompt
+
+    @property
+    def capability_revision(self) -> int:
+        """Capability snapshot revision this adapter was built from."""
+        return self._revision
 
     async def run_turn(
         self,

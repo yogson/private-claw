@@ -12,10 +12,9 @@ Tool registration for Pydantic AI agent. Capability-first activation model:
   excluding denied_capabilities).
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from importlib import import_module
-from pathlib import Path
 from typing import Any, cast, get_type_hints
 
 import structlog
@@ -24,31 +23,39 @@ from pydantic_ai.tools import ToolFuncEither
 from pydantic_ai.toolsets import AbstractToolset
 
 from assistant.agent.deps import TurnDeps
-from assistant.core.capabilities.loader import (
-    collect_mcp_server_ids,
-    expand_nested_capabilities,
-    load_capability_definitions,
-)
+from assistant.core.capabilities.loader import collect_mcp_server_ids
+from assistant.core.capabilities.resolver import resolve_policy
 from assistant.core.capabilities.schemas import CapabilityDefinition
-from assistant.core.config.loader import resolve_config_dir
+from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.mcp.toolsets import mcp_toolsets
-
-
-def _config_dir(config: RuntimeConfig) -> Path:
-    """Resolve config dir from RuntimeConfig or fallback to env/default."""
-    return config.config_dir if config.config_dir is not None else resolve_config_dir()
-
 
 logger = structlog.get_logger(__name__)
 
 type AgentTool = Tool[TurnDeps] | ToolFuncEither[TurnDeps, ...]
 
+# Capability definitions of one snapshot plus the policy's active ids (nested expanded,
+# denied removed, missing manifests dropped) — see :func:`active_capabilities_for`.
+type ActiveCapabilities = tuple[Mapping[str, CapabilityDefinition], list[str]]
 
-def build_tool_runtime_params(config: RuntimeConfig) -> dict[str, dict[str, Any]]:
+
+def active_capabilities_for(
+    config: RuntimeConfig, snapshot: CapabilitySnapshot
+) -> ActiveCapabilities:
+    """Resolve ``config``'s capability policy against one catalog snapshot.
+
+    No disk access: every consumer of a turn passes the same snapshot, so the prompt,
+    tools, tool params and the mismatch check agree on the manifest state.
+    """
+    return snapshot.definitions, resolve_policy(config.capabilities, snapshot)
+
+
+def build_tool_runtime_params(
+    config: RuntimeConfig, snapshot: CapabilitySnapshot
+) -> dict[str, dict[str, Any]]:
     """Build merged per-tool params from tools.yaml defaults + capability overrides."""
-    definitions, enabled = _active_capabilities(config)
-    tool_ids = collect_enabled_tool_ids(config, active=(definitions, enabled))
+    definitions, enabled = active_capabilities_for(config, snapshot)
+    tool_ids = collect_enabled_tool_ids((definitions, enabled))
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
 
     result: dict[str, dict[str, Any]] = {}
@@ -91,83 +98,45 @@ def _resolve_entrypoint(entrypoint: str) -> object:
     return obj
 
 
-def _active_capabilities(
-    config: RuntimeConfig,
-) -> tuple[dict[str, CapabilityDefinition], list[str]]:
-    """Capability definitions plus the enabled list (nested expanded, denied removed)."""
-    policy = config.capabilities
-    denied = frozenset(policy.denied_capabilities)
-    definitions = load_capability_definitions(config_dir=_config_dir(config))
-    enabled = [
-        c
-        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
-        if c not in denied
-    ]
-    return definitions, enabled
-
-
-type ActiveCapabilities = tuple[dict[str, CapabilityDefinition], list[str]]
-
-
-def resolve_active_capabilities(config: RuntimeConfig) -> ActiveCapabilities:
-    """Public entry point of :func:`_active_capabilities`.
-
-    Parses ``config/capabilities/*.yaml`` once; pass the result as ``active=`` to
-    :func:`get_agent_tools` / :func:`get_agent_mcp_toolsets` to avoid parsing it again.
-    """
-    return _active_capabilities(config)
-
-
-def collect_enabled_mcp_server_ids(
-    config: RuntimeConfig, active: ActiveCapabilities | None = None
-) -> list[str]:
-    """MCP server ids granted by the enabled capabilities (nested expanded, denied removed)."""
-    definitions, enabled = active or _active_capabilities(config)
+def collect_enabled_mcp_server_ids(active: ActiveCapabilities) -> list[str]:
+    """MCP server ids granted by the active capabilities."""
+    definitions, enabled = active
     return collect_mcp_server_ids(definitions, enabled)
 
 
 def get_agent_mcp_toolsets(
-    config: RuntimeConfig, active: ActiveCapabilities | None = None
+    config: RuntimeConfig, active: ActiveCapabilities
 ) -> list[AbstractToolset[Any]]:
     """Toolsets for the MCP servers the active capability set references.
 
     Servers that are unknown or disabled in mcp_servers.yaml are skipped. The underlying
     connections are shared process-wide and owned by the app lifespan.
     """
-    server_ids = collect_enabled_mcp_server_ids(config, active)
+    server_ids = collect_enabled_mcp_server_ids(active)
     return mcp_toolsets.toolsets_for(config.mcp_servers, server_ids)
 
 
-def collect_enabled_tool_ids(
-    config: RuntimeConfig, active: ActiveCapabilities | None = None
-) -> set[str]:
-    """Collect first-party tool_ids from enabled capabilities (excluding denied)."""
-    definitions, enabled = active or _active_capabilities(config)
+def collect_enabled_tool_ids(active: ActiveCapabilities) -> set[str]:
+    """Collect first-party tool_ids bound (and enabled) by the active capabilities."""
+    definitions, enabled = active
 
     tool_ids: set[str] = set()
     for cap_id in enabled:
         definition = definitions.get(cap_id)
         if definition is None:
-            logger.warning(
-                "provider.tools.capability_missing",
-                capability_id=cap_id,
-                hint="Manifest not found in config/capabilities/*.yaml",
-            )
-            continue
+            continue  # the resolver already dropped (and logged) missing manifests
         for binding in definition.tools:
             if binding.enabled:
                 tool_ids.add(binding.tool_id)
     return tool_ids
 
 
-def get_agent_tools(
-    config: RuntimeConfig, active: ActiveCapabilities | None = None
-) -> Sequence[AgentTool]:
+def get_agent_tools(config: RuntimeConfig, active: ActiveCapabilities) -> Sequence[AgentTool]:
     """Return first-party tools from tools.yaml, gated by enabled capabilities.
 
     MCP servers are not tools here; see :func:`get_agent_mcp_toolsets`.
     """
-    first_party_ids = collect_enabled_tool_ids(config, active)
+    first_party_ids = collect_enabled_tool_ids(active)
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
 
     tools: list[AgentTool] = []

@@ -1,7 +1,5 @@
 """Tests that tools.yaml max_retries reaches both plain and factory-built tools."""
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 from pydantic_ai import Tool
 
@@ -20,6 +18,7 @@ from assistant.core.config.schemas import (
     ToolDefinition,
     ToolsConfig,
 )
+from tests.assistant.capability_helpers import active_for
 
 
 def _config(definition: ToolDefinition) -> RuntimeConfig:
@@ -49,15 +48,13 @@ def _capability(tool_id: str) -> dict[str, CapabilityDefinition]:
 
 
 @pytest.mark.parametrize("configured", [1, 3])
-@patch("assistant.agent.tools.registry.load_capability_definitions")
 def test_factory_tool_gets_max_retries_from_tools_yaml(
-    mock_load_caps: MagicMock,
     configured: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression: factory tools used to silently ignore max_retries from tools.yaml."""
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    mock_load_caps.return_value = _capability("tavily_extract")
+    definitions = _capability("tavily_extract")
 
     config = _config(
         ToolDefinition(
@@ -67,7 +64,7 @@ def test_factory_tool_gets_max_retries_from_tools_yaml(
             max_retries=configured,
         )
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
 
     assert len(tools) == 1
     tool = tools[0]
@@ -75,14 +72,12 @@ def test_factory_tool_gets_max_retries_from_tools_yaml(
     assert tool.max_retries == configured
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
 def test_factory_tool_without_max_retries_inherits_agent_default(
-    mock_load_caps: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unset max_retries stays None so the agent-level `retries` applies."""
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    mock_load_caps.return_value = _capability("tavily_extract")
+    definitions = _capability("tavily_extract")
 
     config = _config(
         ToolDefinition(
@@ -91,7 +86,7 @@ def test_factory_tool_without_max_retries_inherits_agent_default(
             enabled=True,
         )
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
 
     assert len(tools) == 1
     tool = tools[0]

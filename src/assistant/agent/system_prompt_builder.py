@@ -1,43 +1,32 @@
 """
+Component ID: CMP_PROVIDER_PYDANTIC_AI_AGENT
+
 System prompt composition for the pydantic_ai agent.
 
-Builds the agent's system prompt by combining the base memory agent prompt
-with any enabled capability prompts from the runtime config.
+The static system prompt (base memory agent prompt + active capability prompts) is built
+from one capability snapshot and cached with the adapter; it must stay byte-stable so the
+Anthropic instruction cache keeps hitting. Per-turn facts such as the current date are
+delivered separately as a dynamic instruction (see :func:`current_date_instruction`).
 """
 
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
 
 from assistant.agent.constants import MEMORY_AGENT_PROMPT_NAME
-from assistant.core.capabilities.loader import (
-    expand_nested_capabilities,
-    load_capability_definitions,
-)
-from assistant.core.config.loader import resolve_config_dir
-from assistant.core.config.schemas import RuntimeConfig
+from assistant.agent.tools.registry import ActiveCapabilities
 from assistant.core.prompts import load_prompt
 
 
-def _config_dir(config: RuntimeConfig) -> Path:
-    """Resolve config dir from RuntimeConfig or fallback to env/default."""
-    return config.config_dir if config.config_dir is not None else resolve_config_dir()
-
-
-def _compose_system_prompt(config: RuntimeConfig) -> str:
-    """Compose system prompt from base + enabled capability prompts."""
-    base = load_prompt(MEMORY_AGENT_PROMPT_NAME)
-    policy = config.capabilities
-    denied = frozenset(policy.denied_capabilities)
-    definitions = load_capability_definitions(config_dir=_config_dir(config))
-    enabled = [
-        c
-        for c in expand_nested_capabilities(policy.enabled_capabilities, definitions)
-        if c not in denied
-    ]
-    current_date = datetime.now(UTC).strftime("%B %d, %Y")
-    parts = [base, f"Today's date is {current_date}."]
+def _compose_system_prompt(active: ActiveCapabilities) -> str:
+    """Compose the static system prompt from base + active capability prompts."""
+    definitions, enabled = active
+    parts = [load_prompt(MEMORY_AGENT_PROMPT_NAME)]
     for cap_id in sorted(enabled):
         definition = definitions.get(cap_id)
         if definition and definition.prompt.strip():
             parts.append(definition.prompt.strip())
     return "\n\n".join(parts)
+
+
+def current_date_instruction(now: datetime) -> str:
+    """Per-turn instruction carrying the current date (never baked into the cached prompt)."""
+    return f"Today's date is {now.strftime('%B %d, %Y')}."
