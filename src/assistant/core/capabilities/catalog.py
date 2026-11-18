@@ -74,7 +74,8 @@ class CapabilityCatalog(CapabilityCatalogInterface):
                 "Capability manifest validation failed:\n"
                 + "\n".join(f"  - {message}" for message in blocking)
             )
-        self._signature: StatSignature | None = signature
+        # None forces the next refresh past the signature check (see ManifestCandidate.retry).
+        self._signature: StatSignature | None = None if candidate.retry else signature
         self._content_key = candidate.content_key
         self._last_check = self._clock()
         self._snapshot = CapabilitySnapshot(
@@ -141,11 +142,10 @@ class CapabilityCatalog(CapabilityCatalogInterface):
         reason: str,
     ) -> CapabilitySnapshot:
         candidate = self._scanner.build(files, force=force)
-        self._signature = signature
+        self._signature = None if candidate.retry else signature
         current = self._snapshot
-        if candidate.blocking:
-            self._snapshot = replace(current, errors=candidate.issues)
-        elif candidate.content_key == self._content_key:
+        if candidate.blocking or candidate.content_key == self._content_key:
+            # Rejected (LKG) or same content: keep the revision, update only the errors.
             if current.errors != candidate.issues:
                 self._snapshot = replace(current, errors=candidate.issues)
         else:

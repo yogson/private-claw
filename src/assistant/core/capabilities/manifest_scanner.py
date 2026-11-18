@@ -32,6 +32,7 @@ class _ParsedFile:
     state: ManifestFileState
     definition: CapabilityDefinition | None
     errors: tuple[str, ...] = ()
+    retry: bool = False  # the stat cache must not vouch for this entry (e.g. read error)
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,8 @@ class ManifestCandidate:
     definitions: dict[str, CapabilityDefinition]
     states: dict[str, ManifestFileState]
     content_key: frozenset[tuple[str, str]]
+    retry: bool = False
+    """True when some file must be re-read on the next refresh even if its stat is unchanged."""
 
     @property
     def blocking(self) -> bool:
@@ -79,7 +82,7 @@ class ManifestScanner:
     def build(self, files: list[ScannedFile], *, force: bool = False) -> ManifestCandidate:
         """Parse ``files`` (cached unless ``force``) and run the cross-file validation."""
         parsed_files = tuple(self._parse(path, m, s, force) for path, m, s in files)
-        self._parsed = {f.state.path.name: f for f in parsed_files}
+        self._parsed = {f.state.path.name: f for f in parsed_files if not f.retry}
         issues: list[CapabilityLoadIssue] = []
         definitions: dict[str, CapabilityDefinition] = {}
         states: dict[str, ManifestFileState] = {}
@@ -98,7 +101,8 @@ class ManifestScanner:
         if not issues:
             issues.extend(self._validate(definitions))
         content_key = frozenset((f.state.path.name, f.state.sha256) for f in parsed_files)
-        return ManifestCandidate(tuple(issues), definitions, states, content_key)
+        retry = any(f.retry for f in parsed_files)
+        return ManifestCandidate(tuple(issues), definitions, states, content_key, retry)
 
     def _validate(self, definitions: dict[str, CapabilityDefinition]) -> list[CapabilityLoadIssue]:
         issues = validate_nested_references(definitions)
@@ -121,7 +125,8 @@ class ManifestScanner:
             raw = path.read_bytes()
         except OSError as exc:
             state = ManifestFileState(path=path, mtime_ns=mtime_ns, size=size, sha256="")
-            return _ParsedFile(state, None, (f"[{path.name}] read error: {exc}",))
+            # Not cached: fixing the cause (chmod, remount) changes neither mtime nor size.
+            return _ParsedFile(state, None, (f"[{path.name}] read error: {exc}",), retry=True)
         state = ManifestFileState(
             path=path, mtime_ns=mtime_ns, size=size, sha256=hashlib.sha256(raw).hexdigest()
         )

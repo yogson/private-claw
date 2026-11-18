@@ -328,3 +328,31 @@ def test_subscribers_notified_only_on_new_revision(
     catalog.refresh()
     catalog.refresh()
     assert seen == [2]
+
+
+# ----------------------------------------------------------------------
+# Read errors and racy stat
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_read_error_recovers_once_permissions_are_fixed(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    with capture_logs() as logs:
+        path.chmod(0)
+        try:
+            snap = catalog.refresh()
+            assert snap.revision == 1
+            assert "read error" in snap.blocking_errors[0].message
+            assert catalog.refresh().blocking_errors  # retried, still failing
+        finally:
+            path.chmod(0o644)  # neither mtime nor size changes
+        snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.errors == ()
+    assert snap.definitions["a"].prompt == "alpha v2"
+    events = [e["event"] for e in logs]
+    assert events.count("capabilities.reload_failed") == 1
+    assert events.count("capabilities.reload_recovered") == 1
