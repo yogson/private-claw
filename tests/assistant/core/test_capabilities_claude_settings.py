@@ -3,7 +3,9 @@
 import json
 from pathlib import Path
 
-from assistant.core.capabilities.loader import (
+from assistant.core.capabilities.claude_code_settings import (
+    ClaudeCodeSettingsSync,
+    SubagentMcpServersSync,
     apply_claude_code_settings,
     collect_claude_code_mcp_servers,
 )
@@ -12,6 +14,8 @@ from assistant.core.capabilities.schemas import (
     ClaudeCodePermissions,
     ClaudeCodeSettings,
 )
+from assistant.core.capabilities.snapshot import CapabilitySnapshot
+from tests.assistant.capability_helpers import snapshot_of
 
 
 def test_apply_claude_code_settings_writes_mcp_servers(tmp_path: Path) -> None:
@@ -158,3 +162,50 @@ def test_collect_claude_code_mcp_servers_merges_in_order() -> None:
     merged["shared"]["url"] = "mutated"
     assert definitions["b"].claude_code_settings is not None
     assert definitions["b"].claude_code_settings.mcp_servers["shared"]["url"] == "https://second"
+
+
+def test_settings_sync_rewrites_only_when_claude_code_settings_change(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+
+    def _snap(revision: int, allow: list[str], prompt: str = "") -> CapabilitySnapshot:
+        return snapshot_of(
+            {
+                "a": CapabilityDefinition(
+                    capability_id="a",
+                    prompt=prompt,
+                    claude_code_settings=ClaudeCodeSettings(
+                        permissions=ClaudeCodePermissions(allow=allow)
+                    ),
+                )
+            },
+            revision=revision,
+        )
+
+    sync = ClaudeCodeSettingsSync(
+        _snap(1, ["Read"]),
+        resolve_active=lambda snapshot: ["a"],
+        settings_path=settings_path,
+    )
+    sync(_snap(2, ["Read"], prompt="prompt-only change"))
+    assert not settings_path.exists()
+    sync(_snap(3, ["Read", "Bash(git:*)"]))
+    assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read", "Bash(git:*)"]
+
+
+def test_subagent_mcp_sync_pushes_servers_of_each_revision() -> None:
+    received: list[dict[str, dict[str, object]]] = []
+
+    class _Backend:
+        def set_mcp_servers(self, mcp_servers: dict[str, dict[str, object]]) -> None:
+            received.append(mcp_servers)
+
+    def _snap(revision: int, servers: dict[str, dict[str, object]]) -> CapabilitySnapshot:
+        definition = CapabilityDefinition(
+            capability_id="a", claude_code_settings=ClaudeCodeSettings(mcp_servers=servers)
+        )
+        return snapshot_of({"a": definition}, revision=revision)
+
+    sync = SubagentMcpServersSync(resolve_active=lambda snapshot: ["a"], targets=[_Backend()])
+    sync(_snap(1, {"one": {"command": "x"}}))
+    sync(_snap(2, {"two": {"command": "y"}}))
+    assert received == [{"one": {"command": "x"}}, {"two": {"command": "y"}}]
