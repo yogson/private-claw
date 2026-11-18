@@ -219,7 +219,7 @@ def build_callback_query_event(
         trace_id=trace_id,
         callback_query=callback_query_meta,
         idempotency_key=f"telegram:cq:{cq.get('id', event_id)}",
-        metadata={"chat_id": chat_id},
+        metadata={"chat_id": chat_id, "origin_message_text": message.get("text") or ""},
     )
 
 

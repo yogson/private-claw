@@ -1,10 +1,12 @@
 """
 Component ID: CMP_CORE_AGENT_ORCHESTRATOR
 
-Orchestrator result and pending ask models.
+Orchestrator result, pending ask, and new-confirmation models.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from assistant.core.confirmation.models import ConfirmationRequest
 
 
 @dataclass
@@ -27,3 +29,5 @@ class OrchestratorResult:
     pending_ask: PendingAskData | None = None
     pending_webapp_buttons: list[dict[str, str]] | None = None
     pending_webapp_message: str | None = None
+    confirmations: list[ConfirmationRequest] = field(default_factory=list)
+    """Confirmations created during this turn; the channel must render each one."""

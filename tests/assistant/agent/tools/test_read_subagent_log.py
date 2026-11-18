@@ -24,8 +24,6 @@ def _make_handler(
 
 def _make_deps(handler: Callable[[str, int], Awaitable[dict[str, Any]]] | None) -> TurnDeps:
     return TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         delegation_log_handler=handler,
     )
 

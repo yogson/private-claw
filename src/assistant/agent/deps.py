@@ -9,7 +9,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-MAX_MEMORY_WRITES_PER_TURN = 3
+from assistant.core.confirmation.models import ConfirmationDraft, ConfirmationRequestResult
+
 # Hard cap on check_subagent_status/read_subagent_log calls for the same
 # task_id within one turn (the two tools share this budget). Prompt guidance
 # alone ("don't poll in a loop") is not reliable enough on its own: a model
@@ -23,8 +24,6 @@ MAX_SUBAGENT_POLLS_PER_TASK_PER_TURN = 2
 class TurnDeps:
     """Dependencies injected into agent tools for turn execution."""
 
-    writes_approved: list[None]  # mutable: append when we approve a write
-    seen_intent_ids: set[str]  # mutable: deduplicate intent_id per turn
     memory_search_handler: Callable[[str, int, list[str] | None], dict[str, Any]] | None = None
     delegation_enqueue_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
     delegation_status_handler: Callable[[str], Awaitable[dict[str, Any]]] | None = None
@@ -55,6 +54,10 @@ class TurnDeps:
     """User ID for the current turn (injected from orchestrator)."""
     vocabulary_store: Any | None = None
     """VocabularyStore instance for language learning tools (Any to avoid circular import)."""
+    confirmation_requester: (
+        Callable[[ConfirmationDraft], Awaitable[ConfirmationRequestResult]] | None
+    ) = None
+    """Optional async callback that registers a user confirmation for the current session."""
 
 
 def consume_subagent_poll_budget(deps: TurnDeps, task_id: str) -> bool:

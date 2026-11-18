@@ -24,7 +24,6 @@ from pydantic_ai.messages import (
 
 from assistant.agent.ask_question_extractor import _extract_pending_ask_question
 from assistant.agent.constants import ASK_QUESTION_TOOL_NAME
-from assistant.agent.memory_intent_processor import _new_messages_to_plans
 from assistant.agent.message_converters import (
     _llm_messages_to_history,
     _message_to_user_prompt_content,
@@ -44,7 +43,6 @@ __all__ = [
     "TurnCancelledWithPartial",
     "TurnDeps",
     "_extract_pending_ask_question",
-    "_new_messages_to_plans",
     "_new_messages_to_session_records",
     "_llm_messages_to_history",
     "_normalize_candidate_for_upsert",

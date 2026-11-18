@@ -253,11 +253,9 @@ async def build_user_content_blocks(
     return blocks
 
 
-def _record_to_tool_use_block(record: SessionRecord) -> dict[str, Any] | None:
-    """Convert ASSISTANT_TOOL_CALL record to tool_use block, or None if memory tool."""
+def _record_to_tool_use_block(record: SessionRecord) -> dict[str, Any]:
+    """Convert an ASSISTANT_TOOL_CALL record to a tool_use block."""
     tool_name = record.payload.get("tool_name", "")
-    if tool_name == MEMORY_TOOL_NAME:
-        return None
     args_json = record.payload.get("arguments_json", "{}")
     try:
         args = json.loads(args_json)
@@ -272,13 +270,52 @@ def _record_to_tool_use_block(record: SessionRecord) -> dict[str, Any] | None:
     }
 
 
-def _should_skip_memory_tool(record: SessionRecord) -> bool:
-    tool_name: str = record.payload.get("tool_name", "")
-    return tool_name == MEMORY_TOOL_NAME
+def _inline_memory_result_ids(records: list[SessionRecord]) -> set[str]:
+    """Return memory tool_call_ids whose result was persisted inline with the call.
+
+    Legacy sessions persisted memory_propose_update results out of order (after the
+    assistant message, or appended later by the old confirmation flow). Replaying
+    those would break tool_use/tool_result adjacency, so only inline pairs are kept.
+    """
+    ids: set[str] = set()
+    for record in records:
+        if (
+            record.record_type == SessionRecordType.TOOL_RESULT
+            and record.payload.get("tool_name") == MEMORY_TOOL_NAME
+        ):
+            tid = record.payload.get("tool_call_id", "")
+            if tid and record.event_id == _inline_result_event_id(tid):
+                ids.add(tid)
+    return ids
+
+
+def _inline_result_event_id(tool_call_id: str) -> str:
+    # Matches the event_id written by agent.session_record_builder.
+    return f"tool-result-{tool_call_id}"
+
+
+def _is_replayable(record: SessionRecord, inline_memory_ids: set[str]) -> bool:
+    if record.payload.get("tool_name") != MEMORY_TOOL_NAME:
+        return True
+    tid = record.payload.get("tool_call_id", "")
+    if tid not in inline_memory_ids:
+        return False
+    return (
+        record.record_type != SessionRecordType.TOOL_RESULT
+        or record.event_id == _inline_result_event_id(tid)
+    )
 
 
 def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
     """Convert session records to LLM messages including tool-use and tool-result blocks."""
+    inline_memory_ids = _inline_memory_result_ids(records)
+    records = [
+        r
+        for r in records
+        if r.record_type
+        not in (SessionRecordType.ASSISTANT_TOOL_CALL, SessionRecordType.TOOL_RESULT)
+        or _is_replayable(r, inline_memory_ids)
+    ]
     messages: list[LLMMessage] = []
     i = 0
     while i < len(records):
@@ -297,10 +334,7 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
             while (
                 j < len(records) and records[j].record_type == SessionRecordType.ASSISTANT_TOOL_CALL
             ):
-                tc = records[j]
-                block = _record_to_tool_use_block(tc)
-                if block is not None:
-                    blocks.append(block)
+                blocks.append(_record_to_tool_use_block(records[j]))
                 j += 1
             if blocks:
                 if len(blocks) == 1 and blocks[0].get("type") == "text":
@@ -327,10 +361,7 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
             while (
                 j < len(records) and records[j].record_type == SessionRecordType.ASSISTANT_TOOL_CALL
             ):
-                tc = records[j]
-                block = _record_to_tool_use_block(tc)
-                if block is not None:
-                    blocks.append(block)
+                blocks.append(_record_to_tool_use_block(records[j]))
                 j += 1
             if blocks:
                 messages.append(
@@ -342,17 +373,12 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
                 )
             i = j
         elif record.record_type == SessionRecordType.TOOL_RESULT:
-            # Collect consecutive TOOL_RESULT records, deduplicating by tool_call_id.
-            # Memory confirmation flow appends a second result for the same tool_call_id
-            # after user confirms; Anthropic requires exactly one tool_result per tool_use.
-            # Keep the last result per tool_call_id (definitive outcome).
+            # Collect consecutive TOOL_RESULT records, deduplicating by tool_call_id
+            # (Anthropic requires exactly one tool_result per tool_use; keep the last).
             seen: dict[str, dict[str, Any]] = {}
             j = i
             while j < len(records) and records[j].record_type == SessionRecordType.TOOL_RESULT:
                 tr = records[j]
-                if _should_skip_memory_tool(tr):
-                    j += 1
-                    continue
                 tool_name = tr.payload.get("tool_name", "")
                 tid = tr.payload.get("tool_call_id", "")
                 result = tr.payload.get("result")

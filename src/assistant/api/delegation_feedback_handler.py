@@ -3,7 +3,9 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from datetime import UTC, datetime
 
+from assistant.api.confirmation_handler import deliver_with_confirmations
 from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
+from assistant.core.confirmation import ConfirmationService
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import TaskRecord
@@ -13,6 +15,7 @@ from assistant.subagents.coordinator import DelegationCoordinator
 def _build_delegation_feedback_handler(
     orchestrator: Orchestrator,
     adapter: TelegramAdapter,
+    confirmations: ConfirmationService | None = None,
 ) -> Callable[[TaskRecord], Awaitable[None]]:
     async def _handler(task: TaskRecord) -> None:
         session_id = task.parent_session_id
@@ -69,11 +72,8 @@ def _build_delegation_feedback_handler(
             result_msg = await orchestrator.execute_turn(event)
         if result_msg is None:
             return
-        if not result_msg.text.strip() and result_msg.pending_ask is None:
-            return
         chat_id = DelegationCoordinator._chat_id_from_session(session_id)
-        if chat_id is None:
-            return
+        response: ChannelResponse | None = None
         if result_msg.pending_ask is not None:
             prompt_text = result_msg.pending_ask.question
             if result_msg.text.strip():
@@ -84,7 +84,7 @@ def _build_delegation_feedback_handler(
                 question=prompt_text,
                 options=result_msg.pending_ask.options,
             )
-        else:
+        elif result_msg.text.strip():
             response = ChannelResponse(
                 response_id=event.event_id,
                 channel="telegram",
@@ -93,6 +93,15 @@ def _build_delegation_feedback_handler(
                 message_type=MessageType.TEXT,
                 text=result_msg.text,
             )
-        await adapter.send_response(response, chat_id=chat_id)
+        response = await deliver_with_confirmations(
+            adapter,
+            confirmations,
+            response=response,
+            confirmations=result_msg.confirmations,
+            chat_id=chat_id,
+            trace_id=trace_id,
+        )
+        if response is not None and chat_id is not None:
+            await adapter.send_response(response, chat_id=chat_id)
 
     return _handler

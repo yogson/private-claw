@@ -19,7 +19,7 @@ def _ctx(deps: TurnDeps) -> MagicMock:
 
 
 def _deps() -> TurnDeps:
-    return TurnDeps(writes_approved=[], seen_intent_ids=set(), tool_runtime_params={})
+    return TurnDeps(tool_runtime_params={})
 
 
 @patch("assistant.agent.tools.macos_tools.sys.platform", "linux")

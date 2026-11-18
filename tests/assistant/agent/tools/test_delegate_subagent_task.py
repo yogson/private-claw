@@ -28,8 +28,6 @@ def _make_handler() -> Callable[[dict], Awaitable[dict]]:
 
 def _make_deps(**kwargs: Any) -> TurnDeps:
     return TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         delegation_enqueue_handler=_make_handler(),
         tool_runtime_params={
             "delegate_subagent_task": {"delegation_allowed_backends": ["claude_code"]}
@@ -45,7 +43,7 @@ class _Ctx:
 
 @pytest.mark.asyncio
 async def test_delegate_subagent_task_returns_unavailable_without_handler() -> None:
-    deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
+    deps = TurnDeps()
     ctx = _Ctx(deps)
     result = await delegate_subagent_task(ctx, objective="Implement feature")
     assert result["accepted"] is False

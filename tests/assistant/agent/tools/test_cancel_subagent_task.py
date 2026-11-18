@@ -18,8 +18,6 @@ def _make_handler(response: dict[str, Any]) -> Callable[[str], Awaitable[dict[st
 
 def _make_deps(handler: Callable[[str], Awaitable[dict[str, Any]]] | None) -> TurnDeps:
     return TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         delegation_cancel_handler=handler,
     )
 

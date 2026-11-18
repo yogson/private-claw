@@ -7,14 +7,19 @@ import structlog
 from pydantic import ValidationError
 from pydantic_ai import ModelHTTPError, UnexpectedModelBehavior
 
+from assistant.api.confirmation_handler import (
+    deliver_with_confirmations,
+    handle_confirmation_callback,
+)
 from assistant.api.utils import build_text_channel_response, build_webapp_button_channel_response
 from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
 from assistant.channels.telegram.models import EventType
 from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
+from assistant.core.confirmation import ConfirmationService
 from assistant.core.events.mapper import NormalizedEventMapper
-from assistant.core.orchestrator.confirmation import MemoryConfirmationService
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
+from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.service import COMPACTION_NOTIFICATION_TEXT, Orchestrator
 from assistant.core.session.interfaces import SessionNotFoundError
 from assistant.extensions.language_learning.models import (
@@ -33,7 +38,7 @@ def _build_orchestrator_handler(
     adapter: TelegramAdapter,
     orchestrator: Orchestrator,
     delegation_coordinator: DelegationCoordinator | None = None,
-    memory_confirmations: MemoryConfirmationService | None = None,
+    confirmations: ConfirmationService | None = None,
     usage_service: Any = None,
     cancellation_registry: CancellationRegistry | None = None,
     verbose_state: VerboseStateService | None = None,
@@ -69,6 +74,10 @@ def _build_orchestrator_handler(
                 session_id=event.session_id,
                 trace_id=event.trace_id,
             )
+        # Confirmation buttons (valid, stale, forged, or legacy) never reach the LLM.
+        if event.callback_query is not None and adapter.is_confirmation_callback(event):
+            await handle_confirmation_callback(event, adapter, confirmations)
+            return None
         # Route inline-keyboard button taps for delegation question options.
         if event.callback_query is not None and adapter.is_delegation_question_callback(event):
             resolution = adapter.consume_delegation_question_callback(event)
@@ -222,32 +231,6 @@ def _build_orchestrator_handler(
             return await adapter.build_capabilities_menu_response(
                 chat_id, event.session_id, event.trace_id
             )
-        if adapter.is_memory_confirmation_callback(event):
-            if memory_confirmations is None:
-                return build_text_channel_response(
-                    text="Memory confirmation is not available.",
-                    session_id=event.session_id,
-                    trace_id=event.trace_id,
-                )
-            mem_resolution = adapter.consume_memory_confirmation_callback(event)
-            if mem_resolution is None:
-                return build_text_channel_response(
-                    text="Invalid or expired confirmation action.",
-                    session_id=event.session_id,
-                    trace_id=event.trace_id,
-                )
-            mem_session_id, mem_tool_call_id, approve = mem_resolution
-            ok, message = await memory_confirmations.resolve_pending(
-                session_id=mem_session_id,
-                tool_call_id=mem_tool_call_id,
-                approve=approve,
-                user_id=event.user_id,
-            )
-            return build_text_channel_response(
-                text=message,
-                session_id=mem_session_id if ok else event.session_id,
-                trace_id=event.trace_id,
-            )
         if event.callback_query is not None and adapter.is_task_callback(event):
             parsed = adapter.parse_task_callback(event)
             if parsed is None:
@@ -387,74 +370,53 @@ def _build_orchestrator_handler(
             )
         if orch_result is None:
             return None
-        session_id = orch_event.session_id
-        response_text = orch_result.text
-        if orch_result.pending_webapp_buttons:
-            webapp_text = (
-                response_text.strip()
-                or orch_result.pending_webapp_message
-                or "Tap the button below to start."
-            )
-            return build_webapp_button_channel_response(
-                text=webapp_text,
-                session_id=session_id,
-                trace_id=event.trace_id,
-                buttons=orch_result.pending_webapp_buttons,
-            )
-        if orch_result.pending_ask is not None:
-            prompt_text = orch_result.pending_ask.question
-            if response_text.strip():
-                prompt_text = f"{response_text}\n\n{prompt_text}"
-            return adapter.build_ask_question_response(
-                session_id=session_id,
-                trace_id=event.trace_id,
-                question=prompt_text,
-                options=orch_result.pending_ask.options,
-            )
-        if memory_confirmations is not None:
-            pending = await memory_confirmations.list_pending(session_id)
-            if not pending:
-                logger.debug(
-                    "memory.confirmation.no_pending",
-                    session_id=session_id,
-                    trace_id=event.trace_id,
-                )
-            if pending:
-                chat_id = int(event.metadata.get("chat_id", 0))
-                if not chat_id:
-                    logger.warning(
-                        "memory.confirmation.skipped_no_chat_id",
-                        session_id=session_id,
-                        trace_id=event.trace_id,
-                    )
-                if chat_id:
-                    logger.info(
-                        "memory.confirmation.showing_ui",
-                        session_id=session_id,
-                        tool_call_id=pending[0].tool_call_id,
-                        trace_id=event.trace_id,
-                    )
-                    prompt_text = response_text
-                    proposal_reason = pending[0].proposal.reason.strip()
-                    if proposal_reason:
-                        prompt_text = f"{response_text}\n\nPending memory update: {proposal_reason}"
-                    return adapter.build_memory_confirmation_response(
-                        chat_id=chat_id,
-                        session_id=session_id,
-                        trace_id=event.trace_id,
-                        tool_call_id=pending[0].tool_call_id,
-                        prompt_text=prompt_text,
-                    )
-        if not response_text.strip():
-            # Already sent in full via streaming_text_notifier; nothing left to send.
-            return None
-        return build_text_channel_response(
-            text=response_text,
-            session_id=orch_event.session_id,
+        response = _build_turn_response(adapter, orch_result, orch_event.session_id, event.trace_id)
+        return await deliver_with_confirmations(
+            adapter,
+            confirmations,
+            response=response,
+            confirmations=orch_result.confirmations,
+            chat_id=chat_id,
             trace_id=event.trace_id,
         )
 
     return _handler
+
+
+def _build_turn_response(
+    adapter: TelegramAdapter,
+    orch_result: OrchestratorResult,
+    session_id: str,
+    trace_id: str,
+) -> ChannelResponse | None:
+    """Channel response for a completed turn (web-app buttons, ask_question, or text)."""
+    response_text = orch_result.text
+    if orch_result.pending_webapp_buttons:
+        webapp_text = (
+            response_text.strip()
+            or orch_result.pending_webapp_message
+            or "Tap the button below to start."
+        )
+        return build_webapp_button_channel_response(
+            text=webapp_text,
+            session_id=session_id,
+            trace_id=trace_id,
+            buttons=orch_result.pending_webapp_buttons,
+        )
+    if orch_result.pending_ask is not None:
+        prompt_text = orch_result.pending_ask.question
+        if response_text.strip():
+            prompt_text = f"{response_text}\n\n{prompt_text}"
+        return adapter.build_ask_question_response(
+            session_id=session_id,
+            trace_id=trace_id,
+            question=prompt_text,
+            options=orch_result.pending_ask.options,
+        )
+    if not response_text.strip():
+        # Already sent in full via streaming_text_notifier; nothing left to send.
+        return None
+    return build_text_channel_response(text=response_text, session_id=session_id, trace_id=trace_id)
 
 
 def _build_tool_call_notifier(
