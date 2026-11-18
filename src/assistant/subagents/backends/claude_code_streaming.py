@@ -101,6 +101,14 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         # fall back to the bundled one only when none is on PATH.
         self._cli_path = cli_path or shutil.which("claude")
 
+    def set_mcp_servers(self, mcp_servers: dict[str, dict[str, Any]]) -> None:
+        """Replace the MCP servers handed to sub-agent runs started from now on.
+
+        Called when a new capability snapshot revision changes the servers declared by
+        the active capabilities; runs already in flight keep the servers they started with.
+        """
+        self._mcp_servers = dict(mcp_servers)
+
     @property
     def backend_id(self) -> str:
         return "claude_code_streaming"

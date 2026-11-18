@@ -25,9 +25,12 @@ from assistant.agent.pydantic_ai_agent import (
     _new_messages_to_session_records,
 )
 from assistant.agent.tools import build_tool_runtime_params
-from assistant.agent.tools.registry import collect_enabled_tool_ids
+from assistant.agent.tools.registry import active_capabilities_for, collect_enabled_tool_ids
 from assistant.agent.webapp_button_extractor import _extract_pending_webapp_buttons
-from assistant.core.config.schemas import CompactionConfig, RuntimeConfig
+from assistant.core.capabilities.catalog import CapabilityCatalog
+from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
+from assistant.core.capabilities.snapshot import CapabilitySnapshot
+from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
 from assistant.core.confirmation import (
     ConfirmationDraft,
     ConfirmationRequest,
@@ -160,6 +163,7 @@ class Orchestrator:
         adapter_cache: TurnAdapterCache | None = None,
         vocabulary_store: Any | None = None,
         usage_service: Any | None = None,
+        capability_catalog: CapabilityCatalogInterface | None = None,
         confirmation_service: ConfirmationService | None = None,
     ) -> None:
         self._store = store
@@ -171,6 +175,14 @@ class Orchestrator:
         self._pydantic_ai_adapter = pydantic_ai_adapter
         self._delegation_coordinator = delegation_coordinator
         self._adapter_cache = adapter_cache
+        # Single owner of capability manifest state; refreshed once at every turn start.
+        # The fallback (no cross-file tool validation) serves tests and ad-hoc embedding;
+        # the app passes the catalog built by bootstrap.
+        self._capability_catalog: CapabilityCatalogInterface = (
+            capability_catalog
+            if capability_catalog is not None
+            else CapabilityCatalog(config.config_dir)
+        )
         self._session_factory = session_factory
         self._session_traces = SessionTraceManager()
         self._vocabulary_store = vocabulary_store
@@ -247,21 +259,31 @@ class Orchestrator:
         tool_call_notifier: Callable[[str, str], Awaitable[None]] | None = None,
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         effective_config: "RuntimeConfig | None" = None,
+        capability_snapshot: CapabilitySnapshot | None = None,
         created_confirmations: list[ConfirmationRequest] | None = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter.
+
+        ``capability_snapshot`` is the one snapshot of this turn (taken in ``_run_turn``);
+        the adapter, tool params and the prompt trace all use it.
 
         Confirmations created by tools during the turn are appended to
         ``created_confirmations`` so the caller can render them.
         """
         cfg = effective_config if effective_config is not None else self._config
+        snapshot = (
+            capability_snapshot
+            if capability_snapshot is not None
+            else self._capability_catalog.current()
+        )
 
         # Option C: use the adapter cache when available to avoid rebuilding
         # the system prompt and tool list on every turn with a capability
-        # override.  The cache is keyed by frozenset(enabled_capabilities) so
-        # adapters are reused across turns that share the same capability set.
+        # override.  The cache is keyed by (enabled, denied, snapshot revision) so
+        # adapters are reused across turns that share the same capability set and
+        # manifest revision, and rebuilt when a manifest changes.
         if self._adapter_cache is not None:
-            adapter: PydanticAITurnAdapter = self._adapter_cache.get_or_build(cfg)
+            adapter: PydanticAITurnAdapter = self._adapter_cache.get_or_build(cfg, snapshot)
         elif self._pydantic_ai_adapter is None:
             # Neither cache nor adapter is configured — programming error.
             raise RuntimeError("Pydantic AI adapter not configured")
@@ -272,6 +294,7 @@ class Orchestrator:
                 model_id=f"anthropic:{cfg.model.default_model_id}",
                 max_tokens=self._config.model.max_tokens_default,
                 config=effective_config,
+                snapshot=snapshot,
             )
         else:
             adapter = self._pydantic_ai_adapter
@@ -284,7 +307,7 @@ class Orchestrator:
             {"role": m.role.value, "content": m.content, "content_blocks": m.content_blocks}
             for m in messages
         ]
-        tool_params = build_tool_runtime_params(cfg)
+        tool_params = build_tool_runtime_params(cfg, snapshot)
         memory_handler = None
         if self._memory_retrieval:
 
@@ -563,8 +586,14 @@ class Orchestrator:
             raise
         prompt_trace: dict[str, Any] | None = None
         if self._config.model.prompt_trace_enabled:
+            active_ids = active_capabilities_for(cfg, snapshot)[1]
             prompt_trace = {
                 "system_prompt": adapter.system_prompt,
+                "capabilities": {
+                    "revision": snapshot.revision,
+                    "active": active_ids,
+                    "manifest_sha256": snapshot.file_hashes(active_ids),
+                },
                 "user_prompt": {
                     "content": current_user_message.content,
                     "content_blocks": current_user_message.content_blocks,
@@ -685,13 +714,16 @@ class Orchestrator:
 
         effective_config: RuntimeConfig | None = None
         if event.capabilities_override is not None:
-            from assistant.core.config.schemas import CapabilitiesPolicyConfig
-
             modified_caps = CapabilitiesPolicyConfig(
                 enabled_capabilities=event.capabilities_override,
                 denied_capabilities=self._config.capabilities.denied_capabilities,
             )
             effective_config = self._config.model_copy(update={"capabilities": modified_caps})
+
+        # Exactly one capability snapshot per turn: the mismatch check, the adapter (system
+        # prompt + tools) and the tool runtime params all see the same manifest revision.
+        # A broken manifest on disk never raises here; the catalog keeps the last-known-good.
+        capability_snapshot = self._capability_catalog.refresh()
 
         token = set_trace_id(trace_id)
         try:
@@ -716,7 +748,9 @@ class Orchestrator:
                 # tools that are no longer active, warn the user before the LLM
                 # tries to call them and crashes.
                 cfg_for_check = effective_config if effective_config is not None else self._config
-                mismatch_msg = self._detect_tool_mismatch(records, cfg_for_check)
+                mismatch_msg = self._detect_tool_mismatch(
+                    records, cfg_for_check, capability_snapshot
+                )
                 if mismatch_msg:
                     logger.warning(
                         "orchestrator.tool_mismatch_detected",
@@ -742,6 +776,7 @@ class Orchestrator:
                         tool_call_notifier=tool_call_notifier,
                         streaming_text_notifier=streaming_text_notifier,
                         effective_config=effective_config,
+                        capability_snapshot=capability_snapshot,
                         created_confirmations=created,
                     )
                 except BaseException:
@@ -834,6 +869,7 @@ class Orchestrator:
         self,
         records: "list[SessionRecord]",
         config: "RuntimeConfig",
+        snapshot: CapabilitySnapshot | None = None,
     ) -> str | None:
         """Return a warning string if the most-recent turn references unavailable tools.
 
@@ -876,7 +912,9 @@ class Orchestrator:
         if not historical_tools:
             return None
 
-        current_tools = collect_enabled_tool_ids(config)
+        if snapshot is None:
+            snapshot = self._capability_catalog.current()
+        current_tools = collect_enabled_tool_ids(active_capabilities_for(config, snapshot))
         missing = historical_tools - current_tools
         if not missing:
             return None

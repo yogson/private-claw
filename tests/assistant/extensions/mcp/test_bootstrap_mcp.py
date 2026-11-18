@@ -3,8 +3,6 @@
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from assistant.core.capabilities.loader import collect_mcp_server_ids
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import (
@@ -38,7 +36,7 @@ def _config(tmp_path: Path, servers: list[McpServerEntry]) -> RuntimeConfig:
 
 
 def test_collect_mcp_server_ids_follows_nested_and_dedupes() -> None:
-    from assistant.core.capabilities.loader import expand_nested_capabilities
+    from assistant.core.capabilities.resolver import expand_nested_capabilities
 
     defs = {
         "a": CapabilityDefinition(
@@ -110,8 +108,8 @@ def test_tracked_capabilities_reference_servers_not_tools() -> None:
 
 
 def test_bootstrap_rejects_first_party_tool_with_mcp_prefix(tmp_path: Path) -> None:
-    from assistant.core.bootstrap import _validate_tools_and_capabilities
     from assistant.core.capabilities.schemas import CapabilityToolBinding
+    from assistant.core.capabilities.validation import validate_policy_bindings
 
     config = _config(tmp_path, [])
     config.capabilities.enabled_capabilities = ["a"]
@@ -120,5 +118,13 @@ def test_bootstrap_rejects_first_party_tool_with_mcp_prefix(tmp_path: Path) -> N
             capability_id="a", tools=[CapabilityToolBinding(tool_id="mcp_sneaky")]
         )
     }
-    with pytest.raises(SystemExit, match="reserved for MCP"):
-        _validate_tools_and_capabilities(config, defs)
+    issues = validate_policy_bindings(config, defs)
+    assert [i.blocking for i in issues] == [True]
+    assert "reserved for MCP" in issues[0].message
+
+
+def test_capabilities_domain_mcp_prefix_matches_mcp_extension() -> None:
+    from assistant.core.capabilities.validation import MCP_TOOL_PREFIX as CAPABILITIES_PREFIX
+    from assistant.extensions.mcp.toolsets import MCP_TOOL_PREFIX
+
+    assert CAPABILITIES_PREFIX == MCP_TOOL_PREFIX

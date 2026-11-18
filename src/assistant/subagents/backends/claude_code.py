@@ -54,6 +54,14 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         # cannot be used to deliver MCP servers to sub-agents.
         self._mcp_servers = mcp_servers or {}
 
+    def set_mcp_servers(self, mcp_servers: dict[str, dict[str, Any]]) -> None:
+        """Replace the MCP servers handed to sub-agent runs started from now on.
+
+        Called when a new capability snapshot revision changes the servers declared by
+        the active capabilities; runs already in flight keep the servers they started with.
+        """
+        self._mcp_servers = dict(mcp_servers)
+
     @property
     def backend_id(self) -> str:
         return "claude_code"

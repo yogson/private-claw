@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from assistant.agent.tools.deps import TurnDeps
 from assistant.agent.tools.shell_execute import shell_execute_allowlisted, shell_execute_readonly
 from assistant.core.config.schemas import CommandAllowlistEntry
+from tests.assistant.capability_helpers import active_for, snapshot_of
 
 _READONLY_FOR_TESTS = [
     "cat",
@@ -182,10 +183,7 @@ def test_shell_execute_allowlisted_rejects_args_not_matching_pattern() -> None:
     assert result["status"] == "rejected_not_allowed"
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_get_agent_tools_included_when_global_and_capability_enabled(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_get_agent_tools_included_when_global_and_capability_enabled() -> None:
     """Tool is registered when enabled in tools.yaml and in active capability."""
     from assistant.agent.tools.registry import get_agent_tools
     from assistant.core.capabilities.schemas import (
@@ -206,7 +204,7 @@ def test_get_agent_tools_included_when_global_and_capability_enabled(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "assistant": CapabilityDefinition(
             capability_id="assistant",
             prompt="",
@@ -238,15 +236,12 @@ def test_get_agent_tools_included_when_global_and_capability_enabled(
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
     tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_readonly" in tool_names
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_get_agent_tools_excluded_when_global_disabled(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_get_agent_tools_excluded_when_global_disabled() -> None:
     """Tool is not registered when disabled in tools.yaml even if capability enables it."""
     from assistant.agent.tools.registry import get_agent_tools
     from assistant.core.capabilities.schemas import (
@@ -267,7 +262,7 @@ def test_get_agent_tools_excluded_when_global_disabled(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "assistant": CapabilityDefinition(
             capability_id="assistant",
             prompt="",
@@ -299,15 +294,12 @@ def test_get_agent_tools_excluded_when_global_disabled(
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
     tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_readonly" not in tool_names
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_get_agent_tools_excluded_when_capability_disabled(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_get_agent_tools_excluded_when_capability_disabled() -> None:
     """Tool is not registered when capability binding has enabled=false even if global enabled."""
     from assistant.agent.tools.registry import get_agent_tools
     from assistant.core.capabilities.schemas import (
@@ -328,7 +320,7 @@ def test_get_agent_tools_excluded_when_capability_disabled(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "assistant": CapabilityDefinition(
             capability_id="assistant",
             prompt="",
@@ -360,15 +352,12 @@ def test_get_agent_tools_excluded_when_capability_disabled(
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
     tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_readonly" not in tool_names
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_get_agent_tools_excludes_denied_capability(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_get_agent_tools_excludes_denied_capability() -> None:
     """When deploy capability is denied, shell_execute_allowlisted is not registered."""
     from assistant.agent.tools.registry import get_agent_tools
     from assistant.core.capabilities.schemas import (
@@ -389,7 +378,7 @@ def test_get_agent_tools_excludes_denied_capability(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "assistant": CapabilityDefinition(
             capability_id="assistant",
             prompt="",
@@ -432,16 +421,13 @@ def test_get_agent_tools_excludes_denied_capability(
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
     tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_allowlisted" not in tool_names
     assert "shell_execute_readonly" in tool_names
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tools(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tools() -> None:
     """Non-shell tools should not receive shell-specific default params implicitly."""
     from assistant.agent.tools.registry import build_tool_runtime_params
     from assistant.core.capabilities.schemas import CapabilityDefinition, CapabilityToolBinding
@@ -459,7 +445,7 @@ def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tool
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "assistant": CapabilityDefinition(
             capability_id="assistant",
             prompt="",
@@ -488,14 +474,11 @@ def test_build_tool_runtime_params_does_not_stamp_shell_fields_on_non_shell_tool
         memory=MemoryConfig(api_key="test"),
     )
 
-    params = build_tool_runtime_params(config)
+    params = build_tool_runtime_params(config, snapshot_of(definitions))
     assert params["memory_search"] == {}
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools() -> None:
     """Shell tools keep only their explicitly configured params."""
     from assistant.agent.tools.registry import build_tool_runtime_params
     from assistant.core.capabilities.schemas import CapabilityDefinition, CapabilityToolBinding
@@ -513,7 +496,7 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "assistant": CapabilityDefinition(
             capability_id="assistant",
             prompt="",
@@ -554,7 +537,7 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
         memory=MemoryConfig(api_key="test"),
     )
 
-    params = build_tool_runtime_params(config)
+    params = build_tool_runtime_params(config, snapshot_of(definitions))
     assert params["shell_execute_readonly"] == {"shell_readonly_commands": ["ls", "pwd"]}
     assert params["shell_execute_allowlisted"] == {
         "command_allowlist": [
@@ -568,10 +551,7 @@ def test_build_tool_runtime_params_keeps_shell_defaults_for_shell_tools(
     }
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_get_agent_tools_excludes_transitively_denied_nested_capability(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_get_agent_tools_excludes_transitively_denied_nested_capability() -> None:
     """Tools from a nested capability that appears in denied_capabilities must not be registered.
 
     Even when 'parent' is enabled and nests 'deploy', if 'deploy' is denied its tools
@@ -596,7 +576,7 @@ def test_get_agent_tools_excludes_transitively_denied_nested_capability(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "parent": CapabilityDefinition(
             capability_id="parent",
             prompt="",
@@ -635,7 +615,7 @@ def test_get_agent_tools_excludes_transitively_denied_nested_capability(
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
     tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "shell_execute_allowlisted" not in tool_names
     assert "shell_execute_readonly" in tool_names

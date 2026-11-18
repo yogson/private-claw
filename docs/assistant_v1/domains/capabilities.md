@@ -83,7 +83,19 @@ Capability definition schema (`config/capabilities/*.yaml`):
 - `prompt`: optional system prompt fragment appended for this capability.
 - `tools`: list of `{tool_id, enabled, params_override}` bindings.
 - `tool_overrides`: optional per-tool param overrides keyed by tool_id.
-- Discovery: load all `*.yaml` under `config/capabilities/`; duplicate `capability_id` is a startup error.
+- `nested_capabilities`: capability ids activated together with this one (must be known ids).
+- `mcp_servers`: ids from `config/mcp_servers.yaml` whose tools this capability grants.
+- `claude_code_settings`: `permissions` (`allow` / `deny`) and `mcp_servers` for Claude Code sub-agents.
+- Discovery: load all `*.yaml` / `*.yml` under `config/capabilities/` except `index.yaml` and hidden names (`._x.yaml` AppleDouble files, `.#x.yaml` editor locks, dot-prefixed temp files); backup/swap files such as `x.yaml~` or `.x.yaml.swp` never match. Duplicate `capability_id` is a startup error.
+- **Strict schema**: unknown keys are validation errors on the manifest and on every nested
+  block (`tools[]`, `params_override`, `tool_overrides`, `claude_code_settings`,
+  `permissions`), e.g. `[a.yaml] nested_capabilites: extra fields not permitted`. A typo
+  can no longer be dropped silently. At startup this fails fast; on a live reload the
+  catalog keeps the last-known-good snapshot (see below). Parsed definitions are frozen
+  pydantic models shared by snapshots, turns and adapters: their fields cannot be
+  reassigned, but the freeze is shallow (lists and dicts such as `tools`,
+  `tool_overrides` or `claude_code_settings.mcp_servers` are not deep-frozen), so
+  consumers treat them as read-only and copy before modifying.
 
 ## Tool Status and Params Merge Rules
 
@@ -93,9 +105,17 @@ This section defines how runtime tool availability and parameters are resolved f
 - `config/tools.yaml` (tool definitions/default params).
 
 Resolution flow:
-1. Start from policy:
-   - include only `enabled_capabilities`,
-   - exclude any capability listed in `denied_capabilities`.
+1. Start from policy and resolve the active set with the single resolver
+   `resolve_active_capabilities(enabled, denied, snapshot.definitions)`
+   (`core/capabilities/resolver.py`), used by every consumer (system prompt, tools, tool
+   params, mismatch check, MCP toolsets, sub-agent MCP servers, `~/.claude/settings.json`):
+   - start from `enabled_capabilities` (or the per-session override), in order,
+   - expand `nested_capabilities` depth-first, cycle-safe, children right after their parent,
+   - never include **or descend into** a capability listed in `denied_capabilities`: the
+     children of a denied capability are active only if they are enabled explicitly or
+     reachable through another, non-denied parent,
+   - drop ids that have no manifest (debug log `capabilities.resolve.missing_manifest`; the
+     catalog reports a missing enabled manifest once as a `capabilities.reload_warning`).
 2. Collect `tool_id` values from each surviving capability manifest where binding `enabled=true`.
 3. Keep only tools that also exist in `config/tools.yaml` with `enabled=true`.
 4. Resolve tool callable from `entrypoint`.
@@ -105,7 +125,7 @@ Status (enabled/disabled) semantics:
   - capability is enabled by policy and not denied,
   - capability tool binding exists and `enabled=true`,
   - global tool definition exists and `enabled=true`.
-- If a capability references a tool that is missing or disabled in `config/tools.yaml`, bootstrap fails (fail-fast).
+- If a capability references a tool that is missing or disabled in `config/tools.yaml`, bootstrap fails (fail-fast); on a live reload the new snapshot is rejected and the last-known-good stays in use.
 
 Parameter merge semantics:
 - Base params come from `config/tools.yaml` -> `tools[].default_params`.
@@ -145,6 +165,124 @@ Whole servers are connected and their tools discovered at runtime (pydantic-ai `
 `confirm_tools` and `destructiveHint` tools trigger a "notify before call" hook: in verbose mode the call is announced in the chat first. It does not block the call or wait for approval today; a real approval flow is future work.
 
 MCP activation: a capability manifest grants servers with `mcp_servers: [<server_id>]` (nested capabilities are followed). Unknown or disabled server IDs log a warning at bootstrap. The model sees the tools as `mcp_<server_id>_<tool_name>`; `mcp_` is reserved and no first-party tool may use it.
+
+## Capability Catalog: Snapshots and Live Reload
+
+`CapabilityCatalog` (`core/capabilities/catalog.py`, interface
+`CapabilityCatalogInterface`) is the single owner of manifest state. Nothing on the turn
+path parses manifests directly; `load_capability_definitions` remains only as the
+low-level, uncached parser.
+
+Snapshot (`core/capabilities/snapshot.py`):
+- `CapabilitySnapshot` is immutable: `revision`, read-only `definitions` and `files`
+  (`capability_id -> ManifestFileState(path, mtime_ns, size, sha256)`; the sha256 of the raw
+  bytes is the precondition for editors), `capabilities_dir`, `errors`, `loaded_at`.
+- `revision` starts at 1 and grows by exactly 1 on every successful swap; the swap is a
+  single attribute assignment.
+
+API:
+- `current()`: the current snapshot, no I/O.
+- `refresh()`: called **once at the start of every turn** by the orchestrator (and when
+  `/capabilities` is rendered). It stats `config/capabilities/*.yaml` (file set,
+  `st_mtime_ns`, `st_size`; at most once per second) and returns the current snapshot when
+  nothing changed — no parsing. Otherwise it re-reads only files whose stat changed and
+  re-parses only files whose content hash changed; a touch-only change does not bump the
+  revision. Two kinds of files are re-read even when their stat is unchanged:
+  - *racily clean* files (Git's rule): a file whose mtime is within 2 s of the moment it
+    was read could be rewritten in the same mtime tick with the same size (coarse-mtime
+    filesystems, scripted edits), so it is re-hashed on every refresh until its mtime is
+    older than the read;
+  - unreadable files (e.g. `chmod 000`, EIO): the read error is never cached, so fixing
+    the cause (permissions, a remount) is picked up on the next refresh without touching
+    the file.
+- `reload(reason)`: re-reads every file regardless of stat (e.g. right after an approved
+  write), still bumping the revision only if content changed.
+- `subscribe(callback)`: called after every swap to a new revision, after the catalog lock
+  is released. Delivery is serialized: one delivery loop runs at a time and keeps going
+  until every subscriber has received the latest revision. Each subscriber gets a revision
+  at most once, never an older one after a newer one, and always ends on the latest; an
+  intermediate revision may be skipped. A subscriber may call `refresh()`/`reload()`: a
+  revision produced meanwhile (by a subscriber, or by another thread) is only recorded and
+  handed to the running loop, so that call can return before its revision has reached
+  every subscriber. Subscriber errors are logged, never raised.
+
+Change detection is polling at turn start; there is no background watcher, because
+nothing consumes the snapshot between turns. Editors, `git pull`, sub-agents and future
+edit tools are all picked up the same way, without a restart.
+
+Validation and last-known-good (LKG):
+- Per file: YAML parse, dict shape and the strict `CapabilityDefinition` schema.
+- Cross-file (on the whole candidate): duplicate `capability_id`, `nested_capabilities`
+  refer to known ids, and (validator from bootstrap) the active set's tool bindings exist
+  and are enabled in `tools.yaml`, do not use the reserved `mcp_` prefix and their
+  entrypoints resolve (`core/capabilities/validation.py`, shared by bootstrap and reload).
+- **Any** blocking issue rejects the reload as a whole: the previous snapshot (same
+  revision, same definitions) stays current and the issues are recorded in
+  `snapshot.errors`. There is no partial per-file merge. A new broken file is therefore
+  excluded, and a broken edit of an existing file keeps its previous definition.
+- A half-written file usually fails to parse and is retried on the next turn; the fix (or
+  reverting to the LKG content) clears the errors. This is **not** a guarantee: a write
+  cut at a line boundary can still be valid YAML and pass the schema (e.g. a `tools` list
+  cut short), and is then accepted as a new revision until the rest of the write lands
+  (its mtime changes, so the next refresh picks up the complete file). The real
+  protection is an atomic write: editors that save via temp file + rename, and the #54
+  writer, which must write a temp file whose name is not a manifest name (see
+  `is_capability_manifest_name`) and `os.replace` it.
+- Deleting a manifest removes the capability. If it is enabled in policy, the reload still
+  succeeds with a non-blocking warning, and the resolver ignores the missing id. At startup
+  an enabled capability without a manifest is still a fatal error.
+- Startup is unchanged and fail-fast: `bootstrap_with_catalog()` builds the catalog, and
+  any blocking issue at the initial load aborts startup.
+- Surfacing: one structured `capabilities.reload_failed` warning when a distinct error
+  first appears (with `file`, `error`, `lkg_revision`; a failure of the scan itself also
+  carries the traceback), not on every refresh while it persists. An error that clears and
+  later comes back is logged again. `capabilities.reload_recovered` is logged once the
+  reload succeeds again. The Telegram `/capabilities` picker shows a warning block with the
+  revision still in use and, per error, only its first line and line/column (PyYAML puts
+  the offending source line after the first line, and it may hold secrets). Paths are shown
+  as the file name only: read and scan errors carry the OS message (`[a.yaml] read error:
+  Permission denied`), and any other absolute path is cut to its last component. The full
+  message is in the log. There is no proactive Telegram notification.
+
+One snapshot per turn: the orchestrator calls `refresh()` once and passes that snapshot to
+the tool-mismatch check, `TurnAdapterCache.get_or_build(config, snapshot)` (system prompt +
+tools) and `build_tool_runtime_params(config, snapshot)`. Delegation feedback turns use the
+same path. The turn's `prompt_trace` records `capabilities.revision`, the active ids and the
+`manifest_sha256` of each active capability.
+
+Adapter cache and prompt:
+- `TurnAdapterCache` key: `(frozenset(enabled), frozenset(denied), snapshot.revision)`. A
+  new revision builds new adapters (new prompt and tools) and evicts all adapters of older
+  revisions; the cache is also LRU-bounded (16 entries).
+- The system prompt is composed from the snapshot only and is byte-stable for a revision,
+  so the Anthropic instruction cache keeps hitting. The current date is **not** part of it:
+  it is a dynamic pydantic-ai instruction evaluated on every run, sent as a separate block
+  after the cached system prompt.
+
+Derived state follows revisions:
+- The Telegram `/capabilities` picker reads the catalog on every render.
+- Sub-agent MCP servers (`claude_code_settings.mcp_servers` of the default policy's active
+  set) are recomputed and handed to both Claude Code backends on every new revision
+  (`SubagentMcpServersSync`); tasks already running keep their servers.
+- `~/.claude/settings.json` is applied once at startup and then re-applied only when a
+  revision changes the `claude_code_settings` of the default policy's active capabilities
+  (`ClaudeCodeSettingsSync`, created in `api/lifespan.py`). The sync records only a
+  successful apply, so a write skipped at startup or later is retried with the next
+  revision even if that revision leaves `claude_code_settings` unchanged. The merge semantics are unchanged: if no active capability
+  defines settings any more, the file is left as it is. The writer
+  (`core/capabilities/claude_settings_file.py`) only owns `permissions.allow`,
+  `permissions.deny` and `mcpServers` and preserves every other key. If the existing file
+  is unreadable, not valid JSON or not a JSON object, it is left untouched and
+  `capabilities.claude_code_settings.skipped` is logged; the next revision retries. A write
+  that fails (read-only `~/.claude` or target, full disk) is skipped the same way and is
+  never raised, so it cannot abort startup. Writes are atomic (temp file in the same
+  directory + `os.replace`, then a best-effort fsync of the directory), keep the file mode
+  (a new file gets `0600`), follow a symlinked `settings.json` to its target, and are
+  skipped when the merged content is already on disk. `allow`/`deny` are still replaced as a whole,
+  so entries added there by hand are dropped on the next apply.
+
+Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
+`mcp_servers.yaml` and the other config domains.
 
 ## Dynamic Activation Model (Normative)
 

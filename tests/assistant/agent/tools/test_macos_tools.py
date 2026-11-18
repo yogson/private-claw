@@ -10,6 +10,7 @@ from assistant.agent.tools.macos_tools import (
     macos_reminders_read,
     macos_reminders_write,
 )
+from tests.assistant.capability_helpers import active_for
 
 
 def _ctx(deps: TurnDeps) -> MagicMock:
@@ -238,10 +239,7 @@ def test_macos_notes_read_osascript_failure(mock_run: MagicMock) -> None:
     assert "reason" in result
 
 
-@patch("assistant.agent.tools.registry.load_capability_definitions")
-def test_get_agent_tools_includes_macos_when_capability_enabled(
-    mock_load_caps: MagicMock,
-) -> None:
+def test_get_agent_tools_includes_macos_when_capability_enabled() -> None:
     """macOS tools are registered when macos_personal capability is enabled."""
     from assistant.agent.tools.registry import get_agent_tools
     from assistant.core.capabilities.schemas import (
@@ -262,7 +260,7 @@ def test_get_agent_tools_includes_macos_when_capability_enabled(
         ToolsConfig,
     )
 
-    mock_load_caps.return_value = {
+    definitions = {
         "macos_personal": CapabilityDefinition(
             capability_id="macos_personal",
             prompt="",
@@ -312,7 +310,7 @@ def test_get_agent_tools_includes_macos_when_capability_enabled(
         store=StoreConfig(),
         memory=MemoryConfig(api_key="test"),
     )
-    tools = get_agent_tools(config)
+    tools = get_agent_tools(config, active_for(config, definitions))
     tool_names = [getattr(t, "name", None) or getattr(t, "__name__", str(t)) for t in tools]
     assert "macos_notes_read" in tool_names
     assert "macos_notes_write" in tool_names

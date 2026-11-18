@@ -48,7 +48,7 @@ from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
 from assistant.channels.telegram.reliability.throttle import ChannelThrottleGuard
 from assistant.channels.telegram.session_resume import SessionResumeService
 from assistant.channels.telegram.task_callbacks import sign_task_callback, verify_task_callback
-from assistant.core.capabilities.schemas import CapabilityDefinition
+from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.core.confirmation import ConfirmationDecision, ConfirmationRequest
 from assistant.core.session import SessionContextFactory
@@ -101,7 +101,7 @@ class TelegramAdapter:
         model_context: SessionModelContextInterface | None = None,
         model_allowlist: list[str] | None = None,
         default_model_id: str | None = None,
-        capability_definitions: dict[str, CapabilityDefinition] | None = None,
+        capability_catalog: CapabilityCatalogInterface | None = None,
         default_capabilities: list[str] | None = None,
         capability_context: SessionCapabilityContextInterface | None = None,
         session_factory: SessionContextFactory | None = None,
@@ -125,9 +125,9 @@ class TelegramAdapter:
                 hmac_secret=secret,
             )
         self._capability_select: CapabilitySelectService | None = None
-        if capability_definitions and secret:
+        if capability_catalog is not None and secret:
             self._capability_select = CapabilitySelectService(
-                capability_definitions=capability_definitions,
+                capability_catalog=capability_catalog,
                 hmac_secret=secret,
             )
         guard = AllowlistGuard(config.allowlist)

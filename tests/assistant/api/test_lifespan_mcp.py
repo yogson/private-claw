@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
-from tests.assistant.api.test_telegram_lifecycle import _runtime_config
 
 from assistant.api.lifespan import _lifespan
+from tests.assistant.api.test_telegram_lifecycle import _catalog, _runtime_config
 
 
 async def test_failed_init_does_not_leave_mcp_started_without_cleanup() -> None:
@@ -18,7 +18,7 @@ async def test_failed_init_does_not_leave_mcp_started_without_cleanup() -> None:
     store = MagicMock()
     store.initialize = AsyncMock()
     with (
-        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.bootstrap_with_catalog", return_value=(config, _catalog())),
         patch("assistant.api.lifespan.configure_logging", return_value="x.log"),
         patch("assistant.api.lifespan.configure_logfire", return_value=False),
         patch("assistant.api.lifespan.StoreFacade", return_value=store),

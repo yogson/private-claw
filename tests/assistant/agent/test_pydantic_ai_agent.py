@@ -474,6 +474,7 @@ async def test_run_turn_reports_usage_end_to_end_with_real_factory(
     from pydantic_ai.models.function import AgentInfo, FunctionModel
 
     from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
+    from assistant.core.capabilities.catalog import CapabilityCatalog
     from assistant.core.config.loader import ConfigLoader
 
     config_dir = Path(__file__).resolve().parents[3] / "config"
@@ -485,7 +486,10 @@ async def test_run_turn_reports_usage_end_to_end_with_real_factory(
         return ModelResponse(parts=[TextPart(content="hello")])
 
     adapter = PydanticAITurnAdapter(
-        model_id="anthropic:claude-3-5-sonnet-20241022", max_tokens=256, config=config
+        model_id="anthropic:claude-3-5-sonnet-20241022",
+        max_tokens=256,
+        config=config,
+        snapshot=CapabilityCatalog(config_dir).current(),
     )
     deps = TurnDeps()
     with adapter._agent.override(model=FunctionModel(respond)):

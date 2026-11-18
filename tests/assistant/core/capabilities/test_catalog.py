@@ -1,0 +1,549 @@
+"""CapabilityCatalog: snapshot/revision semantics, change detection, last-known-good."""
+
+import errno
+import hashlib
+import os
+import threading
+import time
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from pydantic import ValidationError
+from structlog.testing import capture_logs
+
+from assistant.core.capabilities.catalog import CapabilityCatalog
+from assistant.core.capabilities.loader import CapabilityLoadError, parse_capability_manifest
+from assistant.core.capabilities.manifest_scanner import RACY_WINDOW_NS, ManifestScanner
+from assistant.core.capabilities.schemas import CapabilityDefinition
+from assistant.core.capabilities.snapshot import CapabilityLoadIssue, CapabilitySnapshot
+
+
+class _SpyParser:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, file_name: str, raw: bytes) -> CapabilityDefinition:
+        self.calls.append(file_name)
+        return parse_capability_manifest(file_name, raw)
+
+
+def _write(root: Path, name: str, body: str) -> Path:
+    caps = root / "capabilities"
+    caps.mkdir(exist_ok=True)
+    path = caps / name
+    path.write_text(body)
+    return path
+
+
+def _manifest(cap_id: str, prompt: str = "p", nested: list[str] | None = None) -> str:
+    lines = [f"capability_id: {cap_id}", f"prompt: {prompt}"]
+    if nested:
+        lines.append(f"nested_capabilities: [{', '.join(nested)}]")
+    return "\n".join(lines) + "\n"
+
+
+def _bump_mtime(path: Path) -> None:
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+
+def _set_mtime(path: Path, mtime_ns: int) -> None:
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+
+
+@pytest.fixture()
+def spy() -> _SpyParser:
+    return _SpyParser()
+
+
+@pytest.fixture()
+def catalog(tmp_path: Path, spy: _SpyParser) -> CapabilityCatalog:
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha"))
+    _write(tmp_path, "b.yaml", _manifest("b", "beta"))
+    return CapabilityCatalog(tmp_path, min_refresh_interval=0, parser=spy)
+
+
+# ----------------------------------------------------------------------
+# Initial load
+# ----------------------------------------------------------------------
+
+
+def test_initial_load(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    snap = catalog.current()
+    assert snap.revision == 1
+    assert set(snap.definitions) == {"a", "b"}
+    assert snap.errors == ()
+    state = snap.file_for("a")
+    assert state is not None
+    path = tmp_path / "capabilities" / "a.yaml"
+    assert state.path == path
+    assert state.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert snap.file_hashes(["a", "missing"]) == {"a": state.sha256}
+
+
+def test_initial_load_is_fail_fast(tmp_path: Path) -> None:
+    _write(tmp_path, "a.yaml", "capability_id: a\nnested_capabilites: [b]\n")
+    with pytest.raises(
+        CapabilityLoadError, match=r"\[a\.yaml\] nested_capabilites: extra fields not permitted"
+    ):
+        CapabilityCatalog(tmp_path)
+
+
+def test_missing_capabilities_dir_gives_empty_snapshot(tmp_path: Path) -> None:
+    assert CapabilityCatalog(tmp_path).current().definitions == {}
+
+
+def test_snapshot_is_immutable(catalog: CapabilityCatalog) -> None:
+    snap = catalog.current()
+    with pytest.raises(FrozenInstanceError):
+        snap.revision = 5  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        snap.definitions["x"] = snap.definitions["a"]  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        snap.definitions["a"].prompt = "mutated"  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------
+# Change detection
+# ----------------------------------------------------------------------
+
+
+def test_unchanged_dir_does_not_reparse(catalog: CapabilityCatalog, spy: _SpyParser) -> None:
+    spy.calls.clear()
+    first = catalog.current()
+    assert catalog.refresh() is first
+    assert catalog.refresh() is first
+    assert spy.calls == []
+
+
+def test_edit_bumps_revision_and_reparses_only_changed_file(
+    catalog: CapabilityCatalog, spy: _SpyParser, tmp_path: Path
+) -> None:
+    spy.calls.clear()
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.definitions["a"].prompt == "alpha v2"
+    assert spy.calls == ["a.yaml"]
+    assert catalog.current() is snap
+
+
+def test_touch_only_change_does_not_bump_revision(
+    catalog: CapabilityCatalog, spy: _SpyParser, tmp_path: Path
+) -> None:
+    spy.calls.clear()
+    before = catalog.current()
+    _bump_mtime(tmp_path / "capabilities" / "a.yaml")
+    assert catalog.refresh().revision == before.revision
+    assert spy.calls == []  # content hash unchanged: not re-parsed
+
+
+def test_add_and_delete_file(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    _write(tmp_path, "c.yaml", _manifest("c"))
+    assert catalog.refresh().revision == 2
+    assert "c" in catalog.current().definitions
+    (tmp_path / "capabilities" / "b.yaml").unlink()
+    snap = catalog.refresh()
+    assert snap.revision == 3
+    assert set(snap.definitions) == {"a", "c"}
+
+
+def test_min_refresh_interval_skips_stat(tmp_path: Path) -> None:
+    _write(tmp_path, "a.yaml", _manifest("a", "v1"))
+    now = [100.0]
+    catalog = CapabilityCatalog(tmp_path, min_refresh_interval=1.0, clock=lambda: now[0])
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    now[0] += 0.5
+    assert catalog.refresh().revision == 1
+    now[0] += 0.6
+    assert catalog.refresh().revision == 2
+
+
+def test_reload_rereads_every_file_regardless_of_stat(
+    catalog: CapabilityCatalog, spy: _SpyParser, tmp_path: Path
+) -> None:
+    path = tmp_path / "capabilities" / "a.yaml"
+    settled = time.time_ns() - 10 * RACY_WINDOW_NS  # old enough for the stat to be trusted
+    _set_mtime(path, settled)
+    spy.calls.clear()
+    assert catalog.reload("test").revision == 1  # same content: no bump
+    assert spy.calls == []  # bytes re-read and hashed; identical hashes need no parse
+
+    # Same size and restored (settled) mtime: invisible to the stat signature, but not to
+    # reload().
+    path.write_text(_manifest("a", "ALPHA"))
+    _set_mtime(path, settled)
+    assert catalog.refresh().revision == 1
+    snap = catalog.reload("approved edit")
+    assert snap.revision == 2
+    assert snap.definitions["a"].prompt == "ALPHA"
+    assert spy.calls == ["a.yaml"]
+
+
+# ----------------------------------------------------------------------
+# Last-known-good
+# ----------------------------------------------------------------------
+
+
+def test_broken_yaml_keeps_lkg_then_fix_recovers(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    lkg = catalog.current()
+    _write(tmp_path, "a.yaml", "capability_id: a\nprompt: [unclosed\n")
+    snap = catalog.refresh()
+    assert snap.revision == lkg.revision
+    assert snap.definitions == lkg.definitions
+    assert [e.file for e in snap.blocking_errors] == ["a.yaml"]
+    assert "YAML parse error" in snap.blocking_errors[0].message
+
+    _write(tmp_path, "a.yaml", _manifest("a", "fixed"))
+    snap = catalog.refresh()
+    assert snap.revision == lkg.revision + 1
+    assert snap.errors == ()
+    assert snap.definitions["a"].prompt == "fixed"
+
+
+def test_revert_to_lkg_content_clears_errors_without_bump(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    _write(tmp_path, "a.yaml", "capability_id: a\nbogus: 1\n")
+    assert catalog.refresh().blocking_errors
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha"))
+    snap = catalog.refresh()
+    assert snap.revision == 1
+    assert snap.errors == ()
+
+
+def test_unknown_key_on_reload_keeps_lkg(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    _write(tmp_path, "a.yaml", "capability_id: a\nprompt: x\nnested_capabilites: [b]\n")
+    snap = catalog.refresh()
+    assert snap.revision == 1
+    assert snap.definitions["a"].prompt == "alpha"
+    assert snap.blocking_errors[0].message == (
+        "[a.yaml] nested_capabilites: extra fields not permitted"
+    )
+
+
+def test_one_broken_file_blocks_the_whole_swap(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    _write(tmp_path, "a.yaml", _manifest("a", "valid edit"))
+    _write(tmp_path, "b.yaml", "capability_id: b\nprompt: [broken\n")
+    snap = catalog.refresh()
+    assert snap.revision == 1
+    assert snap.definitions["a"].prompt == "alpha"  # whole-snapshot LKG, no partial merge
+
+
+def test_new_broken_file_is_excluded(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    _write(tmp_path, "c.yaml", "not: [valid")
+    snap = catalog.refresh()
+    assert set(snap.definitions) == {"a", "b"}
+    assert snap.blocking_errors[0].file == "c.yaml"
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "needle"),
+    [
+        ("c.yaml", _manifest("a"), "duplicate capability_id: a"),
+        ("c.yaml", _manifest("c", nested=["ghost"]), "nests unknown capability 'ghost'"),
+    ],
+)
+def test_cross_file_validation_rejects_swap(
+    catalog: CapabilityCatalog, tmp_path: Path, name: str, body: str, needle: str
+) -> None:
+    _write(tmp_path, name, body)
+    snap = catalog.refresh()
+    assert snap.revision == 1
+    assert set(snap.definitions) == {"a", "b"}
+    assert any(needle in e.message for e in snap.blocking_errors)
+
+
+def test_custom_validator_rejects_swap(tmp_path: Path) -> None:
+    _write(tmp_path, "a.yaml", _manifest("a", "ok"))
+
+    def validator(definitions: object) -> list[CapabilityLoadIssue]:
+        defs = dict(definitions)  # type: ignore[call-overload]
+        if defs["a"].prompt == "bad":
+            return [CapabilityLoadIssue("validation", "prompt must not be bad")]
+        return [CapabilityLoadIssue("warning", "just saying")]
+
+    catalog = CapabilityCatalog(tmp_path, min_refresh_interval=0, validator=validator)
+    assert [e.blocking for e in catalog.current().errors] == [False]  # warnings never block
+    _write(tmp_path, "a.yaml", _manifest("a", "bad"))
+    snap = catalog.refresh()
+    assert snap.revision == 1
+    assert [e.message for e in snap.blocking_errors] == ["prompt must not be bad"]
+
+
+def test_reload_failure_is_logged_once_per_distinct_error(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    with capture_logs() as logs:
+        path = _write(tmp_path, "a.yaml", "capability_id: a\nbogus: 1\n")
+        catalog.refresh()
+        _bump_mtime(path)  # same broken content
+        catalog.refresh()
+        _write(tmp_path, "a.yaml", _manifest("a", "fixed"))
+        catalog.refresh()
+    failed = [e for e in logs if e["event"] == "capabilities.reload_failed"]
+    assert len(failed) == 1
+    assert failed[0]["file"] == "a.yaml"
+    assert failed[0]["lkg_revision"] == 1
+    assert [e["event"] for e in logs].count("capabilities.reload_recovered") == 1
+
+
+def test_unexpected_failures_never_escape_refresh(tmp_path: Path) -> None:
+    _write(tmp_path, "a.yaml", _manifest("a", "ok"))
+    calls = {"n": 0}
+
+    def flaky_parser(file_name: str, raw: bytes) -> CapabilityDefinition:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("parser bug")
+        return parse_capability_manifest(file_name, raw)
+
+    catalog = CapabilityCatalog(tmp_path, min_refresh_interval=0, parser=flaky_parser)
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    snap = catalog.refresh()
+    assert snap.revision == 1
+    assert "unexpected parse error: parser bug" in snap.blocking_errors[0].message
+
+    with patch.object(catalog._scanner, "scan", side_effect=PermissionError("denied")):
+        snap = catalog.refresh()
+    assert snap.revision == 1
+    assert "refresh failed: denied" in snap.blocking_errors[0].message
+    _write(tmp_path, "a.yaml", _manifest("a", "v3"))
+    assert catalog.refresh().revision == 2
+
+
+# ----------------------------------------------------------------------
+# Subscribers
+# ----------------------------------------------------------------------
+
+
+def test_subscribers_notified_only_on_new_revision(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    seen: list[int] = []
+
+    def failing(snapshot: CapabilitySnapshot) -> None:
+        raise RuntimeError("subscriber bug")
+
+    catalog.subscribe(failing)  # must not break refresh or other subscribers
+    catalog.subscribe(lambda snap: seen.append(snap.revision))
+    _write(tmp_path, "a.yaml", "capability_id: a\nprompt: [broken\n")
+    catalog.refresh()
+    assert seen == []
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    catalog.refresh()
+    catalog.refresh()
+    assert seen == [2]
+
+
+# ----------------------------------------------------------------------
+# Read errors and racy stat
+# ----------------------------------------------------------------------
+
+
+def test_same_size_edit_in_the_same_mtime_tick_is_not_missed(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.yaml", _manifest("a", "PROMPT-V1"))
+    tick = time.time_ns()
+    _set_mtime(path, tick)
+    catalog = CapabilityCatalog(tmp_path, min_refresh_interval=0)
+    path.write_text(_manifest("a", "PROMPT-V2"))
+    _set_mtime(path, tick)  # same size and mtime: identical stat signature
+    snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.definitions["a"].prompt == "PROMPT-V2"
+
+
+def test_racy_file_is_rehashed_only_until_its_mtime_settles(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.yaml", _manifest("a"))
+    tick = time.time_ns()
+    _set_mtime(path, tick)
+    now = [tick + RACY_WINDOW_NS // 2]
+    spy = _SpyParser()
+    scanner = ManifestScanner(tmp_path / "capabilities", parser=spy, now_ns=lambda: now[0])
+
+    assert scanner.build(scanner.scan()[1]).retry  # read within the window: racy
+    now[0] = tick + RACY_WINDOW_NS + 1
+    with patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as reads:
+        assert not scanner.build(scanner.scan()[1]).retry  # re-hashed once, now settled
+        assert not scanner.build(scanner.scan()[1]).retry  # served from the stat cache
+    assert reads.call_count == 1
+    assert spy.calls == ["a.yaml"]  # same hash on the re-read: no re-parse
+
+
+def test_read_error_recovers_once_the_cause_is_fixed(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    # Patched rather than chmod 000, so the test also runs (and fails) as root.
+    path = _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    _set_mtime(path, time.time_ns() - 20 * RACY_WINDOW_NS)  # settled: not re-read as racy
+    denied = {path}
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self in denied:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    with (
+        patch.object(Path, "read_bytes", autospec=True, side_effect=read_bytes),
+        capture_logs() as logs,
+    ):
+        snap = catalog.refresh()
+        assert snap.revision == 1
+        assert [i.message for i in snap.blocking_errors] == [
+            "[a.yaml] read error: Permission denied"
+        ]
+        assert catalog.refresh().blocking_errors  # retried, still failing
+        denied.clear()  # the cause is fixed; neither mtime nor size changes
+        snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.errors == ()
+    assert snap.definitions["a"].prompt == "alpha v2"
+    events = [e["event"] for e in logs]
+    assert events.count("capabilities.reload_failed") == 1
+    assert events.count("capabilities.reload_recovered") == 1
+
+
+def test_subscriber_may_call_back_into_the_catalog(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    seen: list[int] = []
+
+    def reentrant(snapshot: CapabilitySnapshot) -> None:
+        seen.append(catalog.refresh().revision)
+        catalog.reload("from subscriber")
+
+    catalog.subscribe(reentrant)
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    worker = threading.Thread(target=catalog.refresh, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "subscriber deadlocked on the catalog lock"
+    assert seen == [2]
+
+
+def _assert_in_order_ending_on(log: list[tuple[str, int]], names: list[str], last: int) -> None:
+    for name in names:
+        revisions = [revision for who, revision in log if who == name]
+        assert revisions == sorted(set(revisions)), f"{name} got {revisions}"
+        assert revisions[-1] == last, f"{name} did not end on revision {last}: {revisions}"
+
+
+def test_reentrant_reload_never_delivers_a_stale_revision(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    log: list[tuple[str, int]] = []
+
+    def s1(snapshot: CapabilitySnapshot) -> None:
+        log.append(("s1", snapshot.revision))
+        if snapshot.revision == 2:
+            _write(tmp_path, "b.yaml", _manifest("b", "beta v3"))
+            assert catalog.reload("from subscriber").revision == 3
+
+    catalog.subscribe(s1)
+    catalog.subscribe(lambda snapshot: log.append(("s2", snapshot.revision)))
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    catalog.refresh()
+
+    # Before the fix: [('s1', 2), ('s1', 3), ('s2', 3), ('s2', 2)], s2 ending on 2.
+    assert log == [("s1", 2), ("s1", 3), ("s2", 3)]
+    _assert_in_order_ending_on(log, ["s1", "s2"], last=3)
+
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v4"))
+    catalog.refresh()  # the dispatcher is idle again and delivers the next revision
+    assert log[-2:] == [("s1", 4), ("s2", 4)]
+
+
+def test_concurrent_reload_never_delivers_a_stale_revision(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    log: list[tuple[str, int]] = []
+    s1_entered = threading.Event()
+    release_s1 = threading.Event()
+
+    def s1(snapshot: CapabilitySnapshot) -> None:
+        log.append(("s1", snapshot.revision))
+        if snapshot.revision == 2:
+            s1_entered.set()
+            assert release_s1.wait(timeout=5)
+
+    catalog.subscribe(s1)
+    catalog.subscribe(lambda snapshot: log.append(("s2", snapshot.revision)))
+
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    thread_a = threading.Thread(target=catalog.refresh, daemon=True)
+    thread_a.start()
+    assert s1_entered.wait(timeout=5)  # thread A is delivering revision 2, stuck in s1
+
+    _write(tmp_path, "b.yaml", _manifest("b", "beta v3"))
+    assert catalog.reload("thread b").revision == 3  # thread B: revision 3, handed to A
+    assert log == [("s1", 2)]  # B did not deliver revision 3 behind A's back
+
+    release_s1.set()
+    thread_a.join(timeout=5)
+    assert not thread_a.is_alive()
+    # Before the fix: [('s1', 2), ('s1', 3), ('s2', 3), ('s2', 2)].
+    assert log == [("s1", 2), ("s1", 3), ("s2", 3)]
+    _assert_in_order_ending_on(log, ["s1", "s2"], last=3)
+
+
+def test_failing_subscriber_does_not_stall_the_dispatcher(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    seen: list[int] = []
+
+    def failing(snapshot: CapabilitySnapshot) -> None:
+        if snapshot.revision == 2:
+            _write(tmp_path, "b.yaml", _manifest("b", "beta v3"))
+            catalog.reload("from failing subscriber")
+        raise RuntimeError("subscriber bug")
+
+    catalog.subscribe(failing)
+    catalog.subscribe(lambda snapshot: seen.append(snapshot.revision))
+    _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
+    with capture_logs() as logs:
+        catalog.refresh()
+    assert seen == [3]
+    failures = [e["revision"] for e in logs if e["event"] == "capabilities.subscriber_failed"]
+    assert failures == [2, 3]
+
+
+def test_scan_failure_is_logged_once_and_recovery_is_logged(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    with capture_logs() as logs:
+        with patch.object(catalog._scanner, "scan", side_effect=PermissionError("denied")):
+            for _ in range(3):
+                assert "refresh failed: denied" in catalog.refresh().blocking_errors[0].message
+        snap = catalog.refresh()
+    assert snap.revision == 1
+    assert snap.errors == ()
+    failed = [e for e in logs if e["event"] == "capabilities.reload_failed"]
+    assert len(failed) == 1
+    assert isinstance(failed[0]["exc_info"], PermissionError)  # traceback kept, once
+    assert [e["event"] for e in logs].count("capabilities.reload_recovered") == 1
+
+
+def test_editor_temp_files_never_block_a_reload(catalog: CapabilityCatalog, tmp_path: Path) -> None:
+    for name in ("._a.yaml", ".#a.yaml", "a.yaml~", ".a.yaml.swp"):
+        _write(tmp_path, name, "not: [valid")
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.errors == ()
+
+
+def test_dangling_symlink_is_skipped_with_a_debug_log(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    (tmp_path / "capabilities" / "c.yaml").symlink_to(tmp_path / "nowhere.yaml")
+    with capture_logs() as logs:
+        snap = catalog.refresh()
+    assert set(snap.definitions) == {"a", "b"}
+    assert snap.errors == ()
+    skipped = [e for e in logs if e["event"] == "capabilities.manifest_skipped"]
+    assert [(e["file"], e["log_level"]) for e in skipped] == [("c.yaml", "debug")]

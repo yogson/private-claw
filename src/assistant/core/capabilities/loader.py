@@ -4,10 +4,8 @@ Component ID: CMP_CORE_CAPABILITIES
 Loads capability definitions from config/capabilities/*.yaml.
 """
 
-import copy
-import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import ValidationError
@@ -20,15 +18,59 @@ class CapabilityLoadError(Exception):
     """Raised when capability manifest loading or validation fails."""
 
 
+class ManifestParseError(Exception):
+    """Raised when a single manifest file fails YAML parsing or schema validation."""
+
+    def __init__(self, messages: list[str]) -> None:
+        super().__init__("; ".join(messages))
+        self.messages = messages
+
+
+def is_capability_manifest_name(name: str) -> bool:
+    """True for ``*.yaml``/``*.yml`` manifest names (not ``index.yaml``).
+
+    Hidden names are never manifests: macOS AppleDouble ``._x.yaml``, Emacs lock files
+    ``.#x.yaml`` and dot-prefixed editor/writer temp files. Backup and swap files
+    (``x.yaml~``, ``.x.yaml.swp``) are excluded by the suffix check.
+    """
+    return (
+        not name.startswith(".") and name != "index.yaml" and Path(name).suffix in (".yaml", ".yml")
+    )
+
+
 def discover_capability_manifests(capabilities_dir: Path) -> list[Path]:
     """Discover capability manifest paths under config/capabilities/*.yaml."""
     if not capabilities_dir.is_dir():
         return []
-    paths: list[Path] = []
-    for path in sorted(capabilities_dir.iterdir()):
-        if path.suffix in (".yaml", ".yml") and path.name != "index.yaml":
-            paths.append(path)
-    return paths
+    return [p for p in sorted(capabilities_dir.iterdir()) if is_capability_manifest_name(p.name)]
+
+
+def format_validation_error(file_name: str, exc: ValidationError) -> list[str]:
+    """Render a manifest ``ValidationError`` as ``[file] loc: message`` lines."""
+    messages: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(x) for x in err["loc"])
+        msg = "extra fields not permitted" if err["type"] == "extra_forbidden" else err["msg"]
+        messages.append(f"[{file_name}] {loc}: {msg}")
+    return messages
+
+
+def parse_capability_manifest(file_name: str, raw: bytes) -> CapabilityDefinition:
+    """Parse and validate one manifest's raw bytes.
+
+    Raises :class:`ManifestParseError` carrying ``[file] ...`` messages on YAML, shape or
+    schema errors. This is the single parser used by the loader and the catalog.
+    """
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ManifestParseError([f"[{file_name}] YAML parse error: {exc}"]) from exc
+    if not isinstance(data, dict):
+        raise ManifestParseError([f"[{file_name}] expected dict, got {type(data).__name__}"])
+    try:
+        return CapabilityDefinition(**data)
+    except ValidationError as exc:
+        raise ManifestParseError(format_validation_error(file_name, exc)) from exc
 
 
 def load_capability_definitions(
@@ -37,6 +79,8 @@ def load_capability_definitions(
     """Load all capability manifests from config/capabilities/*.yaml.
 
     Returns dict keyed by capability_id. Raises CapabilityLoadError on validation failure.
+    Low-level, uncached parser: runtime code reads manifests through
+    :class:`~assistant.core.capabilities.catalog.CapabilityCatalog` instead.
     """
     root = resolve_config_dir(config_dir)
     capabilities_dir = root / "capabilities"
@@ -48,22 +92,14 @@ def load_capability_definitions(
 
     for path in discover_capability_manifests(capabilities_dir):
         try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-            if not isinstance(data, dict):
-                errors.append(f"[{path.name}] expected dict, got {type(data).__name__}")
-                continue
-            definition = CapabilityDefinition(**data)
-            if definition.capability_id in definitions:
-                errors.append(f"[{path.name}] duplicate capability_id: {definition.capability_id}")
-                continue
-            definitions[definition.capability_id] = definition
-        except yaml.YAMLError as exc:
-            errors.append(f"[{path.name}] YAML parse error: {exc}")
-        except ValidationError as exc:
-            for err in exc.errors():
-                loc = ".".join(str(x) for x in err["loc"])
-                errors.append(f"[{path.name}] {loc}: {err['msg']}")
+            definition = parse_capability_manifest(path.name, path.read_bytes())
+        except ManifestParseError as exc:
+            errors.extend(exc.messages)
+            continue
+        if definition.capability_id in definitions:
+            errors.append(f"[{path.name}] duplicate capability_id: {definition.capability_id}")
+            continue
+        definitions[definition.capability_id] = definition
 
     if errors:
         raise CapabilityLoadError(
@@ -72,37 +108,8 @@ def load_capability_definitions(
     return definitions
 
 
-def expand_nested_capabilities(
-    enabled: list[str],
-    definitions: dict[str, "CapabilityDefinition"],
-) -> list[str]:
-    """Return enabled capabilities expanded with all nested capabilities (cycle-safe).
-
-    Performs a depth-first traversal starting from each explicitly enabled capability.
-    Nested capabilities declared via ``nested_capabilities`` are added immediately after
-    the parent, preserving a deterministic order while avoiding duplicates and cycles.
-    """
-    result: list[str] = []
-    seen: set[str] = set()
-
-    def _expand(cap_id: str) -> None:
-        if cap_id in seen:
-            return
-        seen.add(cap_id)
-        result.append(cap_id)
-        definition = definitions.get(cap_id)
-        if definition:
-            for nested_id in definition.nested_capabilities:
-                _expand(nested_id)
-
-    for cap_id in enabled:
-        _expand(cap_id)
-
-    return result
-
-
 def collect_mcp_server_ids(
-    definitions: dict[str, CapabilityDefinition],
+    definitions: Mapping[str, CapabilityDefinition],
     enabled_capabilities: list[str],
 ) -> list[str]:
     """Return the MCP server ids granted by the given capabilities (first-seen order, deduped).
@@ -119,90 +126,3 @@ def collect_mcp_server_ids(
             if server_id not in server_ids:
                 server_ids.append(server_id)
     return server_ids
-
-
-def collect_claude_code_mcp_servers(
-    definitions: dict[str, CapabilityDefinition],
-    enabled_capabilities: list[str],
-) -> dict[str, dict[str, Any]]:
-    """Merge ``claude_code_settings.mcp_servers`` from the active capabilities.
-
-    Servers are merged in ``enabled_capabilities`` order; duplicate ids are overwritten
-    by later capabilities.  The result is handed to the delegation backends, which pass
-    it to Claude Code via ``--mcp-config`` — the CLI ignores ``mcpServers`` in
-    settings.json, so that file cannot be used to deliver MCP servers to sub-agents.
-    """
-    merged: dict[str, dict[str, Any]] = {}
-    for cap_id in enabled_capabilities:
-        definition = definitions.get(cap_id)
-        if definition is None or definition.claude_code_settings is None:
-            continue
-        for name, spec in definition.claude_code_settings.mcp_servers.items():
-            merged[name] = copy.deepcopy(spec)
-    return merged
-
-
-def apply_claude_code_settings(
-    definitions: dict[str, CapabilityDefinition],
-    enabled_capabilities: list[str],
-    settings_path: Path | None = None,
-) -> None:
-    """Merge claude_code_settings from active capabilities into ~/.claude/settings.json.
-
-    ``enabled_capabilities`` must be the caller's already-expanded, already-denied-filtered
-    list of capability IDs.  This function does not expand nested capabilities or filter
-    denied ones — that is the caller's responsibility (consistent with all other use sites).
-
-    Permissions are union-merged: all allow/deny entries from all active capabilities
-    are combined (duplicates removed, order preserved).
-
-    MCP servers from capabilities are merged in enabled_capabilities order; duplicate
-    server ids are overwritten by later capabilities. Written as top-level ``mcpServers``.
-    If no capability defines ``mcp_servers``, the existing ``mcpServers`` key is left unchanged.
-    Note that Claude Code ignores ``mcpServers`` in settings.json — the key is written for
-    reference only; sub-agents get their servers via ``collect_claude_code_mcp_servers``,
-    which the delegation backends pass to the CLI as ``--mcp-config``.
-    """
-    if settings_path is None:
-        settings_path = Path.home() / ".claude" / "settings.json"
-
-    merged_allow: list[str] = []
-    merged_deny: list[str] = []
-    seen_allow: set[str] = set()
-    seen_deny: set[str] = set()
-    merged_mcp = collect_claude_code_mcp_servers(definitions, enabled_capabilities)
-
-    for cap_id in enabled_capabilities:
-        definition = definitions.get(cap_id)
-        if definition is None or definition.claude_code_settings is None:
-            continue
-        perms = definition.claude_code_settings.permissions
-        for entry in perms.allow:
-            if entry not in seen_allow:
-                merged_allow.append(entry)
-                seen_allow.add(entry)
-        for entry in perms.deny:
-            if entry not in seen_deny:
-                merged_deny.append(entry)
-                seen_deny.add(entry)
-
-    if not merged_allow and not merged_deny and not merged_mcp:
-        return
-
-    existing: dict[str, Any] = {}
-    if settings_path.exists():
-        try:
-            existing = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-
-    if merged_allow or merged_deny:
-        existing.setdefault("permissions", {})
-        existing["permissions"]["allow"] = merged_allow
-        existing["permissions"]["deny"] = merged_deny
-
-    if merged_mcp:
-        existing["mcpServers"] = merged_mcp
-
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(existing, indent=2) + "\n")

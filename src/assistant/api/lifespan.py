@@ -8,7 +8,7 @@ import structlog
 from fastapi import FastAPI
 
 from assistant.agent.adapter_cache import TurnAdapterCache
-from assistant.agent.tools.registry import collect_enabled_mcp_server_ids
+from assistant.agent.tools.registry import active_capabilities_for, collect_enabled_mcp_server_ids
 from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.deps import set_runtime_config
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
@@ -20,12 +20,9 @@ from assistant.channels.telegram.ingestion.file_downloader import TelegramFileDo
 from assistant.channels.telegram.polling import CancellationRegistry, run_polling
 from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
-from assistant.core.bootstrap import bootstrap
-from assistant.core.capabilities import (
-    collect_claude_code_mcp_servers,
-    expand_nested_capabilities,
-    load_capability_definitions,
-)
+from assistant.core.bootstrap import bootstrap_with_catalog
+from assistant.core.capabilities import ClaudeCodeSettingsSync, SubagentMcpServersSync
+from assistant.core.capabilities.resolver import resolve_policy
 from assistant.core.confirmation import (
     ConfirmationHandlerRegistry,
     ConfirmationService,
@@ -55,7 +52,7 @@ logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    runtime_config = bootstrap()
+    runtime_config, capability_catalog = bootstrap_with_catalog()
     set_runtime_config(runtime_config)
     log_path = configure_logging(runtime_config.app)
     logger.info("logging.started", log_file=str(log_path))
@@ -66,6 +63,17 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.attachment_downloader = None
     app.state.store = None
     app.state.delegation_coordinator = None
+
+    app.state.capability_catalog = capability_catalog
+    default_policy = runtime_config.capabilities
+    # ~/.claude/settings.json gets revision 1 now and then follows revisions that change the
+    # active capabilities' claude_code_settings. A skipped write (unusable or unwritable
+    # file) never aborts startup and is retried with the next revision.
+    settings_sync = ClaudeCodeSettingsSync(
+        resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
+    )
+    settings_sync.apply(capability_catalog.current())
+    capability_catalog.subscribe(settings_sync)
 
     store: StoreFacade | None = None
     polling_task: asyncio.Task[None] | None = None
@@ -114,6 +122,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             model_id=model_id,
             max_tokens=runtime_config.model.max_tokens_default,
             base_config=runtime_config,
+            snapshot=capability_catalog.current(),
         )
 
         transcription_service = build_transcription_service(runtime_config.telegram)
@@ -126,8 +135,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         capability_context = SessionCapabilityContextService(
             data_root / "runtime" / "active_capability_context.json"
         )
-        capability_definitions = load_capability_definitions(config_dir=runtime_config.config_dir)
-
         session_factory = SessionContextFactory(
             store=store,
             active_context=active_session_context,
@@ -144,7 +151,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             model_context=model_context,
             model_allowlist=runtime_config.model.model_allowlist,
             default_model_id=runtime_config.model.default_model_id,
-            capability_definitions=capability_definitions,
+            capability_catalog=capability_catalog,
             default_capabilities=runtime_config.capabilities.enabled_capabilities,
             capability_context=capability_context,
             session_factory=session_factory,
@@ -154,24 +161,19 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # MCP servers declared by the active capabilities are handed to the
         # sub-agents explicitly: Claude Code does not read "mcpServers" from
         # settings.json, and the SDK backend loads no filesystem settings at all.
-        denied_capabilities = frozenset(runtime_config.capabilities.denied_capabilities)
-        subagent_mcp_servers = collect_claude_code_mcp_servers(
-            capability_definitions,
-            [
-                cap_id
-                for cap_id in expand_nested_capabilities(
-                    runtime_config.capabilities.enabled_capabilities, capability_definitions
-                )
-                if cap_id not in denied_capabilities
-            ],
+        # They are recomputed on every new capability snapshot revision.
+        claude_code_backend = ClaudeCodeBackendAdapter()
+        claude_code_streaming_backend = ClaudeCodeStreamingBackendAdapter()
+        subagent_mcp_sync = SubagentMcpServersSync(
+            resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
+            targets=[claude_code_backend, claude_code_streaming_backend],
         )
+        subagent_mcp_sync(capability_catalog.current())
+        capability_catalog.subscribe(subagent_mcp_sync)
         delegation_coordinator = DelegationCoordinator(
             store=store,
             config=runtime_config,
-            backends=[
-                ClaudeCodeBackendAdapter(mcp_servers=subagent_mcp_servers),
-                ClaudeCodeStreamingBackendAdapter(mcp_servers=subagent_mcp_servers),
-            ],
+            backends=[claude_code_backend, claude_code_streaming_backend],
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
@@ -186,6 +188,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             adapter_cache=adapter_cache,
             session_factory=session_factory,
             vocabulary_store=vocabulary_store,
+            capability_catalog=capability_catalog,
             confirmation_service=confirmations,
         )
         delegation_coordinator.set_completion_callback(
@@ -236,7 +239,10 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # cancels it, so no failed init step above can leave a spawned stdio server orphaned.
     mcp_start_task = asyncio.create_task(
         mcp_toolsets.start(
-            runtime_config.mcp_servers, collect_enabled_mcp_server_ids(runtime_config)
+            runtime_config.mcp_servers,
+            collect_enabled_mcp_server_ids(
+                active_capabilities_for(runtime_config, capability_catalog.current())
+            ),
         )
     )
 
