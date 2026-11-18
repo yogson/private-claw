@@ -54,14 +54,16 @@ def test_explicitly_enabled_child_of_denied_parent_stays() -> None:
     assert resolve_active_capabilities(["a", "b"], ["a"], defs) == ["b"]
 
 
-def test_missing_manifest_is_dropped_with_warning() -> None:
+def test_missing_manifest_is_dropped_and_logged_at_debug() -> None:
     defs = _defs(a=["ghost"])
     with capture_logs() as logs:
         assert resolve_active_capabilities(["a", "nope"], [], defs) == ["a"]
-    warned = {
-        e["capability_id"] for e in logs if e["event"] == "capabilities.resolve.missing_manifest"
+    logged = {
+        (e["capability_id"], e["log_level"])
+        for e in logs
+        if e["event"] == "capabilities.resolve.missing_manifest"
     }
-    assert warned == {"ghost", "nope"}
+    assert logged == {("ghost", "debug"), ("nope", "debug")}
 
 
 def test_expand_keeps_missing_ids_and_find_missing_reports_them() -> None:

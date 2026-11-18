@@ -60,14 +60,15 @@ def resolve_active_capabilities(
     """Return the active capability ids for a policy against a set of definitions.
 
     Expands ``nested_capabilities`` (see :func:`expand_nested_capabilities`), never
-    descends into ``denied`` capabilities, and drops ids that have no manifest (with a
-    warning). The order is deterministic: explicit ids in the given order, each followed by
-    its nested children.
+    descends into ``denied`` capabilities, and drops ids that have no manifest (logged at
+    debug level: this runs several times per turn, and the catalog already warns once).
+    The order is deterministic: explicit ids in the given order, each followed by its
+    nested children.
     """
     active: list[str] = []
     for cap_id in expand_nested_capabilities(enabled, definitions, denied):
         if cap_id not in definitions:
-            logger.warning(
+            logger.debug(
                 "capabilities.resolve.missing_manifest",
                 capability_id=cap_id,
                 hint="Manifest not found in config/capabilities/*.yaml; ignored",

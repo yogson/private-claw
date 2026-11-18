@@ -111,7 +111,8 @@ Resolution flow:
    - never include **or descend into** a capability listed in `denied_capabilities`: the
      children of a denied capability are active only if they are enabled explicitly or
      reachable through another, non-denied parent,
-   - drop ids that have no manifest (logged as `capabilities.resolve.missing_manifest`).
+   - drop ids that have no manifest (debug log `capabilities.resolve.missing_manifest`; the
+     catalog reports a missing enabled manifest once as a `capabilities.reload_warning`).
 2. Collect `tool_id` values from each surviving capability manifest where binding `enabled=true`.
 3. Keep only tools that also exist in `config/tools.yaml` with `enabled=true`.
 4. Resolve tool callable from `entrypoint`.
