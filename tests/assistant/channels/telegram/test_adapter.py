@@ -118,7 +118,12 @@ class TestConfirmationCallbacks:
             .callback_data
         )
         tampered = data[:-1] + ("0" if data[-1] != "0" else "1")
-        for event in (_callback_event(tampered), _callback_event(data, chat_id=999)):
+        other_session = _callback_event(data).model_copy(update={"session_id": "tg:123456:x"})
+        for event in (
+            _callback_event(tampered),
+            _callback_event(data, chat_id=999),
+            other_session,
+        ):
             assert adapter.is_confirmation_callback(event) is True
             assert adapter.parse_confirmation_callback(event).state == (
                 ConfirmationCallbackState.INVALID

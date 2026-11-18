@@ -3,7 +3,7 @@ Tests for CMP_CORE_AGENT_ORCHESTRATOR orchestrator module.
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,7 +27,9 @@ from assistant.core.config.schemas import (
 from assistant.core.confirmation import (
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
+    ConfirmationRequest,
     ConfirmationService,
+    ConfirmationStatus,
 )
 from assistant.core.events.models import (
     AttachmentMeta,
@@ -1052,6 +1054,51 @@ class TestOrchestratorExecuteTurn:
             await orch.execute_turn(_minimal_event(text="remember this"))
         # The never-rendered confirmation must not block the session's pending slot.
         assert confirmations.pending_for_session("tg:123") is None
+
+    @pytest.mark.asyncio
+    async def test_expired_confirmations_are_recorded_before_history_is_read(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        order: list[str] = []
+
+        class _Recorder:
+            async def record_resolution(self, request: ConfirmationRequest) -> None:
+                order.append(f"recorded:{request.status.value}")
+
+        now = [datetime.now(UTC)]
+        confirmations = ConfirmationService(
+            ConfirmationHandlerRegistry(),
+            recorder=_Recorder(),
+            ttl_seconds=60,
+            clock=lambda: now[0],
+        )
+        stale = (await confirmations.request("tg:123", _memory_draft())).request
+        assert stale is not None
+        now[0] += timedelta(minutes=5)
+
+        async def _replay(session_id: str, budget: int) -> list[SessionRecord]:
+            order.append("replay")
+            return []
+
+        mock_store.sessions.replay_for_turn = AsyncMock(side_effect=_replay)
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+
+        await orch.execute_turn(_minimal_event(text="hi"))
+
+        assert order[:2] == ["recorded:expired", "replay"]
+        assert stale.status == ConfirmationStatus.EXPIRED
 
     @pytest.mark.asyncio
     async def test_plain_json_text_does_not_create_confirmations(

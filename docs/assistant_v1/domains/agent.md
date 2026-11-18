@@ -123,9 +123,14 @@ Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, 
 `resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
 
 Rules:
-- State is in memory only. After a restart unknown ids resolve as "no longer valid"; no record is lost from
-  history because every final state is written there.
-- TTL: `app.confirmation_ttl_seconds` (default 86400). Expiry is checked lazily on request/resolve.
+- State is in memory only. After a restart unknown ids resolve as "no longer valid". When the user presses a
+  button of such a confirmation, its signature proves which session issued it, so an `expired` record is written
+  to that session (`ConfirmationService.record_unknown_expired`).
+  Known limitation: a confirmation that was pending at restart and is never pressed gets no record. Its replayed
+  tool result still says `pending_confirmation`, but nothing blocks a new proposal (the in-memory slot is free).
+- TTL: `app.confirmation_ttl_seconds` (default 86400). The orchestrator calls `expire_due(session_id)` before each turn
+  reads history, so a timed-out confirmation's `expired` record is visible to that turn. Expiry is also checked on
+  request/resolve. Resolved entries are pruned one TTL after resolution (on request, resolve and sweep).
 - `request()` returns the existing pending request when the `dedupe_key` matches; at most one confirmation is pending
   per session, a different proposal while one is pending is not registered (`blocked_by`).
 - `resolve()` is idempotent: a per-id `asyncio.Lock` plus compare-and-set on `pending`; racing or repeated

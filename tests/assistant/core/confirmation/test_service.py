@@ -182,6 +182,64 @@ async def test_unknown_id_after_restart_resolves_to_nothing() -> None:
     assert result.request is None and not result.changed
 
 
+async def test_expire_due_records_expiry_for_the_given_session_only() -> None:
+    clock, recorder = _Clock(), _Recorder()
+    service = _service(recorder=recorder, clock=clock)
+    mine = (await service.request(SESSION, _draft("k1"))).request
+    other = (await service.request("tg:2", _draft("k2"))).request
+    assert mine is not None and other is not None
+    clock.now += timedelta(hours=2)
+
+    await service.expire_due(SESSION)
+    await service.expire_due(SESSION)
+
+    assert mine.status == ConfirmationStatus.EXPIRED
+    assert other.status == ConfirmationStatus.PENDING
+    assert recorder.records == [(mine.confirmation_id, ConfirmationStatus.EXPIRED)]
+
+
+async def test_record_unknown_expired_writes_expired_record_for_unknown_ids_only() -> None:
+    class _FullRecorder:
+        def __init__(self) -> None:
+            self.requests: list[ConfirmationRequest] = []
+
+        async def record_resolution(self, request: ConfirmationRequest) -> None:
+            self.requests.append(request)
+
+    recorder = _FullRecorder()
+    service = ConfirmationService(ConfirmationHandlerRegistry([_Handler()]), recorder=recorder)
+    known = (await service.request(SESSION, _draft())).request
+    assert known is not None
+
+    await service.record_unknown_expired(known.confirmation_id, SESSION)
+    await service.record_unknown_expired("deadbeefdeadbeef", SESSION)
+
+    assert [r.confirmation_id for r in recorder.requests] == ["deadbeefdeadbeef"]
+    stub = recorder.requests[0]
+    assert stub.session_id == SESSION and stub.status == ConfirmationStatus.EXPIRED
+    assert "no longer tracks" in stub.detail
+    assert known.is_pending
+
+
+async def test_resolved_requests_are_pruned_by_resolve_and_sweep_not_only_request() -> None:
+    clock = _Clock()
+    service = _service(clock=clock)
+    first = (await service.request(SESSION, _draft("k1"))).request
+    assert first is not None
+    await service.resolve(first.confirmation_id, ConfirmationDecision.REJECT)
+    clock.now += timedelta(hours=2)
+
+    await service.expire_due()
+    assert service.get(first.confirmation_id) is None
+
+    second = (await service.request(SESSION, _draft("k2"))).request
+    assert second is not None
+    await service.resolve(second.confirmation_id, ConfirmationDecision.REJECT)
+    clock.now += timedelta(hours=2)
+    await service.resolve("unknown-id", ConfirmationDecision.APPROVE)
+    assert service.get(second.confirmation_id) is None
+
+
 async def test_discard_marks_pending_failed_and_frees_slot() -> None:
     recorder = _Recorder()
     service = _service(recorder=recorder)

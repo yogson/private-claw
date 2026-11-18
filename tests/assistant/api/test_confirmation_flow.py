@@ -3,7 +3,9 @@ Integration tests for the Telegram confirmation flow: rendering after turns and
 Approve/Reject callback handling (CMP_API_FASTAPI_GATEWAY + CMP_CHANNEL_TELEGRAM_ADAPTER).
 """
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,15 +24,18 @@ from assistant.channels.telegram.models import (
 )
 from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.core.confirmation import (
+    CONFIRMATION_RESOLVED_MARKER,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
     ConfirmationOutcome,
     ConfirmationRequest,
     ConfirmationService,
     ConfirmationStatus,
+    SessionConfirmationRecorder,
 )
 from assistant.core.orchestrator.models import OrchestratorResult, PendingAskData
-from assistant.store.models import TaskRecord, TaskStatus
+from assistant.store.filesystem.session import FilesystemSessionStore
+from assistant.store.models import SessionRecordType, TaskRecord, TaskStatus
 
 CHAT_ID = 123456
 SESSION = f"tg:{CHAT_ID}"
@@ -158,18 +163,65 @@ async def test_reject_answers_rejected_and_repeated_press_is_idempotent() -> Non
     assert _ack_text(adapter) == "❌ Rejected."
 
 
-async def test_stale_callback_after_restart_is_answered_expired_not_sent_to_llm() -> None:
+async def test_stale_callback_after_restart_is_answered_expired_not_sent_to_llm(
+    tmp_path: Path,
+) -> None:
     adapter = _adapter()
     request = await _pending(_service())
     data = _button_data(adapter, request, 0)
-    restarted = _service()
+    store = FilesystemSessionStore(tmp_path)
+    restarted = ConfirmationService(
+        ConfirmationHandlerRegistry([_Handler()]), recorder=SessionConfirmationRecorder(store)
+    )
 
+    await _press(adapter, restarted, data)
     await _press(adapter, restarted, data)
 
     assert _ack_text(adapter) == NO_LONGER_VALID_TEXT
     _, message_id, text = adapter.edit_message_text.await_args.args  # type: ignore[attr-defined]
     assert message_id == MESSAGE_ID
     assert text.startswith("🧠 Save this to memory?") and NO_LONGER_VALID_TEXT in text
+    # The agent learns the outcome: one `expired` record, even after repeated presses.
+    contents = [
+        str(r.payload.get("content", ""))
+        for r in await store.replay_for_turn(SESSION, 50)
+        if r.record_type == SessionRecordType.USER_MESSAGE
+    ]
+    assert len(contents) == 1
+    payload = json.loads(contents[0].removeprefix(CONFIRMATION_RESOLVED_MARKER))
+    assert (payload["confirmation_id"], payload["status"]) == (request.confirmation_id, "expired")
+
+
+async def test_unknown_id_from_another_session_is_not_recorded() -> None:
+    """The signature binds the session: a press is only recorded for the session that issued it."""
+    adapter = _adapter()
+    request = await _pending(_service())
+    data = _button_data(adapter, request, 0)
+    recorder = AsyncMock()
+    restarted = ConfirmationService(ConfirmationHandlerRegistry([_Handler()]), recorder=recorder)
+    orchestrator = _orchestrator()
+    handler = _build_orchestrator_handler(adapter, orchestrator, confirmations=restarted)
+    # The chat switched to a new session (/new) before the press.
+    event = _callback_event(data).model_copy(update={"session_id": f"{SESSION}:new"})
+
+    assert await handler(event) is None
+
+    recorder.record_resolution.assert_not_awaited()
+    assert _ack_text(adapter) == NO_LONGER_VALID_TEXT
+
+
+async def test_known_request_resolves_after_chat_switched_session() -> None:
+    adapter, handler = _adapter(), _Handler()
+    service = _service(handler)
+    request = await _pending(service)
+    data = _button_data(adapter, request, 0)
+    orchestrator = _orchestrator()
+    callback = _build_orchestrator_handler(adapter, orchestrator, confirmations=service)
+    event = _callback_event(data).model_copy(update={"session_id": f"{SESSION}:new"})
+
+    assert await callback(event) is None
+
+    assert handler.calls == 1 and request.status == ConfirmationStatus.APPROVED
 
 
 @pytest.mark.parametrize(

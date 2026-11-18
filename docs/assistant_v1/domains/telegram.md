@@ -73,7 +73,11 @@ the Telegram transport only.
 - One message per new confirmation, sent after the turn's own response: kind title, `summary_for_user`
   (for memory: action, memory type, body or target `memory_id`), and Approve / Reject inline buttons.
 - Callback payload: `cf:{confirmation_id}:{a|r}:{sig}`; `sig` is HMAC-SHA256 (truncated) over
-  `"{chat_id}:{confirmation_id}:{a|r}"`. No token store; expiry is enforced by the confirmation service.
+  `"cf:{chat_id}:{session_id}:{confirmation_id}:{a|r}"`. The `cf:` label separates it from other callbacks signed
+  with the same secret. The session id is not in the payload: a known request is verified against its own session,
+  and an unknown id (e.g. after a restart) against the chat's current session. In the unknown case a valid
+  signature makes the handler write an `expired` record to that session. No token store; expiry is enforced by the
+  confirmation service.
 - Confirmation callbacks are not pre-acknowledged by the polling loop. The handler answers
   `answerCallbackQuery` with the real outcome (`✅ Saved.`, `❌ Rejected.`, `⌛ Expired …`, `⚠️ Failed: …`) and edits the
   original message (`origin_message_id`) to show the status and drop the keyboard.

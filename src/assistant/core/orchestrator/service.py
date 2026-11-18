@@ -693,6 +693,7 @@ class Orchestrator:
         token = set_trace_id(trace_id)
         try:
             with self._session_traces.session_trace(session_id, turn_id):
+                await self._expire_due_confirmations(session_id)
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 # Check if compaction is needed before building messages.
@@ -762,6 +763,17 @@ class Orchestrator:
             return outcome
 
         return _request
+
+    async def _expire_due_confirmations(self, session_id: str) -> None:
+        # Writes `expired` records for timed-out confirmations before history is read.
+        if self._confirmations is None:
+            return
+        try:
+            await self._confirmations.expire_due(session_id)
+        except Exception:
+            logger.warning(
+                "orchestrator.confirmation_expiry_failed", session_id=session_id, exc_info=True
+            )
 
     async def _discard_confirmations(self, created: list[ConfirmationRequest]) -> None:
         # A failed/cancelled turn never renders its confirmations; free the session slot.

@@ -2,9 +2,11 @@
 Component ID: CMP_CORE_CONFIRMATION_SERVICE
 
 In-memory confirmation service: request (with dedupe and one-pending-per-session),
-idempotent resolve (per-id lock + compare-and-set), lazy expiry, and history
-recording of every final state. State is intentionally not persisted; after a
-restart unknown confirmation ids resolve as "expired".
+idempotent resolve (per-id lock + compare-and-set), expiry (swept before every
+agent turn and on request/resolve), and history recording of every final state.
+State is intentionally not persisted; after a restart unknown confirmation ids
+resolve as "expired" and, when the channel can prove the session, an ``expired``
+record is written for them (record_unknown_expired).
 """
 
 import asyncio
@@ -32,6 +34,11 @@ logger = structlog.get_logger(__name__)
 DEFAULT_CONFIRMATION_TTL_SECONDS = 24 * 3600
 _EXPIRED_DETAIL = "Confirmation expired before the user answered."
 _REJECTED_DETAIL = "User rejected the proposal."
+_UNKNOWN_DETAIL = (
+    "The user pressed a button for a confirmation the assistant no longer tracks "
+    "(e.g. it was pending when the assistant restarted). Nothing was applied by this press."
+)
+UNKNOWN_KIND = "unknown"
 
 
 def _utc_now() -> datetime:
@@ -61,7 +68,7 @@ class ConfirmationService:
         At most one confirmation may be pending per session: a different proposal
         while one is pending returns ``blocked_by`` and creates nothing.
         """
-        await self._expire_due()
+        await self.expire_due()
         current = self.pending_for_session(session_id)
         if current is not None:
             if current.kind == draft.kind and current.dedupe_key == draft.dedupe_key:
@@ -79,7 +86,6 @@ class ConfirmationService:
             created_at=now,
             expires_at=now + self._ttl,
         )
-        self._prune_resolved(now)
         self._requests[request.confirmation_id] = request
         logger.info(
             "confirmation.requested",
@@ -110,6 +116,7 @@ class ConfirmationService:
         ui_ref: ConfirmationUiRef | None = None,
     ) -> ConfirmationResolveResult:
         """Apply a user decision exactly once; repeated or racing calls are no-ops."""
+        self._prune_resolved(self._clock())
         request = self._requests.get(confirmation_id)
         if request is None:
             return ConfirmationResolveResult()
@@ -187,13 +194,57 @@ class ConfirmationService:
                 error=str(exc),
             )
 
-    async def _expire_due(self) -> None:
+    async def expire_due(self, session_id: str | None = None) -> None:
+        """Expire pending requests past their TTL (all sessions, or only ``session_id``).
+
+        Each expiry writes its ``expired`` record, so calling this before a turn
+        reads history makes timed-out confirmations visible to that turn.
+        """
         now = self._clock()
-        due = [r for r in self._requests.values() if r.is_pending and r.expires_at <= now]
+        self._prune_resolved(now)
+        due = [
+            r
+            for r in self._requests.values()
+            if r.is_pending
+            and r.expires_at <= now
+            and (session_id is None or r.session_id == session_id)
+        ]
         for request in due:
             async with self._lock_for(request.confirmation_id):
                 if request.is_pending:
                     await self._finish(request, ConfirmationStatus.EXPIRED, _expired_outcome())
+
+    async def record_unknown_expired(self, confirmation_id: str, session_id: str) -> None:
+        """Write an ``expired`` record for an id this process does not know.
+
+        For button presses whose signature proves ``session_id`` issued the id
+        (e.g. a confirmation pending across a restart). The store deduplicates
+        the record by its event id, so repeated presses write it once.
+        """
+        if confirmation_id in self._requests or self._recorder is None:
+            return
+        now = self._clock()
+        stub = ConfirmationRequest(
+            confirmation_id=confirmation_id,
+            kind=UNKNOWN_KIND,
+            session_id=session_id,
+            summary_for_user="",
+            dedupe_key="",
+            status=ConfirmationStatus.EXPIRED,
+            created_at=now,
+            expires_at=now,
+            resolved_at=now,
+            result=ConfirmationOutcome(ok=False, status="expired", detail=_UNKNOWN_DETAIL),
+        )
+        logger.info(
+            "confirmation.unknown_expired", confirmation_id=confirmation_id, session_id=session_id
+        )
+        try:
+            await self._recorder.record_resolution(stub)
+        except Exception as exc:
+            logger.warning(
+                "confirmation.record_failed", confirmation_id=confirmation_id, error=str(exc)
+            )
 
     def _prune_resolved(self, now: datetime) -> None:
         # Resolved requests are kept for one TTL so repeated taps still get an exact answer.

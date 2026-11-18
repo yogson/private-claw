@@ -115,7 +115,12 @@ async def _resolve(
     chat_id: int,
     message_id: int | None,
 ) -> ConfirmationRequest | None:
-    parsed = adapter.parse_confirmation_callback(event)
+    # Buttons are signed for the session that requested them; a known request is
+    # verified against its own session (the chat may have switched sessions since),
+    # an unknown id against the chat's current session.
+    known = service.get(adapter.confirmation_callback_id(event)) if service else None
+    session_id = known.session_id if known is not None else event.session_id
+    parsed = adapter.parse_confirmation_callback(event, session_id=session_id)
     if parsed.state != ConfirmationCallbackState.VALID or parsed.decision is None:
         logger.info(
             "confirmation.callback.not_valid", state=parsed.state.value, trace_id=event.trace_id
@@ -139,6 +144,10 @@ async def _resolve(
         status=result.request.status.value if result.request else "unknown",
         trace_id=event.trace_id,
     )
+    if result.request is None:
+        # Valid signature for this session but unknown id (e.g. pending across a
+        # restart): tell the agent it expired so it does not wait for an outcome.
+        await service.record_unknown_expired(parsed.confirmation_id, session_id)
     return result.request
 
 

@@ -24,6 +24,7 @@ from assistant.channels.telegram.capability_select_service import CapabilitySele
 from assistant.channels.telegram.commands import TelegramCommand, extract_supported_command
 from assistant.channels.telegram.confirmation_callbacks import (
     ConfirmationCallback,
+    confirmation_id_of,
     is_confirmation_callback_data,
     parse_confirmation_callback,
     sign_confirmation_callback,
@@ -263,11 +264,24 @@ class TelegramAdapter:
             return False
         return is_confirmation_callback_data(event.callback_query.callback_data)
 
-    def parse_confirmation_callback(self, event: NormalizedEvent) -> ConfirmationCallback:
-        """Verify a confirmation callback's signature (chat-bound) and decode it."""
+    def confirmation_callback_id(self, event: NormalizedEvent) -> str:
+        """Unverified confirmation id of a ``cf:`` callback ('' if not one)."""
+        data = event.callback_query.callback_data if event.callback_query else ""
+        return confirmation_id_of(data)
+
+    def parse_confirmation_callback(
+        self, event: NormalizedEvent, *, session_id: str | None = None
+    ) -> ConfirmationCallback:
+        """Verify a confirmation callback's signature and decode it.
+
+        The signature is bound to the chat and to ``session_id`` (default: the
+        event's session), i.e. the session the confirmation was requested in.
+        """
         data = event.callback_query.callback_data if event.callback_query else ""
         chat_id = int(event.metadata.get("chat_id", 0))
-        return parse_confirmation_callback(data, chat_id, self._task_callback_secret())
+        return parse_confirmation_callback(
+            data, chat_id, session_id or event.session_id, self._task_callback_secret()
+        )
 
     def is_task_callback(self, event: NormalizedEvent) -> bool:
         """Return True if callback_data is a valid signed delegated-task callback."""
@@ -427,14 +441,14 @@ class TelegramAdapter:
                     label=APPROVE_LABEL,
                     callback_id=f"approve-{cid}",
                     callback_data=sign_confirmation_callback(
-                        cid, ConfirmationDecision.APPROVE, chat_id, secret
+                        cid, ConfirmationDecision.APPROVE, chat_id, request.session_id, secret
                     ),
                 ),
                 ActionButton(
                     label=REJECT_LABEL,
                     callback_id=f"reject-{cid}",
                     callback_data=sign_confirmation_callback(
-                        cid, ConfirmationDecision.REJECT, chat_id, secret
+                        cid, ConfirmationDecision.REJECT, chat_id, request.session_id, secret
                     ),
                 ),
             ],
