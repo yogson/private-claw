@@ -14,6 +14,11 @@ from typing import Any, Protocol
 
 import structlog
 
+from assistant.core.capabilities.claude_settings_file import (
+    SettingsFileError,
+    read_settings_file,
+    write_settings_file,
+)
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 
@@ -45,7 +50,7 @@ def apply_claude_code_settings(
     definitions: Mapping[str, CapabilityDefinition],
     enabled_capabilities: list[str],
     settings_path: Path | None = None,
-) -> None:
+) -> bool:
     """Merge claude_code_settings from active capabilities into ~/.claude/settings.json.
 
     ``enabled_capabilities`` must be the caller's already-expanded, already-denied-filtered
@@ -61,6 +66,12 @@ def apply_claude_code_settings(
     Note that Claude Code ignores ``mcpServers`` in settings.json — the key is written for
     reference only; sub-agents get their servers via ``collect_claude_code_mcp_servers``,
     which the delegation backends pass to the CLI as ``--mcp-config``.
+
+    Only ``permissions.allow``, ``permissions.deny`` and ``mcpServers`` are owned here;
+    every other key is preserved. The write is atomic and skipped when nothing changes. An
+    existing file that is unreadable or not a JSON object is never overwritten: a warning
+    is logged and ``False`` is returned. Returns ``True`` when the file holds the merged
+    settings (or there was nothing to merge).
     """
     if settings_path is None:
         settings_path = Path.home() / ".claude" / "settings.json"
@@ -86,25 +97,38 @@ def apply_claude_code_settings(
                 seen_deny.add(entry)
 
     if not merged_allow and not merged_deny and not merged_mcp:
-        return
+        return True
 
-    existing: dict[str, Any] = {}
-    if settings_path.exists():
-        try:
-            existing = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            existing = {}
+    try:
+        existing = read_settings_file(settings_path)
+    except SettingsFileError as exc:
+        return _skip(settings_path, str(exc))
+    merged = copy.deepcopy(existing)
 
     if merged_allow or merged_deny:
-        existing.setdefault("permissions", {})
-        existing["permissions"]["allow"] = merged_allow
-        existing["permissions"]["deny"] = merged_deny
+        permissions = merged.setdefault("permissions", {})
+        if not isinstance(permissions, dict):
+            return _skip(settings_path, "'permissions' is not a JSON object")
+        # allow/deny are owned wholesale (entries added by hand are replaced); see #56.
+        permissions["allow"] = merged_allow
+        permissions["deny"] = merged_deny
 
     if merged_mcp:
-        existing["mcpServers"] = merged_mcp
+        merged["mcpServers"] = merged_mcp
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+    if merged != existing:
+        write_settings_file(settings_path, merged)
+    return True
+
+
+def _skip(settings_path: Path, reason: str) -> bool:
+    logger.warning(
+        "capabilities.claude_code_settings.skipped",
+        path=str(settings_path),
+        error=reason,
+        hint="settings.json left untouched; fix or remove it to apply capability settings",
+    )
+    return False
 
 
 def _settings_fingerprint(
@@ -144,7 +168,8 @@ class ClaudeCodeSettingsSync:
         fingerprint = _settings_fingerprint(snapshot.definitions, active)
         if fingerprint == self._applied:
             return
-        apply_claude_code_settings(snapshot.definitions, active, self._settings_path)
+        if not apply_claude_code_settings(snapshot.definitions, active, self._settings_path):
+            return  # skipped (unusable settings.json): retried with the next revision
         self._applied = fingerprint
         logger.info(
             "capabilities.claude_code_settings.reapplied",
