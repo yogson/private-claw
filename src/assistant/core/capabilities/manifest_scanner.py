@@ -6,9 +6,16 @@ Incremental reader of ``<config_dir>/capabilities/*.yaml`` for the catalog.
 ``scan()`` returns the cheap stat signature of the directory; ``build()`` turns a scan
 into a validated candidate, re-reading only files whose stat changed and re-parsing only
 files whose content hash changed.
+
+"Racily clean" files (Git's rule): a file whose mtime is within ``RACY_WINDOW_NS`` of the
+moment it was read may still be modified within the same mtime tick without changing its
+stat (coarse-granularity filesystems, scripted edits right after a turn). Such a file is
+re-hashed on every build until its mtime is older than the read; the hash check keeps this
+from bumping the revision.
 """
 
 import hashlib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,13 +33,17 @@ type ManifestParser = Callable[[str, bytes], CapabilityDefinition]
 type StatSignature = tuple[tuple[str, int, int], ...]
 type ScannedFile = tuple[Path, int, int]
 
+# Covers 1-2 s mtime granularity (HFS+, FAT/exFAT, some SMB/NFS mounts).
+RACY_WINDOW_NS = 2_000_000_000
+
 
 @dataclass(frozen=True)
 class _ParsedFile:
     state: ManifestFileState
     definition: CapabilityDefinition | None
     errors: tuple[str, ...] = ()
-    retry: bool = False  # the stat cache must not vouch for this entry (e.g. read error)
+    retry: bool = False  # not cacheable (read error): re-read on every build
+    racy: bool = False  # cached, but the stat cannot vouch for it yet: re-hash on next build
 
 
 @dataclass(frozen=True)
@@ -44,7 +55,8 @@ class ManifestCandidate:
     states: dict[str, ManifestFileState]
     content_key: frozenset[tuple[str, str]]
     retry: bool = False
-    """True when some file must be re-read on the next refresh even if its stat is unchanged."""
+    """True when some file must be re-read on the next refresh even if its stat is unchanged
+    (a read error, or a racily clean file)."""
 
     @property
     def blocking(self) -> bool:
@@ -61,10 +73,12 @@ class ManifestScanner:
         *,
         validator: CapabilityValidator | None = None,
         parser: ManifestParser = parse_capability_manifest,
+        now_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self._dir = capabilities_dir
         self._validator = validator
         self._parser = parser
+        self._now_ns = now_ns
         self._parsed: dict[str, _ParsedFile] = {}
 
     def scan(self) -> tuple[StatSignature, list[ScannedFile]]:
@@ -101,7 +115,7 @@ class ManifestScanner:
         if not issues:
             issues.extend(self._validate(definitions))
         content_key = frozenset((f.state.path.name, f.state.sha256) for f in parsed_files)
-        retry = any(f.retry for f in parsed_files)
+        retry = any(f.retry or f.racy for f in parsed_files)
         return ManifestCandidate(tuple(issues), definitions, states, content_key, retry)
 
     def _validate(self, definitions: dict[str, CapabilityDefinition]) -> list[CapabilityLoadIssue]:
@@ -118,9 +132,11 @@ class ManifestScanner:
         if (
             not force
             and cached is not None
+            and not cached.racy
             and (cached.state.mtime_ns, cached.state.size) == (mtime_ns, size)
         ):
             return cached
+        racy = mtime_ns >= self._now_ns() - RACY_WINDOW_NS
         try:
             raw = path.read_bytes()
         except OSError as exc:
@@ -131,10 +147,11 @@ class ManifestScanner:
             path=path, mtime_ns=mtime_ns, size=size, sha256=hashlib.sha256(raw).hexdigest()
         )
         if cached is not None and cached.state.sha256 == state.sha256:
-            return replace(cached, state=state)  # touch-only change: no re-parse
+            return replace(cached, state=state, racy=racy)  # touch-only change: no re-parse
         try:
-            return _ParsedFile(state, self._parser(path.name, raw))
+            return _ParsedFile(state, self._parser(path.name, raw), racy=racy)
         except ManifestParseError as exc:
-            return _ParsedFile(state, None, tuple(exc.messages))
+            return _ParsedFile(state, None, tuple(exc.messages), racy=racy)
         except Exception as exc:  # parser bug: never let it escape into a turn
-            return _ParsedFile(state, None, (f"[{path.name}] unexpected parse error: {exc}",))
+            message = f"[{path.name}] unexpected parse error: {exc}"
+            return _ParsedFile(state, None, (message,), racy=racy)

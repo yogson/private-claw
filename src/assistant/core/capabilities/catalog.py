@@ -5,8 +5,9 @@ CapabilityCatalog: owns the capability manifests as an immutable, versioned snap
 
 Change detection is a cheap stat signature (file name, ``st_mtime_ns``, ``st_size``) of
 ``<config_dir>/capabilities/*.yaml``, checked by :meth:`CapabilityCatalog.refresh` at turn
-start. Only files whose stat changed are re-read, and a content hash keeps touch-only
-changes from bumping the revision. A reload that fails (YAML, schema or cross-file
+start. Only files whose stat changed are re-read (plus "racily clean" files modified
+within the last ~2 s, and unreadable files), and a content hash keeps touch-only changes
+from bumping the revision. A reload that fails (YAML, schema or cross-file
 validation) keeps the whole last-known-good snapshot and records the issues on it.
 """
 

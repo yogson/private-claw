@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import time
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from structlog.testing import capture_logs
 
 from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.loader import CapabilityLoadError, parse_capability_manifest
+from assistant.core.capabilities.manifest_scanner import RACY_WINDOW_NS, ManifestScanner
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilityLoadIssue, CapabilitySnapshot
 
@@ -43,6 +45,10 @@ def _manifest(cap_id: str, prompt: str = "p", nested: list[str] | None = None) -
 def _bump_mtime(path: Path) -> None:
     st = path.stat()
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+
+def _set_mtime(path: Path, mtime_ns: int) -> None:
+    os.utime(path, ns=(mtime_ns, mtime_ns))
 
 
 @pytest.fixture()
@@ -156,15 +162,17 @@ def test_min_refresh_interval_skips_stat(tmp_path: Path) -> None:
 def test_reload_rereads_every_file_regardless_of_stat(
     catalog: CapabilityCatalog, spy: _SpyParser, tmp_path: Path
 ) -> None:
+    path = tmp_path / "capabilities" / "a.yaml"
+    settled = time.time_ns() - 10 * RACY_WINDOW_NS  # old enough for the stat to be trusted
+    _set_mtime(path, settled)
     spy.calls.clear()
     assert catalog.reload("test").revision == 1  # same content: no bump
     assert spy.calls == []  # bytes re-read and hashed; identical hashes need no parse
 
-    # Same size and restored mtime: invisible to the stat signature, visible to reload().
-    path = tmp_path / "capabilities" / "a.yaml"
-    st = path.stat()
+    # Same size and restored (settled) mtime: invisible to the stat signature, but not to
+    # reload().
     path.write_text(_manifest("a", "ALPHA"))
-    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    _set_mtime(path, settled)
     assert catalog.refresh().revision == 1
     snap = catalog.reload("approved edit")
     assert snap.revision == 2
@@ -333,6 +341,35 @@ def test_subscribers_notified_only_on_new_revision(
 # ----------------------------------------------------------------------
 # Read errors and racy stat
 # ----------------------------------------------------------------------
+
+
+def test_same_size_edit_in_the_same_mtime_tick_is_not_missed(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.yaml", _manifest("a", "PROMPT-V1"))
+    tick = time.time_ns()
+    _set_mtime(path, tick)
+    catalog = CapabilityCatalog(tmp_path, min_refresh_interval=0)
+    path.write_text(_manifest("a", "PROMPT-V2"))
+    _set_mtime(path, tick)  # same size and mtime: identical stat signature
+    snap = catalog.refresh()
+    assert snap.revision == 2
+    assert snap.definitions["a"].prompt == "PROMPT-V2"
+
+
+def test_racy_file_is_rehashed_only_until_its_mtime_settles(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.yaml", _manifest("a"))
+    tick = time.time_ns()
+    _set_mtime(path, tick)
+    now = [tick + RACY_WINDOW_NS // 2]
+    spy = _SpyParser()
+    scanner = ManifestScanner(tmp_path / "capabilities", parser=spy, now_ns=lambda: now[0])
+
+    assert scanner.build(scanner.scan()[1]).retry  # read within the window: racy
+    now[0] = tick + RACY_WINDOW_NS + 1
+    with patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as reads:
+        assert not scanner.build(scanner.scan()[1]).retry  # re-hashed once, now settled
+        assert not scanner.build(scanner.scan()[1]).retry  # served from the stat cache
+    assert reads.call_count == 1
+    assert spy.calls == ["a.yaml"]  # same hash on the re-read: no re-parse
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
