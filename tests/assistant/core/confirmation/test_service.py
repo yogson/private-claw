@@ -268,3 +268,18 @@ async def test_recorder_failure_does_not_break_resolution() -> None:
     result = await service.resolve(req.confirmation_id, ConfirmationDecision.REJECT)
 
     assert result.changed and req.status == ConfirmationStatus.REJECTED
+
+
+async def test_overlong_summary_is_capped_with_explicit_note() -> None:
+    from assistant.core.confirmation.service import SUMMARY_MAX_CHARS
+
+    service = _service()
+    draft = ConfirmationDraft(
+        kind="other", payload={}, summary_for_user="s" * (SUMMARY_MAX_CHARS + 50), dedupe_key="k"
+    )
+
+    req = (await service.request(SESSION, draft)).request
+
+    assert req is not None
+    assert req.summary_for_user.startswith("s" * SUMMARY_MAX_CHARS)
+    assert req.summary_for_user.endswith("[truncated: 50 more chars not shown]")

@@ -28,6 +28,7 @@ Default behavior:
 - The user approves or rejects with Approve/Reject buttons shown under a separate message with the exact content. Only a button press counts: never treat a text reply ("yes", "ok") as approval and never ask the user to confirm in text
 - `pending_confirmation`: the proposal is shown to the user. Do not propose it again; just tell the user briefly that you've asked to save it
 - `another_confirmation_pending`: one confirmation is already awaiting an answer, so this proposal was not registered. Mention it and retry after the pending one is resolved
+- Keep a memory body under 2500 characters: longer proposals are `rejected_invalid` because the user must see the full text. Split large content into several focused memories
 - Outcomes arrive in history as `[[CONFIRMATION_RESOLVED]] {...}` with `status` approved / rejected / expired / failed. Trust that record: approved means saved; rejected means the user declined (don't re-propose unless asked); expired or failed means nothing was saved (you may propose again if still relevant)
 
 ### When to use ask_question

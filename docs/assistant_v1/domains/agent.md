@@ -104,6 +104,9 @@ The system should avoid free-form natural language scraping of assistant prose f
 ### Apply Pipeline
 
 1. The tool validates and normalizes the proposal into a `MemoryUpdateIntent` (invalid -> `rejected_invalid`).
+   A body longer than `MEMORY_BODY_MAX_CHARS` (2500) is also `rejected_invalid`: the user must see the full text
+   they approve, so it is never shown truncated. In the summary, `reason` is capped at 300 chars and `memory_id`
+   at 200.
 2. It registers a `memory_update` confirmation request (see "User Confirmations") and returns
    `pending_confirmation` (with `confirmation_id`, `deduplicated`, `note`) or `another_confirmation_pending`.
 3. The call and its result are persisted inline with the turn like any other tool call, so later turns see them.
@@ -139,6 +142,8 @@ Rules:
   `written|updated|deleted|touched` writer statuses count as applied; anything else is `failed` with the writer
   reason. The blocking writer runs in `asyncio.to_thread`.
 - Only a button press is approval; text replies never resolve a confirmation.
+- `summary_for_user` is capped at `SUMMARY_MAX_CHARS` (3500) with an explicit "[truncated: N more chars not shown]"
+  note. Kinds where the user must see everything they approve reject over-long proposals before requesting.
 - Every final state (approved, rejected, expired, failed/not delivered) is appended to the session as its own complete
   synthetic turn (`turn_id = confirmation-<id>`, USER_MESSAGE + TURN_TERMINAL) with content
   `[[CONFIRMATION_RESOLVED]] {"confirmation_id","kind","status","summary","detail","origin_tool_call_id"}`.

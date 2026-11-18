@@ -72,6 +72,8 @@ the Telegram transport only.
 
 - One message per new confirmation, sent after the turn's own response: kind title, `summary_for_user`
   (for memory: action, memory type, body or target `memory_id`), and Approve / Reject inline buttons.
+- Size: the prompt is cut to 4096 − 300 UTF-16 units with an explicit `… [truncated]` mark, so it is always one
+  message. The final edit truncates the base text so `base + status` fits in 4096 and the status line is never lost.
 - Callback payload: `cf:{confirmation_id}:{a|r}:{sig}`; `sig` is HMAC-SHA256 (truncated) over
   `"cf:{chat_id}:{session_id}:{confirmation_id}:{a|r}"`. The `cf:` label separates it from other callbacks signed
   with the same secret. The session id is not in the payload: a known request is verified against its own session,
@@ -79,7 +81,8 @@ the Telegram transport only.
   signature makes the handler write an `expired` record to that session. No token store; expiry is enforced by the
   confirmation service.
 - Confirmation callbacks are not pre-acknowledged by the polling loop. The handler answers
-  `answerCallbackQuery` with the real outcome (`✅ Saved.`, `❌ Rejected.`, `⌛ Expired …`, `⚠️ Failed: …`) and edits the
+  `answerCallbackQuery` with the real outcome (approved label per kind: `✅ Saved.` for memory, default
+  `✅ Approved.`; `❌ Rejected.`, `⌛ Expired …`, `⚠️ Failed: …`) and edits the
   original message (`origin_message_id`) to show the status and drop the keyboard.
 - Any `cf:` or legacy `mc:` callback that is unknown, expired, forged, or from before a restart is answered as
   "no longer valid" and its message edited; such callbacks never reach the orchestrator/LLM.

@@ -32,6 +32,9 @@ from assistant.core.confirmation.models import (
 logger = structlog.get_logger(__name__)
 
 DEFAULT_CONFIRMATION_TTL_SECONDS = 24 * 3600
+# Generic budget for summary_for_user so every kind's prompt fits in one channel
+# message (Telegram: 4096) with room for the title and the final status line.
+SUMMARY_MAX_CHARS = 3500
 _EXPIRED_DETAIL = "Confirmation expired before the user answered."
 _REJECTED_DETAIL = "User rejected the proposal."
 _UNKNOWN_DETAIL = (
@@ -81,7 +84,7 @@ class ConfirmationService:
             session_id=session_id,
             origin_tool_call_id=draft.origin_tool_call_id,
             payload=draft.payload,
-            summary_for_user=draft.summary_for_user,
+            summary_for_user=_cap_summary(draft.summary_for_user),
             dedupe_key=draft.dedupe_key,
             created_at=now,
             expires_at=now + self._ttl,
@@ -263,6 +266,13 @@ class ConfirmationService:
             lock = asyncio.Lock()
             self._locks[confirmation_id] = lock
         return lock
+
+
+def _cap_summary(summary: str) -> str:
+    if len(summary) <= SUMMARY_MAX_CHARS:
+        return summary
+    hidden = len(summary) - SUMMARY_MAX_CHARS
+    return summary[:SUMMARY_MAX_CHARS] + f"\n… [truncated: {hidden} more chars not shown]"
 
 
 def _expired_outcome() -> ConfirmationOutcome:

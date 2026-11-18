@@ -6,10 +6,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from assistant.core.confirmation import (
+    MEMORY_BODY_MAX_CHARS,
     ConfirmationRequest,
     MemoryUpdateHandler,
     build_memory_update_draft,
+    memory_body_length_error,
 )
+from assistant.core.confirmation.service import SUMMARY_MAX_CHARS
 from assistant.memory.write.models import MemoryUpdateIntent, WriteAudit, WriteStatus
 
 
@@ -94,3 +97,26 @@ async def test_apply_uses_confirmation_scoped_intent_id_and_user() -> None:
     assert intent.intent_id == "confirmation:cid1"
     assert user_id == "tg:1"  # falls back to the session id
     assert "mem-1" in outcome.detail
+
+
+def test_reason_and_memory_id_are_capped_in_summary() -> None:
+    intent = MemoryUpdateIntent.model_validate(
+        {
+            "intent_id": "i",
+            "action": "upsert",
+            "memory_type": "facts",
+            "memory_id": "m" * 1000,
+            "candidate": {"body_markdown": "b" * MEMORY_BODY_MAX_CHARS},
+            "reason": "r" * 5000,
+        }
+    )
+    summary = build_memory_update_draft(intent).summary_for_user
+    assert "b" * MEMORY_BODY_MAX_CHARS in summary
+    assert "r" * 301 not in summary and "m" * 201 not in summary
+    assert len(summary) <= SUMMARY_MAX_CHARS
+
+
+def test_overlong_body_is_rejected_by_length_check() -> None:
+    assert memory_body_length_error(_intent(body="x" * MEMORY_BODY_MAX_CHARS)) is None
+    error = memory_body_length_error(_intent(body="x" * (MEMORY_BODY_MAX_CHARS + 1)))
+    assert error is not None and str(MEMORY_BODY_MAX_CHARS + 1) in error

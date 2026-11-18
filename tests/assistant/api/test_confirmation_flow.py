@@ -359,3 +359,39 @@ async def test_delegation_feedback_text_precedes_confirmation() -> None:
     texts = [c.args[0].text for c in adapter.send_response.await_args_list]  # type: ignore[attr-defined]
     assert texts[0] == "Task done."
     assert "User prefers tea." in texts[1]
+
+
+async def test_max_size_memory_proposal_is_one_message_and_status_fits_edit() -> None:
+    from assistant.channels.telegram.formatter import format_markdown_for_telegram
+    from assistant.core.confirmation import MEMORY_BODY_MAX_CHARS, build_memory_update_draft
+    from assistant.memory.write.models import MemoryUpdateIntent
+
+    adapter, handler = _adapter(), _Handler()
+    service = _service(handler)
+    body = "Ж" * MEMORY_BODY_MAX_CHARS
+    intent = MemoryUpdateIntent.model_validate(
+        {
+            "intent_id": "i",
+            "action": "upsert",
+            "memory_type": "facts",
+            "candidate": {"body_markdown": body},
+            "reason": "why " * 2000,
+        }
+    )
+    request = (await service.request(SESSION, build_memory_update_draft(intent))).request
+    assert request is not None
+
+    await deliver_with_confirmations(
+        adapter, service, response=None, confirmations=[request], chat_id=CHAT_ID, trace_id="t"
+    )
+
+    sent = [c.args[0] for c in adapter.send_response.await_args_list]  # type: ignore[attr-defined]
+    assert len(sent) == 1
+    assert len(format_markdown_for_telegram(sent[0].text)) == 1
+    assert body in sent[0].text  # the user sees exactly what will be saved
+
+    await _press(adapter, service, _button_data(adapter, request, 0))
+
+    edited = adapter.edit_message_text.await_args.args[2]  # type: ignore[attr-defined]
+    assert len(edited.encode("utf-16-le")) // 2 <= 4096
+    assert edited.endswith("✅ Saved.")
