@@ -83,7 +83,16 @@ Capability definition schema (`config/capabilities/*.yaml`):
 - `prompt`: optional system prompt fragment appended for this capability.
 - `tools`: list of `{tool_id, enabled, params_override}` bindings.
 - `tool_overrides`: optional per-tool param overrides keyed by tool_id.
-- Discovery: load all `*.yaml` under `config/capabilities/`; duplicate `capability_id` is a startup error.
+- `nested_capabilities`: capability ids activated together with this one (must be known ids).
+- `mcp_servers`: ids from `config/mcp_servers.yaml` whose tools this capability grants.
+- `claude_code_settings`: `permissions` (`allow` / `deny`) and `mcp_servers` for Claude Code sub-agents.
+- Discovery: load all `*.yaml` / `*.yml` under `config/capabilities/` except `index.yaml`; duplicate `capability_id` is a startup error.
+- **Strict schema**: unknown keys are validation errors on the manifest and on every nested
+  block (`tools[]`, `params_override`, `tool_overrides`, `claude_code_settings`,
+  `permissions`), e.g. `[a.yaml] nested_capabilites: extra fields not permitted`. A typo
+  can no longer be dropped silently. At startup this fails fast; on a live reload the
+  catalog keeps the last-known-good snapshot (see below). Parsed definitions are frozen
+  (immutable) pydantic models shared by snapshots, turns and adapters.
 
 ## Tool Status and Params Merge Rules
 
@@ -93,9 +102,16 @@ This section defines how runtime tool availability and parameters are resolved f
 - `config/tools.yaml` (tool definitions/default params).
 
 Resolution flow:
-1. Start from policy:
-   - include only `enabled_capabilities`,
-   - exclude any capability listed in `denied_capabilities`.
+1. Start from policy and resolve the active set with the single resolver
+   `resolve_active_capabilities(enabled, denied, snapshot.definitions)`
+   (`core/capabilities/resolver.py`), used by every consumer (system prompt, tools, tool
+   params, mismatch check, MCP toolsets, sub-agent MCP servers, `~/.claude/settings.json`):
+   - start from `enabled_capabilities` (or the per-session override), in order,
+   - expand `nested_capabilities` depth-first, cycle-safe, children right after their parent,
+   - never include **or descend into** a capability listed in `denied_capabilities`: the
+     children of a denied capability are active only if they are enabled explicitly or
+     reachable through another, non-denied parent,
+   - drop ids that have no manifest (logged as `capabilities.resolve.missing_manifest`).
 2. Collect `tool_id` values from each surviving capability manifest where binding `enabled=true`.
 3. Keep only tools that also exist in `config/tools.yaml` with `enabled=true`.
 4. Resolve tool callable from `entrypoint`.
@@ -105,7 +121,7 @@ Status (enabled/disabled) semantics:
   - capability is enabled by policy and not denied,
   - capability tool binding exists and `enabled=true`,
   - global tool definition exists and `enabled=true`.
-- If a capability references a tool that is missing or disabled in `config/tools.yaml`, bootstrap fails (fail-fast).
+- If a capability references a tool that is missing or disabled in `config/tools.yaml`, bootstrap fails (fail-fast); on a live reload the new snapshot is rejected and the last-known-good stays in use.
 
 Parameter merge semantics:
 - Base params come from `config/tools.yaml` -> `tools[].default_params`.
@@ -145,6 +161,87 @@ Whole servers are connected and their tools discovered at runtime (pydantic-ai `
 `confirm_tools` and `destructiveHint` tools trigger a "notify before call" hook: in verbose mode the call is announced in the chat first. It does not block the call or wait for approval today; a real approval flow is future work.
 
 MCP activation: a capability manifest grants servers with `mcp_servers: [<server_id>]` (nested capabilities are followed). Unknown or disabled server IDs log a warning at bootstrap. The model sees the tools as `mcp_<server_id>_<tool_name>`; `mcp_` is reserved and no first-party tool may use it.
+
+## Capability Catalog: Snapshots and Live Reload
+
+`CapabilityCatalog` (`core/capabilities/catalog.py`, interface
+`CapabilityCatalogInterface`) is the single owner of manifest state. Nothing on the turn
+path parses manifests directly; `load_capability_definitions` remains only as the
+low-level, uncached parser.
+
+Snapshot (`core/capabilities/snapshot.py`):
+- `CapabilitySnapshot` is immutable: `revision`, read-only `definitions` and `files`
+  (`capability_id -> ManifestFileState(path, mtime_ns, size, sha256)`; the sha256 of the raw
+  bytes is the precondition for editors), `capabilities_dir`, `errors`, `loaded_at`.
+- `revision` starts at 1 and grows by exactly 1 on every successful swap; the swap is a
+  single attribute assignment.
+
+API:
+- `current()`: the current snapshot, no I/O.
+- `refresh()`: called **once at the start of every turn** by the orchestrator (and when
+  `/capabilities` is rendered). It stats `config/capabilities/*.yaml` (file set,
+  `st_mtime_ns`, `st_size`; at most once per second) and returns the current snapshot when
+  nothing changed — no parsing. Otherwise it re-reads only files whose stat changed and
+  re-parses only files whose content hash changed; a touch-only change does not bump the
+  revision.
+- `reload(reason)`: re-reads every file regardless of stat (e.g. right after an approved
+  write), still bumping the revision only if content changed.
+- `subscribe(callback)`: called after every swap to a new revision (subscriber errors are
+  logged, never raised).
+
+Change detection is polling at turn start; there is no background watcher, because
+nothing consumes the snapshot between turns. Editors, `git pull`, sub-agents and future
+edit tools are all picked up the same way, without a restart.
+
+Validation and last-known-good (LKG):
+- Per file: YAML parse, dict shape and the strict `CapabilityDefinition` schema.
+- Cross-file (on the whole candidate): duplicate `capability_id`, `nested_capabilities`
+  refer to known ids, and (validator from bootstrap) the active set's tool bindings exist
+  and are enabled in `tools.yaml`, do not use the reserved `mcp_` prefix and their
+  entrypoints resolve (`core/capabilities/validation.py`, shared by bootstrap and reload).
+- **Any** blocking issue rejects the reload as a whole: the previous snapshot (same
+  revision, same definitions) stays current and the issues are recorded in
+  `snapshot.errors`. There is no partial per-file merge. A new broken file is therefore
+  excluded, and a broken edit of an existing file keeps its previous definition.
+- A half-written file simply fails to parse and is retried on the next turn; the fix (or
+  reverting to the LKG content) clears the errors.
+- Deleting a manifest removes the capability. If it is enabled in policy, the reload still
+  succeeds with a non-blocking warning, and the resolver ignores the missing id. At startup
+  an enabled capability without a manifest is still a fatal error.
+- Startup is unchanged and fail-fast: `bootstrap_with_catalog()` builds the catalog, and
+  any blocking issue at the initial load aborts startup.
+- Surfacing: one structured `capabilities.reload_failed` warning per distinct error (with
+  `file`, `error`, `lkg_revision`), `capabilities.reload_recovered` once fixed, and a
+  warning block in the Telegram `/capabilities` picker listing the errors and the revision
+  still in use. There is no proactive Telegram notification.
+
+One snapshot per turn: the orchestrator calls `refresh()` once and passes that snapshot to
+the tool-mismatch check, `TurnAdapterCache.get_or_build(config, snapshot)` (system prompt +
+tools) and `build_tool_runtime_params(config, snapshot)`. Delegation feedback turns use the
+same path. The turn's `prompt_trace` records `capabilities.revision`, the active ids and the
+`manifest_sha256` of each active capability.
+
+Adapter cache and prompt:
+- `TurnAdapterCache` key: `(frozenset(enabled), frozenset(denied), snapshot.revision)`. A
+  new revision builds new adapters (new prompt and tools) and evicts all adapters of older
+  revisions; the cache is also LRU-bounded (16 entries).
+- The system prompt is composed from the snapshot only and is byte-stable for a revision,
+  so the Anthropic instruction cache keeps hitting. The current date is **not** part of it:
+  it is a dynamic pydantic-ai instruction evaluated on every run, sent as a separate block
+  after the cached system prompt.
+
+Derived state follows revisions:
+- The Telegram `/capabilities` picker reads the catalog on every render.
+- Sub-agent MCP servers (`claude_code_settings.mcp_servers` of the default policy's active
+  set) are recomputed and handed to both Claude Code backends on every new revision
+  (`SubagentMcpServersSync`); tasks already running keep their servers.
+- `~/.claude/settings.json` is re-applied only when a revision changes the
+  `claude_code_settings` of the default policy's active capabilities
+  (`ClaudeCodeSettingsSync`). The merge semantics are unchanged: if no active capability
+  defines settings any more, the file is left as it is.
+
+Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
+`mcp_servers.yaml` and the other config domains.
 
 ## Dynamic Activation Model (Normative)
 
