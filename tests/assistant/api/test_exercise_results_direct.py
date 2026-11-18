@@ -58,7 +58,7 @@ def _make_handler(vocabulary_store=None):
         "is_model_callback_request",
         "is_capabilities_request",
         "is_capabilities_callback_request",
-        "is_memory_confirmation_callback",
+        "is_confirmation_callback",
         "is_task_callback",
         "is_usage_request",
     ):

@@ -30,6 +30,7 @@ _RETRY_BASE_DELAY_SECONDS = 1.0
 _RETRY_BACKOFF_FACTOR = 2.0
 _CALLBACK_ACK_TEXT: Final[str] = "Received."
 _TELEGRAM_MAX_MESSAGE_LENGTH: Final[int] = 4096
+_CALLBACK_ANSWER_MAX_LENGTH: Final[int] = 200
 
 
 class TelegramSendError(Exception):
@@ -196,9 +197,18 @@ class TelegramEgress:
             )
         raise TelegramSendError(chat_id=chat_id, attempts=attempts_made, last_error=last_error)
 
-    async def acknowledge_callback(self, callback_id: str) -> None:
-        await self._bot.answer_callback_query(
-            callback_query_id=callback_id, text=_CALLBACK_ACK_TEXT
+    async def acknowledge_callback(self, callback_id: str, text: str | None = None) -> None:
+        """Answer a callback query (stops the client spinner); text shows as a toast."""
+        toast = (text or _CALLBACK_ACK_TEXT)[:_CALLBACK_ANSWER_MAX_LENGTH]
+        await self._bot.answer_callback_query(callback_query_id=callback_id, text=toast)
+
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        """Replace a sent message's text (plain) and drop its inline keyboard."""
+        await self._bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text[:_TELEGRAM_MAX_MESSAGE_LENGTH],
+            reply_markup=None,
         )
 
     async def close(self) -> None:

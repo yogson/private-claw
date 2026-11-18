@@ -11,6 +11,7 @@ from aiogram.types import Chat, Message, Update, User
 
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.allowlist import UnauthorizedUserError
+from assistant.channels.telegram.confirmation_callbacks import ConfirmationCallbackState
 from assistant.channels.telegram.ingestion.interfaces import TranscriptionWorkerInterface
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.models import (
@@ -21,6 +22,7 @@ from assistant.channels.telegram.models import (
     NormalizedEvent,
 )
 from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.confirmation import ConfirmationDecision, ConfirmationRequest
 from assistant.core.events.models import EventSource
 
 
@@ -53,6 +55,90 @@ def _make_response() -> ChannelResponse:
         message_type=MessageType.TEXT,
         text="Reply!",
     )
+
+
+def _confirmation_request(confirmation_id: str = "abc123def4567890") -> ConfirmationRequest:
+    now = datetime.now(UTC)
+    return ConfirmationRequest(
+        confirmation_id=confirmation_id,
+        kind="memory_update",
+        session_id="tg:123456",
+        summary_for_user="Action: upsert\nType: preferences\n\nUser prefers tea.",
+        dedupe_key="k",
+        created_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+
+
+def _callback_event(callback_data: str, chat_id: int = 123456) -> NormalizedEvent:
+    return NormalizedEvent(
+        event_id="ev-cf",
+        event_type=EventType.USER_CALLBACK_QUERY,
+        source=EventSource.TELEGRAM,
+        session_id=f"tg:{chat_id}",
+        user_id=str(chat_id),
+        created_at=datetime.now(UTC),
+        trace_id="trace-cf",
+        callback_query=CallbackQueryMeta(
+            callback_id="cq-cf", callback_data=callback_data, origin_message_id=42
+        ),
+        metadata={"chat_id": chat_id},
+    )
+
+
+class TestConfirmationCallbacks:
+    def test_response_shows_content_and_signed_buttons(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        response = adapter.build_confirmation_response(
+            chat_id=123456, trace_id="t", request=_confirmation_request()
+        )
+        assert "User prefers tea." in response.text
+        assert response.ui_kind == "inline_keyboard"
+        assert [len(a.callback_data) <= 64 for a in response.actions] == [True, True]
+        approve = adapter.parse_confirmation_callback(
+            _callback_event(response.actions[0].callback_data)
+        )
+        reject = adapter.parse_confirmation_callback(
+            _callback_event(response.actions[1].callback_data)
+        )
+        assert approve.state == ConfirmationCallbackState.VALID
+        assert (approve.confirmation_id, approve.decision) == (
+            "abc123def4567890",
+            ConfirmationDecision.APPROVE,
+        )
+        assert reject.decision == ConfirmationDecision.REJECT
+
+    def test_tampered_or_foreign_chat_callbacks_are_invalid_but_recognised(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        data = (
+            adapter.build_confirmation_response(
+                chat_id=123456, trace_id="t", request=_confirmation_request()
+            )
+            .actions[0]
+            .callback_data
+        )
+        tampered = data[:-1] + ("0" if data[-1] != "0" else "1")
+        other_session = _callback_event(data).model_copy(update={"session_id": "tg:123456:x"})
+        for event in (
+            _callback_event(tampered),
+            _callback_event(data, chat_id=999),
+            other_session,
+        ):
+            assert adapter.is_confirmation_callback(event) is True
+            assert adapter.parse_confirmation_callback(event).state == (
+                ConfirmationCallbackState.INVALID
+            )
+
+    def test_legacy_memory_callback_is_recognised_as_legacy(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        event = _callback_event("mc:0123456789:66f1a2b3:abcdefabcdef")
+        assert adapter.is_confirmation_callback(event) is True
+        assert adapter.parse_confirmation_callback(event).state == ConfirmationCallbackState.LEGACY
+
+    def test_other_callbacks_are_not_confirmation_callbacks(self) -> None:
+        adapter = TelegramAdapter(_make_config())
+        for data in ("rs:tg:1:abc:def", "tk:task:status:1:sig", "aq:x:1:sig", "plain"):
+            assert adapter.is_confirmation_callback(_callback_event(data)) is False
 
 
 class TestTelegramAdapterIngress:
@@ -290,16 +376,14 @@ class TestDelegationQuestionCallbacks:
         event = self._make_aq_event(response.actions[0].callback_data)
         assert adapter.is_delegation_question_callback(event) is True
 
-    def test_is_delegation_question_callback_false_for_mc_prefix(self) -> None:
+    def test_is_delegation_question_callback_false_for_confirmation_prefix(self) -> None:
         adapter = TelegramAdapter(_make_config())
-        mc_response = adapter.build_memory_confirmation_response(
+        cf_response = adapter.build_confirmation_response(
             chat_id=self._CHAT_ID,
-            session_id="tg:123456",
             trace_id="trace-5",
-            tool_call_id="tc-1",
-            prompt_text="Confirm?",
+            request=_confirmation_request(),
         )
-        event = self._make_aq_event(mc_response.actions[0].callback_data)
+        event = self._make_aq_event(cf_response.actions[0].callback_data)
         assert adapter.is_delegation_question_callback(event) is False
 
     def test_is_delegation_question_callback_false_for_no_callback_query(self) -> None:

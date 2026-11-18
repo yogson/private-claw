@@ -9,6 +9,7 @@ The v1 execution model is turn-based and in-process: handle exactly one inbound 
 ## Owned Components
 
 - `CMP_CORE_AGENT_ORCHESTRATOR`
+- `CMP_CORE_CONFIRMATION_SERVICE`
 - `CMP_PROVIDER_LLM_ANTHROPIC_ADAPTER`
 - `CMP_OBSERVABILITY_LOGGING` (integration)
 
@@ -80,7 +81,7 @@ The tool call arguments should follow:
 Notes:
 - `action=upsert` allows create-or-update behavior in Memory domain.
 - `action=touch` updates usage metadata only (for example `last_used_at`).
-- `requires_user_confirmation` is policy-controlled at orchestrator runtime and may be overridden to `true`.
+- `requires_user_confirmation` is ignored: every memory proposal requires user approval (see "User Confirmations").
 - `memory_propose_update` accepts proposals only; it does not perform direct memory writes.
 
 ### Strict Tool-Call Path
@@ -102,17 +103,57 @@ The system should avoid free-form natural language scraping of assistant prose f
 
 ### Apply Pipeline
 
-After route execution and before turn finalization:
-
-1. Validate each intent schema and deduplicate by `intent_id`.
-2. Enforce policy gates (allow/deny, confirmation requirement, max writes per turn).
-3. Persist turn transcript + precheck intent audit metadata atomically.
-4. If confirmation is required, persist `pending_confirmation` and emit a confirmation UI prompt.
-5. Submit approved intents to Memory domain for application.
-6. Record per-intent outcome: `applied`, `rejected_by_user`, `pending_confirmation`, or `failed`.
+1. The tool validates and normalizes the proposal into a `MemoryUpdateIntent` (invalid -> `rejected_invalid`).
+   A body longer than `MEMORY_BODY_MAX_CHARS` (2500) is also `rejected_invalid`: the user must see the full text
+   they approve, so it is never shown truncated. In the summary, `reason` is capped at 300 chars and `memory_id`
+   at 200.
+2. It registers a `memory_update` confirmation request (see "User Confirmations") and returns
+   `pending_confirmation` (with `confirmation_id`, `deduplicated`, `note`) or `another_confirmation_pending`.
+3. The call and its result are persisted inline with the turn like any other tool call, so later turns see them.
+4. Nothing is written until the user presses Approve; the write then goes through `MemoryUpdateHandler`.
 
 Idempotency rule:
-- Replayed/duplicate turns must not re-apply the same intent if `intent_id` already has terminal status.
+- The writer intent id is `confirmation:<confirmation_id>`; one confirmation is applied at most once.
+
+## User Confirmations (Normative)
+
+`CMP_CORE_CONFIRMATION_SERVICE` (`assistant.core.confirmation`) is the single mechanism for actions that need an
+explicit user decision. Memory updates are the first kind (`memory_update`); other kinds (e.g. capability-manifest
+edits) plug in by registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff).
+
+Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `origin_tool_call_id`, `payload`,
+`summary_for_user`, `dedupe_key`, `status` (`pending|approved|rejected|expired|failed`), `created_at`, `expires_at`,
+`resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
+
+Rules:
+- State is in memory only. After a restart unknown ids resolve as "no longer valid". When the user presses a
+  button of such a confirmation, its signature proves which session issued it, so an `expired` record is written
+  to that session (`ConfirmationService.record_unknown_expired`).
+  Known limitation: a confirmation that was pending at restart and is never pressed gets no record. Its replayed
+  tool result still says `pending_confirmation`, but nothing blocks a new proposal (the in-memory slot is free).
+- TTL: `app.confirmation_ttl_seconds` (default 86400). The orchestrator calls `expire_due(session_id)` before each turn
+  reads history, so a timed-out confirmation's `expired` record is visible to that turn. Expiry is also checked on
+  request/resolve. Resolved entries are pruned one TTL after resolution (on request, resolve and sweep).
+- `request()` returns the existing pending request when the `dedupe_key` matches; at most one confirmation is pending
+  per session, a different proposal while one is pending is not registered (`blocked_by`).
+- `resolve()` is idempotent: a per-id `asyncio.Lock` plus compare-and-set on `pending`; racing or repeated
+  decisions are no-ops that return the existing final state.
+- Approval runs the per-kind handler (`ConfirmationHandlerInterface.apply`). For `memory_update` only
+  `written|updated|deleted|touched` writer statuses count as applied; anything else is `failed` with the writer
+  reason. The blocking writer runs in `asyncio.to_thread`.
+- Only a button press is approval; text replies never resolve a confirmation.
+- `summary_for_user` is capped at `SUMMARY_MAX_CHARS` (3500) with an explicit "[truncated: N more chars not shown]"
+  note. Kinds where the user must see everything they approve reject over-long proposals before requesting.
+- Every final state (approved, rejected, expired, failed/not delivered) is appended to the session as its own complete
+  synthetic turn (`turn_id = confirmation-<id>`, USER_MESSAGE + TURN_TERMINAL) with content
+  `[[CONFIRMATION_RESOLVED]] {"confirmation_id","kind","status","summary","detail","origin_tool_call_id"}`.
+  It is replayed and compacted like any other turn. No agent turn is triggered by a resolution.
+  Only these synthetic records keep the marker. In user-typed text (history and the current turn) it is rewritten to
+  `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user cannot forge an outcome.
+- The orchestrator returns the confirmations created during a turn in `OrchestratorResult.confirmations`; channel
+  handlers must render each one (normal turns, delegation-feedback turns, and alongside ask_question / web-app
+  responses). If a turn fails or a confirmation cannot be delivered, it is discarded (`failed`) so it cannot block
+  the session.
 
 ### 1) Turn Classification (before retrieval)
 

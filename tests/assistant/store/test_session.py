@@ -235,6 +235,43 @@ async def test_replace_session_replaces_content(session_store: FilesystemSession
 
 
 @pytest.mark.asyncio
+async def test_replace_session_preserves_records_appended_after_snapshot(
+    session_store: FilesystemSessionStore,
+) -> None:
+    """Records stored after the caller's snapshot survive the rewrite, in order."""
+    await session_store.append(
+        [make_record("session-1", event_id="e-1"), make_record("session-1", event_id="e-2")]
+    )
+    snapshot = await session_store.read_session("session-1")
+    snapshot_sequence = max(r.sequence for r in snapshot)
+    # Out-of-band writer appends after the snapshot was taken.
+    await session_store.append([make_record("session-1", event_id="e-late")])
+
+    await session_store.replace_session(
+        "session-1",
+        [make_record("session-1", event_id="e-summary"), *snapshot[1:]],
+        preserve_after_sequence=snapshot_sequence,
+    )
+
+    stored = await session_store.read_session("session-1")
+    assert [r.event_id for r in stored] == ["e-summary", "e-2", "e-late"]
+    assert stored[-1].sequence > snapshot_sequence
+    assert len({r.sequence for r in stored}) == len(stored)
+
+
+@pytest.mark.asyncio
+async def test_replace_session_without_preserve_drops_late_records(
+    session_store: FilesystemSessionStore,
+) -> None:
+    """Default behaviour is a plain replace (callers opt in to carrying records over)."""
+    await session_store.append([make_record("session-1", event_id="e-1")])
+    await session_store.append([make_record("session-1", event_id="e-late")])
+    await session_store.replace_session("session-1", [make_record("session-1", event_id="e-new")])
+    stored = await session_store.read_session("session-1")
+    assert [r.event_id for r in stored] == ["e-new"]
+
+
+@pytest.mark.asyncio
 async def test_replace_session_creates_file_if_missing(
     session_store: FilesystemSessionStore,
 ) -> None:

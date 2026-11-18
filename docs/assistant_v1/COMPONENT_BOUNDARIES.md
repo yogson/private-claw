@@ -50,12 +50,13 @@ This document is normative for boundary governance across the `docs/assistant_v1
 
 ## Ownership Matrix
 
-### Agent (`CMP_CORE_AGENT_ORCHESTRATOR`)
+### Agent (`CMP_CORE_AGENT_ORCHESTRATOR`, `CMP_CORE_CONFIRMATION_SERVICE`)
 
 - Owns:
   - turn lifecycle and route selection,
   - context assembly policy and token budgeting,
-  - integration choreography across memory/capabilities/subagents.
+  - integration choreography across memory/capabilities/subagents,
+  - user-confirmation lifecycle (request, dedupe, expiry, resolve, history record) for all confirmation kinds.
 - Must not own:
   - direct tool/shell/filesystem side effects,
   - HTTP transport contracts,

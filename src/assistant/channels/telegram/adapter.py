@@ -22,13 +22,21 @@ from assistant.channels.telegram.ask_question_callbacks import (
 )
 from assistant.channels.telegram.capability_select_service import CapabilitySelectService
 from assistant.channels.telegram.commands import TelegramCommand, extract_supported_command
+from assistant.channels.telegram.confirmation_callbacks import (
+    ConfirmationCallback,
+    confirmation_id_of,
+    is_confirmation_callback_data,
+    parse_confirmation_callback,
+    sign_confirmation_callback,
+)
+from assistant.channels.telegram.confirmation_render import (
+    APPROVE_LABEL,
+    REJECT_LABEL,
+    render_confirmation_prompt,
+)
 from assistant.channels.telegram.egress import TelegramEgress
 from assistant.channels.telegram.ingestion.transcription import VoiceTranscriptionService
 from assistant.channels.telegram.ingress import TelegramIngress
-from assistant.channels.telegram.memory_confirmation_callbacks import (
-    sign_memory_confirmation_callback,
-    verify_memory_confirmation_callback,
-)
 from assistant.channels.telegram.model_select import ModelSelectService
 from assistant.channels.telegram.models import (
     ActionButton,
@@ -42,6 +50,7 @@ from assistant.channels.telegram.session_resume import SessionResumeService
 from assistant.channels.telegram.task_callbacks import sign_task_callback, verify_task_callback
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.confirmation import ConfirmationDecision, ConfirmationRequest
 from assistant.core.session import SessionContextFactory
 from assistant.core.session_context import (
     ActiveSessionContextInterface,
@@ -54,16 +63,7 @@ from assistant.core.session_context import (
 from assistant.store.interfaces import SessionStoreInterface
 
 logger = structlog.get_logger(__name__)
-_MEMORY_CONFIRMATION_TTL_SECONDS = 3600
 _DELEGATION_QUESTION_TTL_SECONDS = 3600
-
-
-@dataclass(slots=True)
-class _MemoryConfirmationToken:
-    session_id: str
-    tool_call_id: str
-    approve: bool
-    expires_at: datetime
 
 
 @dataclass(slots=True)
@@ -151,7 +151,6 @@ class TelegramAdapter:
                 hmac_secret=secret,
                 max_sessions=config.session_resume_max_sessions,
             )
-        self._memory_confirmation_tokens: dict[str, _MemoryConfirmationToken] = {}
         self._delegation_question_tokens: dict[str, _DelegationQuestionToken] = {}
 
     def process_update(self, update: dict[str, Any] | Update) -> NormalizedEvent | None:
@@ -230,9 +229,13 @@ class TelegramAdapter:
         """
         return await self._egress.send(response, chat_id)
 
-    async def acknowledge_callback(self, callback_id: str) -> None:
-        """Acknowledges a callback query so Telegram client stops the loading spinner."""
-        await self._egress.acknowledge_callback(callback_id)
+    async def acknowledge_callback(self, callback_id: str, text: str | None = None) -> None:
+        """Answer a callback query so the client stops its spinner; text shows as a toast."""
+        await self._egress.acknowledge_callback(callback_id, text)
+
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        """Replace a sent message's text and remove its inline keyboard."""
+        await self._egress.edit_message_text(chat_id, message_id, text)
 
     def is_session_resume_request(self, event: NormalizedEvent) -> bool:
         """Return True if the event is a session-resume listing request."""
@@ -252,15 +255,33 @@ class TelegramAdapter:
             is not None
         )
 
-    def is_memory_confirmation_callback(self, event: NormalizedEvent) -> bool:
-        """Return True if callback_data is a valid signed memory confirmation token."""
+    def is_confirmation_callback(self, event: NormalizedEvent) -> bool:
+        """True for any confirmation-shaped callback (valid, forged, stale, or legacy).
+
+        Such callbacks are always answered explicitly and never reach the LLM.
+        """
         if event.callback_query is None:
             return False
-        token = self._verify_memory_confirmation_callback_token(event)
-        if token is None:
-            return False
-        self._cleanup_expired_memory_confirmation_tokens()
-        return token in self._memory_confirmation_tokens
+        return is_confirmation_callback_data(event.callback_query.callback_data)
+
+    def confirmation_callback_id(self, event: NormalizedEvent) -> str:
+        """Unverified confirmation id of a ``cf:`` callback ('' if not one)."""
+        data = event.callback_query.callback_data if event.callback_query else ""
+        return confirmation_id_of(data)
+
+    def parse_confirmation_callback(
+        self, event: NormalizedEvent, *, session_id: str | None = None
+    ) -> ConfirmationCallback:
+        """Verify a confirmation callback's signature and decode it.
+
+        The signature is bound to the chat and to ``session_id`` (default: the
+        event's session), i.e. the session the confirmation was requested in.
+        """
+        data = event.callback_query.callback_data if event.callback_query else ""
+        chat_id = int(event.metadata.get("chat_id", 0))
+        return parse_confirmation_callback(
+            data, chat_id, session_id or event.session_id, self._task_callback_secret()
+        )
 
     def is_task_callback(self, event: NormalizedEvent) -> bool:
         """Return True if callback_data is a valid signed delegated-task callback."""
@@ -284,21 +305,6 @@ class TelegramAdapter:
             expected_chat_id=chat_id,
             secret=self._task_callback_secret(),
         )
-
-    def consume_memory_confirmation_callback(
-        self, event: NormalizedEvent
-    ) -> tuple[str, str, bool] | None:
-        """Consume a signed memory confirmation callback token and return resolution tuple."""
-        if event.callback_query is None:
-            return None
-        token = self._verify_memory_confirmation_callback_token(event)
-        if token is None:
-            return None
-        self._cleanup_expired_memory_confirmation_tokens()
-        item = self._memory_confirmation_tokens.pop(token, None)
-        if item is None:
-            return None
-        return item.session_id, item.tool_call_id, item.approve
 
     def build_ask_question_response(
         self,
@@ -412,42 +418,38 @@ class TelegramAdapter:
         )
         return item.session_id, item.answer_text
 
-    def build_memory_confirmation_response(
+    def build_confirmation_response(
         self,
         *,
         chat_id: int,
-        session_id: str,
         trace_id: str,
-        tool_call_id: str,
-        prompt_text: str,
+        request: ConfirmationRequest,
     ) -> ChannelResponse:
-        """Build interactive confirmation message for pending memory update intent."""
-        confirm_token = self._register_memory_confirmation_token(
-            session_id=session_id, tool_call_id=tool_call_id, approve=True
-        )
-        reject_token = self._register_memory_confirmation_token(
-            session_id=session_id, tool_call_id=tool_call_id, approve=False
-        )
-        confirm_cb = self._sign_memory_confirmation_callback_token(confirm_token, chat_id)
-        reject_cb = self._sign_memory_confirmation_callback_token(reject_token, chat_id)
+        """Build the Approve/Reject message for one confirmation request."""
+        secret = self._task_callback_secret()
+        cid = request.confirmation_id
         return ChannelResponse(
             response_id=str(uuid.uuid4()),
             channel="telegram",
-            session_id=session_id,
+            session_id=request.session_id,
             trace_id=trace_id,
             message_type=MessageType.INTERACTIVE,
-            text=prompt_text,
+            text=render_confirmation_prompt(request),
             ui_kind="inline_keyboard",
             actions=[
                 ActionButton(
-                    label="Confirm memory update",
-                    callback_id=f"confirm-{tool_call_id}",
-                    callback_data=confirm_cb,
+                    label=APPROVE_LABEL,
+                    callback_id=f"approve-{cid}",
+                    callback_data=sign_confirmation_callback(
+                        cid, ConfirmationDecision.APPROVE, chat_id, request.session_id, secret
+                    ),
                 ),
                 ActionButton(
-                    label="Reject",
-                    callback_id=f"reject-{tool_call_id}",
-                    callback_data=reject_cb,
+                    label=REJECT_LABEL,
+                    callback_id=f"reject-{cid}",
+                    callback_data=sign_confirmation_callback(
+                        cid, ConfirmationDecision.REJECT, chat_id, request.session_id, secret
+                    ),
                 ),
             ],
         )
@@ -808,44 +810,6 @@ class TelegramAdapter:
     async def close(self) -> None:
         """Closes underlying network resources."""
         await self._egress.close()
-
-    def _register_memory_confirmation_token(
-        self, *, session_id: str, tool_call_id: str, approve: bool
-    ) -> str:
-        self._cleanup_expired_memory_confirmation_tokens()
-        token = uuid.uuid4().hex[:10]
-        self._memory_confirmation_tokens[token] = _MemoryConfirmationToken(
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            approve=approve,
-            expires_at=datetime.now(UTC) + timedelta(seconds=_MEMORY_CONFIRMATION_TTL_SECONDS),
-        )
-        return token
-
-    def _sign_memory_confirmation_callback_token(self, token: str, chat_id: int) -> str:
-        secret = (self._config.session_resume_hmac_secret or "").encode()
-        if not secret:
-            secret = self._config.bot_token.encode()
-        return sign_memory_confirmation_callback(token=token, chat_id=chat_id, secret=secret)
-
-    def _verify_memory_confirmation_callback_token(self, event: NormalizedEvent) -> str | None:
-        if event.callback_query is None:
-            return None
-        secret = (self._config.session_resume_hmac_secret or "").encode()
-        if not secret:
-            secret = self._config.bot_token.encode()
-        chat_id = int(event.metadata.get("chat_id", 0))
-        return verify_memory_confirmation_callback(
-            callback_data=event.callback_query.callback_data,
-            expected_chat_id=chat_id,
-            secret=secret,
-        )
-
-    def _cleanup_expired_memory_confirmation_tokens(self) -> None:
-        now = datetime.now(UTC)
-        expired = [k for k, v in self._memory_confirmation_tokens.items() if v.expires_at <= now]
-        for key in expired:
-            self._memory_confirmation_tokens.pop(key, None)
 
     def _build_session_context_id(self, chat_id: int) -> str:
         return f"telegram:{chat_id}"

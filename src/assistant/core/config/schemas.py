@@ -32,6 +32,8 @@ class AppConfig(BaseModel):
     timezone: str
     log_level: LogLevel = LogLevel.INFO
     logfire_token: str = ""
+    # How long a user confirmation (e.g. memory update buttons) stays valid.
+    confirmation_ttl_seconds: int = Field(default=86400, ge=60)
 
 
 class TelegramChannelConfig(BaseModel):

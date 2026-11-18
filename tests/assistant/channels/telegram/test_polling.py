@@ -3,6 +3,7 @@ Tests for Telegram polling worker.
 """
 
 import asyncio
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,9 +12,17 @@ from aiogram.methods import SendMessage
 from aiogram.types import Update
 
 from assistant.channels.telegram.adapter import TelegramAdapter
-from assistant.channels.telegram.models import ChannelResponse, MessageType
+from assistant.channels.telegram.models import (
+    CallbackQueryMeta,
+    ChannelResponse,
+    EventSource,
+    EventType,
+    MessageType,
+    NormalizedEvent,
+)
 from assistant.channels.telegram.polling import (
     _configure_bot_commands_menu,
+    _dispatch_event,
     _process_update,
     run_polling,
 )
@@ -194,3 +203,41 @@ async def test_configure_bot_commands_menu_tolerates_set_chat_menu_button_networ
 
     bot.set_my_commands.assert_called_once()
     bot.set_chat_menu_button.assert_called_once()
+
+
+def _callback_event(data: str) -> NormalizedEvent:
+    return NormalizedEvent(
+        event_id="ev-cb",
+        event_type=EventType.USER_CALLBACK_QUERY,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123456",
+        user_id="123456",
+        created_at=datetime.now(UTC),
+        trace_id="trace-cb",
+        callback_query=CallbackQueryMeta(callback_id="cq-1", callback_data=data),
+        metadata={"chat_id": 123456},
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acks_ordinary_callback_and_survives_ack_failure() -> None:
+    adapter = TelegramAdapter(_make_config())
+    adapter.acknowledge_callback = AsyncMock(side_effect=RuntimeError("ack failed"))  # type: ignore[method-assign]
+    handler = AsyncMock(return_value=None)
+
+    await _dispatch_event(adapter, _callback_event("tk:task:status:1:sig"), handler, None)
+
+    adapter.acknowledge_callback.assert_awaited_once_with("cq-1", None)
+    handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_leaves_confirmation_callback_ack_to_handler() -> None:
+    adapter = TelegramAdapter(_make_config())
+    adapter.acknowledge_callback = AsyncMock()  # type: ignore[method-assign]
+    handler = AsyncMock(return_value=None)
+
+    await _dispatch_event(adapter, _callback_event("cf:abc:a:sig"), handler, None)
+
+    adapter.acknowledge_callback.assert_not_awaited()
+    handler.assert_awaited_once()
