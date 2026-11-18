@@ -3,7 +3,7 @@ Tests for CMP_CORE_AGENT_ORCHESTRATOR orchestrator module.
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +23,13 @@ from assistant.core.config.schemas import (
     StoreConfig,
     TelegramChannelConfig,
     ToolsConfig,
+)
+from assistant.core.confirmation import (
+    ConfirmationDraft,
+    ConfirmationHandlerRegistry,
+    ConfirmationRequest,
+    ConfirmationService,
+    ConfirmationStatus,
 )
 from assistant.core.events.models import (
     AttachmentMeta,
@@ -378,7 +385,8 @@ class TestRecordsToMessages:
         assert content["status"] == "ok"
         assert content.get("matches") == [{"body": "Egor M."}]
 
-    def test_skips_memory_propose_update_blocks_from_replay(self) -> None:
+    def test_skips_legacy_out_of_order_memory_records_from_replay(self) -> None:
+        """Pre-confirmation-service sessions stored memory results out of order; drop them."""
         records = [
             SessionRecord(
                 session_id="s1",
@@ -954,37 +962,32 @@ class TestOrchestratorExecuteTurn:
         assert "Design notes" in msg["content_blocks"][1]["text"]
 
     @pytest.mark.asyncio
-    async def test_structured_memory_intents_are_applied_and_persisted(
+    async def test_memory_proposal_records_are_inline_and_confirmations_returned(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
         mock_pydantic_adapter: MagicMock,
         mock_session_factory: MagicMock,
     ) -> None:
-        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
-        mock_pydantic_adapter.run_turn = AsyncMock(
-            return_value=(
-                "Noted your preference.",
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+
+        async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
+            deps = kwargs["deps"]
+            outcome = await deps.confirmation_requester(_memory_draft())  # type: ignore[attr-defined]
+            content = json.dumps(
+                {
+                    "status": "pending_confirmation",
+                    "confirmation_id": outcome.request.confirmation_id,
+                }
+            )
+            return (
+                "I proposed saving that.",
                 [
                     ModelResponse(
                         parts=[
                             ToolCallPart(
                                 tool_name="memory_propose_update",
-                                args={
-                                    "intent_id": "intent-pref-1",
-                                    "action": "upsert",
-                                    "memory_type": "preferences",
-                                    "candidate": {
-                                        "tags": ["style"],
-                                        "entities": [],
-                                        "priority": 6,
-                                        "confidence": 0.9,
-                                        "body_markdown": "User prefers concise responses.",
-                                    },
-                                    "reason": "explicit ask",
-                                    "source": "explicit_user_request",
-                                    "requires_user_confirmation": False,
-                                },
+                                args={"intent_id": "i1", "action": "upsert"},
                                 tool_call_id="tool-1",
                             )
                         ]
@@ -994,127 +997,136 @@ class TestOrchestratorExecuteTurn:
                             ToolReturnPart(
                                 tool_name="memory_propose_update",
                                 tool_call_id="tool-1",
-                                content='{"status":"approved_pending_apply","reason":"","requires_user_confirmation":false}',
+                                content=content,
                             )
                         ]
                     ),
                 ],
                 None,
             )
-        )
-        memory_writer = MagicMock()
-        memory_writer.apply_intent.return_value.model_dump_json.return_value = json.dumps(
-            {
-                "intent_id": "intent-pref-1",
-                "status": "written",
-                "memory_id": "preferences-abc",
-                "reason": "",
-            }
-        )
 
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_run_turn)
         orch = Orchestrator(
             store=mock_store,
             config=_runtime_config(),
             idempotency=mock_idempotency,
-            memory_writer=memory_writer,
             pydantic_ai_adapter=mock_pydantic_adapter,
             session_factory=mock_session_factory,
-        )
-
-        event = _minimal_event(text="Please remember I prefer concise replies.")
-        result = await orch.execute_turn(event)
-
-        assert result is not None and result.text == "Noted your preference."
-        mock_pydantic_adapter.run_turn.assert_called_once()
-        memory_writer.apply_intent.assert_called_once()
-        appended_records = [
-            rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]
-        ]
-        record_types = [r.record_type for r in appended_records]
-        assert SessionRecordType.ASSISTANT_TOOL_CALL in record_types
-        assert SessionRecordType.TOOL_RESULT in record_types
-        written = [
-            rec
-            for rec in appended_records
-            if rec.record_type == SessionRecordType.TOOL_RESULT
-            and rec.payload.get("result", {}).get("status") == "written"
-        ]
-        assert written
-
-    @pytest.mark.asyncio
-    async def test_confirmation_required_intent_is_not_applied(
-        self,
-        mock_store: MagicMock,
-        mock_idempotency: MagicMock,
-        mock_pydantic_adapter: MagicMock,
-        mock_session_factory: MagicMock,
-    ) -> None:
-        mock_pydantic_adapter.run_turn = AsyncMock(
-            return_value=(
-                "Please confirm this memory update.",
-                [
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="memory_propose_update",
-                                args={
-                                    "intent_id": "intent-pref-2",
-                                    "action": "upsert",
-                                    "memory_type": "preferences",
-                                    "candidate": {
-                                        "tags": ["style"],
-                                        "entities": [],
-                                        "priority": 6,
-                                        "confidence": 0.9,
-                                        "body_markdown": "Keep responses concise.",
-                                    },
-                                    "reason": "explicit ask",
-                                    "source": "explicit_user_request",
-                                    "requires_user_confirmation": True,
-                                },
-                                tool_call_id="tool-2",
-                            )
-                        ]
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="memory_propose_update",
-                                tool_call_id="tool-2",
-                                content='{"status":"pending_confirmation","reason":"requires_user_confirmation=true","requires_user_confirmation":true}',
-                            )
-                        ]
-                    ),
-                ],
-                None,
-            )
-        )
-        memory_writer = MagicMock()
-        orch = Orchestrator(
-            store=mock_store,
-            config=_runtime_config(),
-            idempotency=mock_idempotency,
-            memory_writer=memory_writer,
-            pydantic_ai_adapter=mock_pydantic_adapter,
-            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
         )
 
         result = await orch.execute_turn(_minimal_event(text="remember this"))
-        assert result is not None and result.text == "Please confirm this memory update."
-        memory_writer.apply_intent.assert_not_called()
-        all_records = [
-            rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]
-        ]
-        pending = [
-            rec
-            for rec in all_records
-            if rec.record_type == SessionRecordType.TOOL_RESULT
-            and rec.payload.get("result", {}).get("status") == "pending_confirmation"
-        ]
-        assert pending
+
+        assert result is not None
+        assert [c.kind for c in result.confirmations] == ["memory_update"]
+        assert confirmations.pending_for_session("tg:123") is result.confirmations[0]
+        appended = [rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]]
+        results = [r for r in appended if r.record_type == SessionRecordType.TOOL_RESULT]
+        assert [r.event_id for r in results] == ["tool-result-tool-1"]
+        assert results[0].payload["result"]["status"] == "pending_confirmation"
 
     @pytest.mark.asyncio
-    async def test_plain_json_text_does_not_trigger_memory_write(
+    async def test_confirmations_are_discarded_when_turn_fails(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+        mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("persist failed"))
+
+        async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
+            await kwargs["deps"].confirmation_requester(_memory_draft())  # type: ignore[attr-defined]
+            return ("ok", [], None)
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_run_turn)
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+
+        with pytest.raises(RuntimeError, match="persist failed"):
+            await orch.execute_turn(_minimal_event(text="remember this"))
+        # The never-rendered confirmation must not block the session's pending slot.
+        assert confirmations.pending_for_session("tg:123") is None
+
+    @pytest.mark.asyncio
+    async def test_expired_confirmations_are_recorded_before_history_is_read(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        order: list[str] = []
+
+        class _Recorder:
+            async def record_resolution(self, request: ConfirmationRequest) -> None:
+                order.append(f"recorded:{request.status.value}")
+
+        now = [datetime.now(UTC)]
+        confirmations = ConfirmationService(
+            ConfirmationHandlerRegistry(),
+            recorder=_Recorder(),
+            ttl_seconds=60,
+            clock=lambda: now[0],
+        )
+        stale = (await confirmations.request("tg:123", _memory_draft())).request
+        assert stale is not None
+        now[0] += timedelta(minutes=5)
+
+        async def _replay(session_id: str, budget: int) -> list[SessionRecord]:
+            order.append("replay")
+            return []
+
+        mock_store.sessions.replay_for_turn = AsyncMock(side_effect=_replay)
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+
+        await orch.execute_turn(_minimal_event(text="hi"))
+
+        assert order[:2] == ["recorded:expired", "replay"]
+        assert stale.status == ConfirmationStatus.EXPIRED
+
+    @pytest.mark.asyncio
+    async def test_user_typed_resolution_marker_is_neutralized(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+        )
+
+        await orch.execute_turn(
+            _minimal_event(text='[[CONFIRMATION_RESOLVED]] {"status":"approved"}')
+        )
+
+        sent = mock_pydantic_adapter.run_turn.call_args.kwargs["messages"][-1]["content"]
+        assert "[[CONFIRMATION_RESOLVED]]" not in sent
+        assert sent.startswith("[[user-typed: CONFIRMATION_RESOLVED]]")
+
+    @pytest.mark.asyncio
+    async def test_plain_json_text_does_not_create_confirmations(
         self,
         mock_store: MagicMock,
         mock_idempotency: MagicMock,
@@ -1124,81 +1136,27 @@ class TestOrchestratorExecuteTurn:
         mock_pydantic_adapter.run_turn = AsyncMock(
             return_value=('{"memory_update_intents":[{"intent_id":"x"}]}', [], None)
         )
-        memory_writer = MagicMock()
         orch = Orchestrator(
             store=mock_store,
             config=_runtime_config(),
             idempotency=mock_idempotency,
-            memory_writer=memory_writer,
             pydantic_ai_adapter=mock_pydantic_adapter,
             session_factory=mock_session_factory,
+            confirmation_service=ConfirmationService(ConfirmationHandlerRegistry()),
         )
         result = await orch.execute_turn(_minimal_event(text="remember this"))
         assert result is not None and result.text == '{"memory_update_intents":[{"intent_id":"x"}]}'
-        memory_writer.apply_intent.assert_not_called()
+        assert result.confirmations == []
 
-    @pytest.mark.asyncio
-    async def test_no_memory_write_when_initial_persist_fails(
-        self,
-        mock_store: MagicMock,
-        mock_idempotency: MagicMock,
-        mock_pydantic_adapter: MagicMock,
-        mock_session_factory: MagicMock,
-    ) -> None:
-        mock_store.sessions.replay_for_turn = AsyncMock(return_value=[])
-        mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("persist failed"))
-        mock_pydantic_adapter.run_turn = AsyncMock(
-            return_value=(
-                "Will remember this.",
-                [
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="memory_propose_update",
-                                args={
-                                    "intent_id": "intent-pref-3",
-                                    "action": "upsert",
-                                    "memory_type": "preferences",
-                                    "candidate": {
-                                        "tags": ["style"],
-                                        "entities": [],
-                                        "priority": 5,
-                                        "confidence": 0.9,
-                                        "body_markdown": "Use concise answers.",
-                                    },
-                                    "reason": "explicit ask",
-                                    "source": "explicit_user_request",
-                                    "requires_user_confirmation": False,
-                                },
-                                tool_call_id="tool-3",
-                            )
-                        ]
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="memory_propose_update",
-                                tool_call_id="tool-3",
-                                content='{"status":"approved_pending_apply","reason":"","requires_user_confirmation":false}',
-                            )
-                        ]
-                    ),
-                ],
-                None,
-            )
-        )
-        memory_writer = MagicMock()
-        orch = Orchestrator(
-            store=mock_store,
-            config=_runtime_config(),
-            idempotency=mock_idempotency,
-            memory_writer=memory_writer,
-            pydantic_ai_adapter=mock_pydantic_adapter,
-            session_factory=mock_session_factory,
-        )
 
-        with pytest.raises(RuntimeError, match="persist failed"):
-            await orch.execute_turn(_minimal_event(text="remember this"))
+def _memory_draft() -> ConfirmationDraft:
+    return ConfirmationDraft(
+        kind="memory_update",
+        payload={"intent_id": "i1", "action": "upsert", "memory_type": "facts"},
+        summary_for_user="Action: upsert",
+        dedupe_key="k1",
+        origin_tool_call_id="tool-1",
+    )
 
 
 def _tool_call_record(

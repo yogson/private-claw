@@ -13,8 +13,6 @@ from assistant.extensions.mcp.confirmation import McpConfirmationDenied, check_c
 class _FakeDeps:
     """Minimal TurnDeps stand-in for confirmation tests."""
 
-    writes_approved: list[None] = field(default_factory=list)
-    seen_intent_ids: set[str] = field(default_factory=set)
     memory_search_handler: Any = None
     delegation_enqueue_handler: Any = None
     tool_runtime_params: dict[str, dict[str, Any]] = field(default_factory=dict)

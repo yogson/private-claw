@@ -151,7 +151,7 @@ async def test_handler_returns_orchestrator_output_not_echo() -> None:
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.get_model_override.return_value = None
     mock_adapter.get_capabilities_override.return_value = None
 
@@ -193,7 +193,7 @@ async def test_handler_handles_reset_without_orchestrator_call() -> None:
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = True
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.reset_session_context = AsyncMock(return_value=True)
 
     mock_orchestrator = MagicMock()
@@ -232,7 +232,7 @@ async def test_handler_handles_reset_unavailable_without_orchestrator_call() -> 
     mock_adapter.is_session_reset_request.return_value = True
     mock_adapter.is_session_reset_available.return_value = False
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.reset_session_context = AsyncMock()
 
     mock_orchestrator = MagicMock()
@@ -280,7 +280,7 @@ async def test_handler_token_limit_resets_session_and_notifies() -> None:
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.get_model_override.return_value = None
     mock_adapter.get_capabilities_override.return_value = None
     mock_adapter.is_session_reset_available.return_value = True
@@ -346,7 +346,7 @@ async def test_handler_token_limit_notifies_when_reset_unavailable() -> None:
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.get_model_override.return_value = None
     mock_adapter.get_capabilities_override.return_value = None
     mock_adapter.is_session_reset_available.return_value = False
@@ -396,7 +396,7 @@ async def test_handler_handles_new_session_without_orchestrator_call() -> None:
     mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.start_new_session = AsyncMock(return_value="tg:123:abcd1234ef56")
 
     mock_orchestrator = MagicMock()
@@ -448,7 +448,7 @@ async def test_handler_returns_interactive_reply_keyboard_when_pending_ask() -> 
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.get_model_override.return_value = None
     mock_adapter.get_capabilities_override.return_value = None
 
@@ -514,7 +514,7 @@ async def test_handler_handles_new_session_failure_without_orchestrator_call() -
     mock_adapter.is_verbose_request.return_value = False
     mock_adapter.is_session_new_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.start_new_session = AsyncMock(return_value=None)
 
     mock_orchestrator = MagicMock()
@@ -561,7 +561,7 @@ async def test_handler_handles_usage_without_orchestrator_call() -> None:
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = True
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
 
     mock_usage_service = MagicMock()
     mock_usage_service.build_usage_response = AsyncMock(
@@ -620,7 +620,7 @@ async def test_handler_handles_usage_unavailable_when_no_service() -> None:
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = True
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
 
     mock_orchestrator = MagicMock()
     mock_orchestrator.execute_turn = AsyncMock()
@@ -670,7 +670,7 @@ async def test_handler_invalid_model_callback_returns_invalid_message() -> None:
     mock_adapter.is_model_request.return_value = False
     mock_adapter.is_model_callback_request.return_value = True
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.handle_model_callback.return_value = None
 
     mock_orchestrator = MagicMock()
@@ -1008,7 +1008,7 @@ async def test_handler_model_http_error_non_token_limit_returns_friendly_message
     mock_adapter.is_capabilities_request.return_value = False
     mock_adapter.is_capabilities_callback_request.return_value = False
     mock_adapter.is_usage_request.return_value = False
-    mock_adapter.is_memory_confirmation_callback.return_value = False
+    mock_adapter.is_confirmation_callback.return_value = False
     mock_adapter.get_model_override.return_value = None
     mock_adapter.get_capabilities_override.return_value = None
 

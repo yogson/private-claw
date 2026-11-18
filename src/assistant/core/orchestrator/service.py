@@ -22,7 +22,6 @@ from assistant.agent.pydantic_ai_agent import (
     TurnCancelledWithPartial,
     TurnDeps,
     _extract_pending_ask_question,
-    _new_messages_to_plans,
     _new_messages_to_session_records,
 )
 from assistant.agent.tools import build_tool_runtime_params
@@ -32,11 +31,17 @@ from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
+from assistant.core.confirmation import (
+    ConfirmationDraft,
+    ConfirmationRequest,
+    ConfirmationRequestResult,
+    ConfirmationService,
+    neutralize_confirmation_marker,
+)
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.core.orchestrator.compaction import ChatCompactionService
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
-from assistant.core.orchestrator.memory import apply_approved_memory_intents
 from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.payloads import (
     _PLACEHOLDER_EMPTY,
@@ -50,13 +55,13 @@ from assistant.core.orchestrator.payloads import (
 from assistant.core.orchestrator.persistence import (
     persist_turn_failed,
     persist_turn_initial,
-    persist_turn_outcomes,
+    persist_turn_terminal,
     persist_turn_terminal_failed,
 )
 from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.core.session.factory import SessionContextFactory
 from assistant.extensions.mcp.toolsets import is_mcp_tool_name
-from assistant.memory.interfaces import MemoryRetrievalInterface, MemoryWriterInterface
+from assistant.memory.interfaces import MemoryRetrievalInterface
 from assistant.memory.retrieval.models import RetrievalQuery
 from assistant.memory.store.models import MemoryType
 from assistant.observability.correlation import (
@@ -152,7 +157,6 @@ class Orchestrator:
         idempotency: IngressIdempotencyService,
         session_factory: SessionContextFactory,
         attachment_downloader: AttachmentDownloaderInterface | None = None,
-        memory_writer: MemoryWriterInterface | None = None,
         memory_retrieval: MemoryRetrievalInterface | None = None,
         pydantic_ai_adapter: PydanticAITurnAdapter | None = None,
         delegation_coordinator: DelegationCoordinatorInterface | None = None,
@@ -160,12 +164,13 @@ class Orchestrator:
         vocabulary_store: Any | None = None,
         usage_service: Any | None = None,
         capability_catalog: CapabilityCatalogInterface | None = None,
+        confirmation_service: ConfirmationService | None = None,
     ) -> None:
         self._store = store
+        self._confirmations = confirmation_service
         self._config = config
         self._idempotency = idempotency
         self._attachment_downloader = attachment_downloader
-        self._memory_writer = memory_writer
         self._memory_retrieval = memory_retrieval
         self._pydantic_ai_adapter = pydantic_ai_adapter
         self._delegation_coordinator = delegation_coordinator
@@ -255,11 +260,15 @@ class Orchestrator:
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         effective_config: "RuntimeConfig | None" = None,
         capability_snapshot: CapabilitySnapshot | None = None,
+        created_confirmations: list[ConfirmationRequest] | None = None,
     ) -> OrchestratorResult:
         """Execute a turn via the configured Pydantic AI adapter.
 
         ``capability_snapshot`` is the one snapshot of this turn (taken in ``_run_turn``);
         the adapter, tool params and the prompt trace all use it.
+
+        Confirmations created by tools during the turn are appended to
+        ``created_confirmations`` so the caller can render them.
         """
         cfg = effective_config if effective_config is not None else self._config
         snapshot = (
@@ -355,8 +364,6 @@ class Orchestrator:
                 return _with_still_running_hint({"found": True, **result})
 
         deps = TurnDeps(
-            writes_approved=[],
-            seen_intent_ids=set(),
             memory_search_handler=memory_handler,
             delegation_enqueue_handler=delegation_handler,
             delegation_status_handler=delegation_status_handler,
@@ -367,6 +374,9 @@ class Orchestrator:
             streaming_text_notifier=streaming_text_notifier,
             user_id=user_id,
             vocabulary_store=self._vocabulary_store,
+            confirmation_requester=self._build_confirmation_requester(
+                session_id, created_confirmations
+            ),
         )
         try:
             response_text, new_msgs, usage = await adapter.run_turn(
@@ -397,7 +407,6 @@ class Orchestrator:
                         assistant_msg_id=assistant_msg_id,
                         model_id=model_id,
                         user_id=user_id,
-                        skip_memory_tool_results=True,
                     )
                     # Ensure at least one ASSISTANT_MESSAGE record exists.
                     if not any(
@@ -431,11 +440,10 @@ class Orchestrator:
                         )
                     )
                     await asyncio.shield(
-                        persist_turn_outcomes(
+                        persist_turn_terminal(
                             self._store.sessions,
                             session_id=session_id,
                             turn_id=turn_id,
-                            outcomes=[],
                             terminal_status=TurnTerminalStatus.CANCELLED,
                         )
                     )
@@ -486,7 +494,6 @@ class Orchestrator:
                     assistant_msg_id=assistant_msg_id,
                     model_id=model_id,
                     user_id=user_id,
-                    skip_memory_tool_results=True,
                 )
                 if not any(
                     r.record_type == SessionRecordType.ASSISTANT_MESSAGE for r in partial_records
@@ -515,11 +522,10 @@ class Orchestrator:
                     assistant_records=partial_records,
                     user_id=user_id,
                 )
-                await persist_turn_outcomes(
+                await persist_turn_terminal(
                     self._store.sessions,
                     session_id=session_id,
                     turn_id=turn_id,
-                    outcomes=[],
                     terminal_status=TurnTerminalStatus.DEGRADED,
                 )
             except Exception:
@@ -593,7 +599,6 @@ class Orchestrator:
                     "content_blocks": current_user_message.content_blocks,
                 },
             }
-        memory_plans = _new_messages_to_plans(new_msgs)
         now = datetime.now(UTC)
         assistant_msg_id = f"msg-{turn_id}-assistant"
         assistant_records = _new_messages_to_session_records(
@@ -605,7 +610,6 @@ class Orchestrator:
             model_id=model_id,
             usage=usage,
             user_id=user_id,
-            skip_memory_tool_results=True,
         )
         if not assistant_records:
             fallback_payload: dict[str, Any] = {
@@ -646,19 +650,14 @@ class Orchestrator:
                 user_text=user_content,
                 assistant_records=assistant_records,
                 attachments=[a.model_dump() for a in attachments],
-                invalid_memory_intents=0,
                 prompt_trace=prompt_trace,
                 user_id=user_id,
             )
             initial_persisted = True
-            outcomes = apply_approved_memory_intents(
-                memory_plans, self._memory_writer, user_id=user_id
-            )
-            await persist_turn_outcomes(
+            await persist_turn_terminal(
                 self._store.sessions,
                 session_id=session_id,
                 turn_id=turn_id,
-                outcomes=outcomes,
             )
             return OrchestratorResult(
                 text=response_text,
@@ -691,7 +690,7 @@ class Orchestrator:
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         compaction_notifier: Callable[[], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
-        user_text = extract_user_text(event)
+        user_text = neutralize_confirmation_marker(extract_user_text(event))
         attachments = gather_attachments(event)
         attachment_context = format_attachment_context(attachments)
         user_content = (user_text + attachment_context).strip() or _PLACEHOLDER_EMPTY
@@ -701,6 +700,8 @@ class Orchestrator:
         trace_id = event.trace_id
 
         raw_text = extract_raw_text_for_multimodal(event)
+        if raw_text:
+            raw_text = neutralize_confirmation_marker(raw_text)
         content_blocks = await build_user_content_blocks(
             raw_text, attachments, self._attachment_downloader, trace_id
         )
@@ -727,6 +728,7 @@ class Orchestrator:
         token = set_trace_id(trace_id)
         try:
             with self._session_traces.session_trace(session_id, turn_id):
+                await self._expire_due_confirmations(session_id)
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 # Check if compaction is needed before building messages.
@@ -759,23 +761,70 @@ class Orchestrator:
 
                 messages.append(user_message)
 
-                return await self._run_turn_pydantic_ai(
-                    messages=messages,
-                    current_user_message=user_message,
-                    user_content=user_content,
-                    attachments=attachments,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    trace_id=trace_id,
-                    user_id=event.user_id,
-                    model_id_override=event.model_id_override,
-                    tool_call_notifier=tool_call_notifier,
-                    streaming_text_notifier=streaming_text_notifier,
-                    effective_config=effective_config,
-                    capability_snapshot=capability_snapshot,
-                )
+                created: list[ConfirmationRequest] = []
+                try:
+                    result = await self._run_turn_pydantic_ai(
+                        messages=messages,
+                        current_user_message=user_message,
+                        user_content=user_content,
+                        attachments=attachments,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        trace_id=trace_id,
+                        user_id=event.user_id,
+                        model_id_override=event.model_id_override,
+                        tool_call_notifier=tool_call_notifier,
+                        streaming_text_notifier=streaming_text_notifier,
+                        effective_config=effective_config,
+                        capability_snapshot=capability_snapshot,
+                        created_confirmations=created,
+                    )
+                except BaseException:
+                    await self._discard_confirmations(created)
+                    raise
+                result.confirmations = created
+                return result
         finally:
             reset_trace_id(token)
+
+    def _build_confirmation_requester(
+        self, session_id: str, created: list[ConfirmationRequest] | None
+    ) -> Callable[[ConfirmationDraft], Awaitable[ConfirmationRequestResult]] | None:
+        service = self._confirmations
+        if service is None:
+            return None
+
+        async def _request(draft: ConfirmationDraft) -> ConfirmationRequestResult:
+            outcome = await service.request(session_id, draft)
+            if outcome.created and outcome.request is not None and created is not None:
+                created.append(outcome.request)
+            return outcome
+
+        return _request
+
+    async def _expire_due_confirmations(self, session_id: str) -> None:
+        # Writes `expired` records for timed-out confirmations before history is read.
+        if self._confirmations is None:
+            return
+        try:
+            await self._confirmations.expire_due(session_id)
+        except Exception:
+            logger.warning(
+                "orchestrator.confirmation_expiry_failed", session_id=session_id, exc_info=True
+            )
+
+    async def _discard_confirmations(self, created: list[ConfirmationRequest]) -> None:
+        # A failed/cancelled turn never renders its confirmations; free the session slot.
+        if self._confirmations is None:
+            return
+        for request in created:
+            with suppress(Exception):
+                await asyncio.shield(
+                    self._confirmations.discard(
+                        request.confirmation_id,
+                        "The turn did not complete, so the confirmation was never shown.",
+                    )
+                )
 
     def _memory_search(
         self,
@@ -1038,10 +1087,16 @@ class Orchestrator:
         # summary + kept_records (last N turns verbatim). replace_session avoids
         # the gap between clear_session and append where data could be lost
         # (disk error) or corrupted (concurrent writes).
+        # The summarizer call above yields to the event loop, and some writers
+        # (confirmation resolutions) append outside the session turn lock: carry
+        # over anything stored after this snapshot instead of overwriting it.
         records_to_restore = (
             system_records + previous_summaries + [new_summary_record] + kept_records
         )
-        await self._store.sessions.replace_session(session_id, records_to_restore)
+        snapshot_sequence = max((r.sequence for r in records), default=-1)
+        await self._store.sessions.replace_session(
+            session_id, records_to_restore, preserve_after_sequence=snapshot_sequence
+        )
 
         logger.info(
             "orchestrator.session_compacted",

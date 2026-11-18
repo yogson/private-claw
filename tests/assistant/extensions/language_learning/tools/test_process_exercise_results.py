@@ -32,8 +32,6 @@ def store(vocabulary_dir: Path) -> VocabularyStore:
 def _make_ctx(store: VocabularyStore | None, user_id: str = "user-1") -> MagicMock:
     ctx = MagicMock()
     ctx.deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         user_id=user_id,
         vocabulary_store=store,
     )
@@ -128,8 +126,6 @@ class TestProcessExerciseResults:
 
         ctx = MagicMock()
         ctx.deps = TurnDeps(
-            writes_approved=[],
-            seen_intent_ids=set(),
             user_id="user-1",
             vocabulary_store=mock_store,
         )
@@ -142,7 +138,7 @@ class TestProcessExerciseResults:
     async def test_unavailable_without_store(self) -> None:
         """Returns unavailable when vocabulary_store is None."""
         ctx = MagicMock()
-        ctx.deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
+        ctx.deps = TurnDeps()
         result = await process_exercise_results(ctx, "{}")
         assert result["status"] == "unavailable"
 
@@ -151,8 +147,6 @@ class TestProcessExerciseResults:
         """Returns unavailable when user_id is None."""
         ctx = MagicMock()
         ctx.deps = TurnDeps(
-            writes_approved=[],
-            seen_intent_ids=set(),
             user_id=None,
             vocabulary_store=store,
         )

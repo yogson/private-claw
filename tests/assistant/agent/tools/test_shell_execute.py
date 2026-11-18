@@ -39,8 +39,6 @@ def _ctx(deps: TurnDeps) -> MagicMock:
 def test_shell_execute_readonly_pwd(mock_run: MagicMock) -> None:
     mock_run.return_value = MagicMock(returncode=0, stdout="/tmp", stderr="")
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
@@ -54,8 +52,6 @@ def test_shell_execute_readonly_pwd(mock_run: MagicMock) -> None:
 def test_shell_execute_readonly_ls(mock_run: MagicMock) -> None:
     mock_run.return_value = MagicMock(returncode=0, stdout="file1\nfile2", stderr="")
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
@@ -66,8 +62,6 @@ def test_shell_execute_readonly_ls(mock_run: MagicMock) -> None:
 
 def test_shell_execute_readonly_rejects_disallowed() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
@@ -78,8 +72,6 @@ def test_shell_execute_readonly_rejects_disallowed() -> None:
 
 def test_shell_execute_readonly_rejects_empty() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
@@ -89,8 +81,6 @@ def test_shell_execute_readonly_rejects_empty() -> None:
 
 def test_shell_execute_readonly_empty_config_rejects_unavailable() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params={},
     )
     ctx = _ctx(deps)
@@ -101,8 +91,6 @@ def test_shell_execute_readonly_empty_config_rejects_unavailable() -> None:
 
 def test_shell_execute_allowlisted_empty_allowlist() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params={"shell_execute_allowlisted": {"command_allowlist": []}},
     )
     ctx = _ctx(deps)
@@ -113,8 +101,6 @@ def test_shell_execute_allowlisted_empty_allowlist() -> None:
 
 def test_shell_execute_allowlisted_not_in_allowlist() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params={
             "shell_execute_allowlisted": {
                 "command_allowlist": [CommandAllowlistEntry(id="git", command_pattern="git")],
@@ -130,8 +116,6 @@ def test_shell_execute_allowlisted_not_in_allowlist() -> None:
 def test_shell_execute_allowlisted_allowed(mock_run: MagicMock) -> None:
     mock_run.return_value = MagicMock(returncode=0, stdout="hello", stderr="")
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params={
             "shell_execute_allowlisted": {
                 "command_allowlist": [CommandAllowlistEntry(id="echo", command_pattern="echo")],
@@ -146,8 +130,6 @@ def test_shell_execute_allowlisted_allowed(mock_run: MagicMock) -> None:
 
 def test_shell_execute_allowlisted_rejects_empty_command() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params={
             "shell_execute_allowlisted": {
                 "command_allowlist": [CommandAllowlistEntry(id="ls", command_pattern="ls")],
@@ -165,8 +147,6 @@ def test_shell_execute_readonly_timeout(mock_run: MagicMock) -> None:
 
     mock_run.side_effect = subprocess.TimeoutExpired("find", 15)
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
@@ -177,8 +157,6 @@ def test_shell_execute_readonly_timeout(mock_run: MagicMock) -> None:
 
 def test_shell_execute_readonly_malformed_quoting() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params=_READONLY_PARAMS,
     )
     ctx = _ctx(deps)
@@ -188,8 +166,6 @@ def test_shell_execute_readonly_malformed_quoting() -> None:
 
 def test_shell_execute_allowlisted_rejects_args_not_matching_pattern() -> None:
     deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         tool_runtime_params={
             "shell_execute_allowlisted": {
                 "command_allowlist": [

@@ -200,9 +200,13 @@ async def _dispatch_event(
     event_handler: TelegramEventHandler,
     cancellation_registry: CancellationRegistry | None,
 ) -> None:
-    """Drive a normalized event through the handler and send the response."""
-    if event.callback_query is not None:
-        await adapter.acknowledge_callback(event.callback_query.callback_id)
+    """Drive a normalized event through the handler and send the response.
+
+    Callback queries are acknowledged up front, except confirmation callbacks: their
+    handler answers with the real outcome (Telegram accepts only one answer).
+    """
+    if event.callback_query is not None and not adapter.is_confirmation_callback(event):
+        await acknowledge_callback_safely(adapter, event.callback_query.callback_id)
 
     # Register this task in the cancellation registry so /stop can cancel it.
     # Skip registration for /stop itself so it never appears as a cancellable turn.
@@ -249,6 +253,18 @@ async def _dispatch_event(
         await adapter.send_response(response, chat_id=int(chat_id))
     except Exception:
         logger.exception("telegram.polling.send_error", chat_id=chat_id)
+
+
+async def acknowledge_callback_safely(
+    adapter: TelegramAdapter, callback_id: str, text: str | None = None
+) -> None:
+    """Answer a callback query; failures are logged and never abort event handling."""
+    try:
+        await adapter.acknowledge_callback(callback_id, text)
+    except Exception:
+        logger.warning(
+            "telegram.polling.callback_ack_failed", callback_id=callback_id, exc_info=True
+        )
 
 
 async def _process_update(

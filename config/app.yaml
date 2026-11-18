@@ -7,3 +7,4 @@ data_root: ./data    # root for all persisted runtime data
 timezone: UTC        # IANA timezone string, e.g. Europe/Kyiv
 log_level: INFO      # DEBUG | INFO | WARNING | ERROR
 logfire_token: ""    # optional; can be set via ASSISTANT_LOGFIRE_TOKEN
+confirmation_ttl_seconds: 86400  # validity of Approve/Reject confirmations (default 24h)

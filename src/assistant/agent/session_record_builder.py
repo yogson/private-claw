@@ -17,7 +17,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.agent.message_converters import _parse_tool_result_content
 from assistant.store.models import (
     AssistantToolCallPayload,
@@ -37,13 +36,12 @@ def _new_messages_to_session_records(
     model_id: str | None = None,
     usage: dict[str, int] | None = None,
     user_id: str | None = None,
-    skip_memory_tool_results: bool = True,
 ) -> list[SessionRecord]:
     """Convert pydantic_ai new_messages to session records for full replay/restore.
 
     Emits ASSISTANT_MESSAGE, ASSISTANT_TOOL_CALL, and TOOL_RESULT records in
-    chronological order. When skip_memory_tool_results is True, memory_propose_update
-    tool results are omitted (caller persists them separately with applied outcomes).
+    chronological order. memory_propose_update calls/results are kept like any other
+    tool so the agent can see its own confirmation proposals on replay.
     """
     records: list[SessionRecord] = []
     assistant_idx = 0
@@ -117,8 +115,6 @@ def _new_messages_to_session_records(
                     continue
                 if req_part.outcome == "retried":
                     # v2 represents a retried tool call as a ToolReturnPart; not a real result.
-                    continue
-                if skip_memory_tool_results and req_part.tool_name == MEMORY_TOOL_NAME:
                     continue
                 result = _parse_tool_result_content(req_part.content)
                 result_payload = ToolResultPayload(

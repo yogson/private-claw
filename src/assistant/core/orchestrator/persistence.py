@@ -8,12 +8,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from assistant.core.config.schemas import RuntimeConfig
-from assistant.core.orchestrator.memory import MemoryOutcome
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
-    ToolResultPayload,
     TurnSummaryPayload,
     TurnTerminalStatus,
     UserMessagePayload,
@@ -29,15 +27,13 @@ async def persist_turn_initial(
     user_text: str,
     assistant_records: list[SessionRecord],
     attachments: list[dict[str, Any]] | None = None,
-    invalid_memory_intents: int = 0,
     prompt_trace: dict[str, Any] | None = None,
     user_id: str | None = None,
 ) -> None:
     """Persist initial turn records including full conversation context for replay/restore.
 
     assistant_records must contain ASSISTANT_MESSAGE, ASSISTANT_TOOL_CALL, and
-    TOOL_RESULT records (excluding memory_propose_update results, which are
-    persisted separately in persist_turn_outcomes with applied outcomes).
+    TOOL_RESULT records in chronological order.
     """
     now = datetime.now(UTC)
     user_msg_id = f"msg-{turn_id}-user"
@@ -62,8 +58,6 @@ async def persist_turn_initial(
     records.extend(assistant_records)
 
     capability_audit: dict[str, Any] = {}
-    if invalid_memory_intents > 0:
-        capability_audit["invalid_memory_intents"] = invalid_memory_intents
     if prompt_trace is not None:
         capability_audit["prompt_trace"] = prompt_trace
 
@@ -86,60 +80,32 @@ async def persist_turn_initial(
     await sessions.append(records)
 
 
-async def persist_turn_outcomes(
+async def persist_turn_terminal(
     sessions: SessionStoreInterface,
     *,
     session_id: str,
     turn_id: str,
-    outcomes: list[MemoryOutcome],
     terminal_status: TurnTerminalStatus = TurnTerminalStatus.COMPLETED,
     terminal_payload: dict[str, Any] | None = None,
 ) -> None:
-    """Persist final memory outcome records and terminal turn record.
+    """Persist the terminal turn record that marks the turn complete for replay.
 
-    terminal_status and terminal_payload are used for memory-outcome turns.
     TurnTerminalStatus.SUSPENDED is reserved for future use (e.g. pending user
-    input); v1 turns with pending_ask are persisted as COMPLETED via
-    persist_turn_initial.
+    input); v1 turns with pending_ask are persisted as COMPLETED.
     """
-    now = datetime.now(UTC)
-    next_sequence = await sessions.get_next_sequence(session_id)
-    records: list[SessionRecord] = []
-    for tool_call_id, result, error in outcomes:
-        result_payload = ToolResultPayload(
-            message_id=f"msg-final-result-{tool_call_id}",
-            tool_call_id=tool_call_id,
-            tool_name="memory_propose_update",
-            result=result,
-            error=error,
-        )
-        records.append(
-            SessionRecord(
-                session_id=session_id,
-                sequence=next_sequence,
-                event_id=f"tool-result-final-{tool_call_id}",
-                turn_id=turn_id,
-                timestamp=now,
-                record_type=SessionRecordType.TOOL_RESULT,
-                payload=result_payload.model_dump(),
-            )
-        )
-        next_sequence += 1
     payload = terminal_payload or {"status": terminal_status.value}
     if "status" not in payload:
         payload["status"] = terminal_status.value
-    records.append(
-        SessionRecord(
-            session_id=session_id,
-            sequence=next_sequence,
-            event_id=f"terminal-{turn_id}",
-            turn_id=turn_id,
-            timestamp=now,
-            record_type=SessionRecordType.TURN_TERMINAL,
-            payload=payload,
-        )
+    record = SessionRecord(
+        session_id=session_id,
+        sequence=await sessions.get_next_sequence(session_id),
+        event_id=f"terminal-{turn_id}",
+        turn_id=turn_id,
+        timestamp=datetime.now(UTC),
+        record_type=SessionRecordType.TURN_TERMINAL,
+        payload=payload,
     )
-    await sessions.append(records)
+    await sessions.append([record])
 
 
 async def persist_turn_failed(

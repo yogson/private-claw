@@ -76,7 +76,7 @@ async def test_date_is_computed_per_turn_on_a_cached_adapter() -> None:
     adapter._clock = lambda: now[0]  # frozen clock
     prompt_before = adapter.system_prompt
 
-    deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
+    deps = TurnDeps()
     with adapter._agent.override(model=FunctionModel(respond)):
         await adapter.run_turn(
             messages=[{"role": "user", "content": "hi"}], deps=deps, trace_id="t"

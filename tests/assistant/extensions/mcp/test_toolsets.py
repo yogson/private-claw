@@ -489,7 +489,7 @@ async def test_confirmation_uses_turn_deps_notifier(started: Any) -> None:
     async def notifier(name: str, payload: str) -> None:
         notified.append((name, payload))
 
-    deps = TurnDeps(writes_approved=[], seen_intent_ids=set(), tool_call_notifier=notifier)
+    deps = TurnDeps(tool_call_notifier=notifier)
     agent: Agent[TurnDeps, str] = Agent(
         _model_calling("mcp_demo_update_thing", {"name": "n"}),
         deps_type=TurnDeps,

@@ -7,6 +7,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
@@ -22,8 +24,10 @@ from assistant.core.config.schemas import (
     SchedulerConfig,
     StoreConfig,
     TelegramChannelConfig,
+    ToolDefinition,
     ToolsConfig,
 )
+from assistant.core.confirmation import ConfirmationHandlerRegistry, ConfirmationService
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
 from assistant.core.orchestrator import Orchestrator
 from assistant.core.orchestrator import service as orchestrator_service
@@ -226,3 +230,85 @@ async def test_every_consumer_of_a_turn_sees_one_snapshot(
     }
     assert len({id(v) for v in seen.values()}) == 1  # the very same snapshot object
     assert "PROMPT-EDITED" in prompts_seen[0]
+
+
+async def test_catalog_backed_turn_registers_memory_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """memory_propose_update bound by a catalog manifest still goes through confirmations."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    caps = tmp_path / "capabilities"
+    caps.mkdir(parents=True)
+    (caps / "assistant.yaml").write_text(
+        "capability_id: assistant\nprompt: PROMPT\n"
+        "tools:\n  - tool_id: memory_propose_update\n    enabled: true\n"
+    )
+    config = _config(tmp_path).model_copy(
+        update={
+            "tools": ToolsConfig(
+                tools=[
+                    ToolDefinition(
+                        tool_id="memory_propose_update",
+                        entrypoint=(
+                            "assistant.agent.tools.memory_propose_update:memory_propose_update"
+                        ),
+                    )
+                ]
+            )
+        }
+    )
+    catalog = CapabilityCatalog(tmp_path, min_refresh_interval=0)
+    store = _store()
+    cache = TurnAdapterCache(
+        model_id=f"anthropic:{_MODEL}",
+        max_tokens=256,
+        base_config=config,
+        snapshot=catalog.current(),
+    )
+    confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+    orch = orchestrator_service.Orchestrator(
+        store=store,
+        config=config,
+        idempotency=_idempotency(),
+        session_factory=_session_factory(),
+        adapter_cache=cache,
+        capability_catalog=catalog,
+        confirmation_service=confirmations,
+    )
+    # The turn's refresh sees the same revision, so it reuses this cached adapter.
+    adapter = cache.get_or_build(config, catalog.current())
+    tool_names: list[list[str]] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        tool_names.append([t.name for t in info.function_tools])
+        if len(messages) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="memory_propose_update",
+                        args={
+                            "intent_id": "i1",
+                            "action": "upsert",
+                            "memory_type": "preferences",
+                            "reason": "explicit ask",
+                            "source": "explicit_user_request",
+                            "requires_user_confirmation": True,
+                            "candidate": {"body_markdown": "Likes tea."},
+                        },
+                        tool_call_id="tool-1",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart(content="Proposed.")])
+
+    with adapter._agent.override(model=FunctionModel(respond)):
+        result = await orch.execute_turn(_event("e1"))
+
+    assert result is not None and result.text == "Proposed."
+    assert "memory_propose_update" in tool_names[0]
+    assert cache.size == 1
+    assert [c.kind for c in result.confirmations] == ["memory_update"]
+    assert confirmations.pending_for_session("tg:1") is result.confirmations[0]
+    trace = _prompt_trace(store)
+    assert trace["capabilities"]["revision"] == 1
+    assert trace["capabilities"]["active"] == ["assistant"]

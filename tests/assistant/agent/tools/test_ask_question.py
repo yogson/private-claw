@@ -12,7 +12,7 @@ from assistant.agent.tools.deps import TurnDeps
 def test_ask_question_returns_question_asked_with_options() -> None:
     """ask_question returns pending_user_selection with normalized options."""
     ctx = MagicMock()
-    ctx.deps = TurnDeps(writes_approved=[], seen_intent_ids=set(), memory_search_handler=None)
+    ctx.deps = TurnDeps(memory_search_handler=None)
 
     result = ask_question(ctx, question="What do you prefer?", options=["A", "B", "C"])
 
@@ -28,7 +28,7 @@ def test_ask_question_returns_question_asked_with_options() -> None:
 def test_ask_question_rejects_empty_options() -> None:
     """ask_question returns rejected_invalid when options is empty."""
     ctx = MagicMock()
-    ctx.deps = TurnDeps(writes_approved=[], seen_intent_ids=set(), memory_search_handler=None)
+    ctx.deps = TurnDeps(memory_search_handler=None)
 
     result = ask_question(ctx, question="Choose?", options=[])
 
@@ -39,7 +39,7 @@ def test_ask_question_rejects_empty_options() -> None:
 def test_ask_question_rejects_allow_multiple() -> None:
     """ask_question returns rejected_invalid when allow_multiple is True."""
     ctx = MagicMock()
-    ctx.deps = TurnDeps(writes_approved=[], seen_intent_ids=set(), memory_search_handler=None)
+    ctx.deps = TurnDeps(memory_search_handler=None)
 
     result = ask_question(ctx, question="Pick?", options=["X", "Y"], allow_multiple=True)
 

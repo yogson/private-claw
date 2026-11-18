@@ -23,7 +23,12 @@ from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap_with_catalog
 from assistant.core.capabilities import ClaudeCodeSettingsSync, SubagentMcpServersSync
 from assistant.core.capabilities.resolver import resolve_policy
-from assistant.core.orchestrator.confirmation import MemoryConfirmationService
+from assistant.core.confirmation import (
+    ConfirmationHandlerRegistry,
+    ConfirmationService,
+    MemoryUpdateHandler,
+    SessionConfirmationRecorder,
+)
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.core.session import SessionContextFactory
 from assistant.core.session_context import (
@@ -96,7 +101,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ) from None
         memory_writer = Mem0MemoryWriteService(runtime_config.memory, data_root=data_root)
         memory_retrieval = Mem0RetrievalService(runtime_config.memory)
-        memory_confirmations = MemoryConfirmationService(store.sessions, memory_writer)
+        confirmations = ConfirmationService(
+            handlers=ConfirmationHandlerRegistry([MemoryUpdateHandler(memory_writer)]),
+            recorder=SessionConfirmationRecorder(store.sessions),
+            ttl_seconds=runtime_config.app.confirmation_ttl_seconds,
+        )
         attachment_downloader = TelegramFileDownloader(
             bot_token=runtime_config.telegram.bot_token,
             max_size_bytes=runtime_config.telegram.max_attachment_size_bytes,
@@ -174,16 +183,16 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             config=runtime_config,
             idempotency=idempotency,
             attachment_downloader=attachment_downloader,
-            memory_writer=memory_writer,
             memory_retrieval=memory_retrieval,
             delegation_coordinator=delegation_coordinator,
             adapter_cache=adapter_cache,
             session_factory=session_factory,
             vocabulary_store=vocabulary_store,
             capability_catalog=capability_catalog,
+            confirmation_service=confirmations,
         )
         delegation_coordinator.set_completion_callback(
-            _build_delegation_feedback_handler(orchestrator, adapter)
+            _build_delegation_feedback_handler(orchestrator, adapter, confirmations)
         )
         delegation_coordinator.set_question_relay_callback(_build_question_relay_handler(adapter))
 
@@ -200,7 +209,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             adapter,
             orchestrator,
             delegation_coordinator,
-            memory_confirmations,
+            confirmations,
             usage_service=usage_service,
             cancellation_registry=cancellation_registry,
             verbose_state=verbose_state,

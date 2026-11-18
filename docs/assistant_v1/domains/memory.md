@@ -151,10 +151,10 @@ Required intake behavior:
 - Emit per-intent audit result with final status and affected `memory_id`.
 - Reject duplicate terminal `intent_id` as idempotent no-op.
 - Assume orchestrator already enforced confirmation/policy; Memory domain remains write-application focused.
-- Confirmation lifecycle semantics:
-  - pending intents are represented as `pending_confirmation` in orchestrator/session audit records,
-  - Memory domain applies writes only after explicit approve action,
-  - rejected user decisions are recorded as `rejected_by_user` without invoking MemoryWriteService.
+- Confirmation lifecycle semantics (owned by the Agent domain, see `domains/agent.md` "User Confirmations"):
+  - Memory domain applies writes only after an explicit Approve button press,
+  - rejected or expired confirmations never invoke the memory writer,
+  - the writer's `WriteAudit.status` is reported back verbatim; non-applied statuses surface as a failed confirmation.
 
 ## Outputs
 

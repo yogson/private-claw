@@ -29,8 +29,6 @@ def store(vocabulary_dir: Path) -> VocabularyStore:
 def _make_ctx(store: VocabularyStore, user_id: str = "user-1") -> MagicMock:
     ctx = MagicMock()
     ctx.deps = TurnDeps(
-        writes_approved=[],
-        seen_intent_ids=set(),
         user_id=user_id,
         vocabulary_store=store,
     )
@@ -156,7 +154,7 @@ class TestStartExercise:
     @pytest.mark.asyncio
     async def test_unavailable_without_store(self) -> None:
         ctx = MagicMock()
-        ctx.deps = TurnDeps(writes_approved=[], seen_intent_ids=set())
+        ctx.deps = TurnDeps()
         result = await start_exercise(ctx)
         assert result["status"] == "unavailable"
 
