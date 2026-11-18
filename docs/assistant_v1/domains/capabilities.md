@@ -86,13 +86,16 @@ Capability definition schema (`config/capabilities/*.yaml`):
 - `nested_capabilities`: capability ids activated together with this one (must be known ids).
 - `mcp_servers`: ids from `config/mcp_servers.yaml` whose tools this capability grants.
 - `claude_code_settings`: `permissions` (`allow` / `deny`) and `mcp_servers` for Claude Code sub-agents.
-- Discovery: load all `*.yaml` / `*.yml` under `config/capabilities/` except `index.yaml`; duplicate `capability_id` is a startup error.
+- Discovery: load all `*.yaml` / `*.yml` under `config/capabilities/` except `index.yaml` and hidden names (`._x.yaml` AppleDouble files, `.#x.yaml` editor locks, dot-prefixed temp files); backup/swap files such as `x.yaml~` or `.x.yaml.swp` never match. Duplicate `capability_id` is a startup error.
 - **Strict schema**: unknown keys are validation errors on the manifest and on every nested
   block (`tools[]`, `params_override`, `tool_overrides`, `claude_code_settings`,
   `permissions`), e.g. `[a.yaml] nested_capabilites: extra fields not permitted`. A typo
   can no longer be dropped silently. At startup this fails fast; on a live reload the
   catalog keeps the last-known-good snapshot (see below). Parsed definitions are frozen
-  (immutable) pydantic models shared by snapshots, turns and adapters.
+  pydantic models shared by snapshots, turns and adapters: their fields cannot be
+  reassigned, but the freeze is shallow (lists and dicts such as `tools`,
+  `tool_overrides` or `claude_code_settings.mcp_servers` are not deep-frozen), so
+  consumers treat them as read-only and copy before modifying.
 
 ## Tool Status and Params Merge Rules
 
@@ -184,11 +187,19 @@ API:
   `st_mtime_ns`, `st_size`; at most once per second) and returns the current snapshot when
   nothing changed — no parsing. Otherwise it re-reads only files whose stat changed and
   re-parses only files whose content hash changed; a touch-only change does not bump the
-  revision.
+  revision. Two kinds of files are re-read even when their stat is unchanged:
+  - *racily clean* files (Git's rule): a file whose mtime is within 2 s of the moment it
+    was read could be rewritten in the same mtime tick with the same size (coarse-mtime
+    filesystems, scripted edits), so it is re-hashed on every refresh until its mtime is
+    older than the read;
+  - unreadable files (e.g. `chmod 000`, EIO): the read error is never cached, so fixing
+    the cause (permissions, a remount) is picked up on the next refresh without touching
+    the file.
 - `reload(reason)`: re-reads every file regardless of stat (e.g. right after an approved
   write), still bumping the revision only if content changed.
-- `subscribe(callback)`: called after every swap to a new revision (subscriber errors are
-  logged, never raised).
+- `subscribe(callback)`: called after every swap to a new revision, after the catalog lock
+  is released (a subscriber may call `refresh()`/`reload()`); each revision is delivered at
+  most once and never after a newer one. Subscriber errors are logged, never raised.
 
 Change detection is polling at turn start; there is no background watcher, because
 nothing consumes the snapshot between turns. Editors, `git pull`, sub-agents and future
@@ -204,17 +215,27 @@ Validation and last-known-good (LKG):
   revision, same definitions) stays current and the issues are recorded in
   `snapshot.errors`. There is no partial per-file merge. A new broken file is therefore
   excluded, and a broken edit of an existing file keeps its previous definition.
-- A half-written file simply fails to parse and is retried on the next turn; the fix (or
-  reverting to the LKG content) clears the errors.
+- A half-written file usually fails to parse and is retried on the next turn; the fix (or
+  reverting to the LKG content) clears the errors. This is **not** a guarantee: a write
+  cut at a line boundary can still be valid YAML and pass the schema (e.g. a `tools` list
+  cut short), and is then accepted as a new revision until the rest of the write lands
+  (its mtime changes, so the next refresh picks up the complete file). The real
+  protection is an atomic write: editors that save via temp file + rename, and the #54
+  writer, which must write a temp file whose name is not a manifest name (see
+  `is_capability_manifest_name`) and `os.replace` it.
 - Deleting a manifest removes the capability. If it is enabled in policy, the reload still
   succeeds with a non-blocking warning, and the resolver ignores the missing id. At startup
   an enabled capability without a manifest is still a fatal error.
 - Startup is unchanged and fail-fast: `bootstrap_with_catalog()` builds the catalog, and
   any blocking issue at the initial load aborts startup.
-- Surfacing: one structured `capabilities.reload_failed` warning per distinct error (with
-  `file`, `error`, `lkg_revision`), `capabilities.reload_recovered` once fixed, and a
-  warning block in the Telegram `/capabilities` picker listing the errors and the revision
-  still in use. There is no proactive Telegram notification.
+- Surfacing: one structured `capabilities.reload_failed` warning when a distinct error
+  first appears (with `file`, `error`, `lkg_revision`; a failure of the scan itself also
+  carries the traceback), not on every refresh while it persists. An error that clears and
+  later comes back is logged again. `capabilities.reload_recovered` is logged once the
+  reload succeeds again. The Telegram `/capabilities` picker shows a warning block with the
+  revision still in use and, per error, only its first line and line/column (PyYAML puts
+  the offending source line after the first line, and it may hold secrets); the full
+  message is in the log. There is no proactive Telegram notification.
 
 One snapshot per turn: the orchestrator calls `refresh()` once and passes that snapshot to
 the tool-mismatch check, `TurnAdapterCache.get_or_build(config, snapshot)` (system prompt +
@@ -239,7 +260,15 @@ Derived state follows revisions:
 - `~/.claude/settings.json` is re-applied only when a revision changes the
   `claude_code_settings` of the default policy's active capabilities
   (`ClaudeCodeSettingsSync`). The merge semantics are unchanged: if no active capability
-  defines settings any more, the file is left as it is.
+  defines settings any more, the file is left as it is. The writer
+  (`core/capabilities/claude_settings_file.py`) only owns `permissions.allow`,
+  `permissions.deny` and `mcpServers` and preserves every other key. If the existing file
+  is unreadable, not valid JSON or not a JSON object, it is left untouched and
+  `capabilities.claude_code_settings.skipped` is logged; the next revision retries. Writes
+  are atomic (temp file in the same directory + `os.replace`), keep the file mode (a new
+  file gets `0600`), follow a symlinked `settings.json` to its target, and are skipped
+  when the merged content is already on disk. `allow`/`deny` are still replaced as a whole,
+  so entries added there by hand are dropped on the next apply.
 
 Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
 `mcp_servers.yaml` and the other config domains.
