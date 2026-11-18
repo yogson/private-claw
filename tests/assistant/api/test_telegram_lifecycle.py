@@ -24,6 +24,11 @@ from assistant.core.config.schemas import (
 )
 from assistant.core.events.models import EventSource, EventType
 from assistant.store.models import TaskRecord, TaskStatus
+from tests.assistant.capability_helpers import StaticCatalog, snapshot_of
+
+
+def _catalog() -> StaticCatalog:
+    return StaticCatalog(snapshot_of({}))
 
 
 def _runtime_config(allowlist: list[int]) -> RuntimeConfig:
@@ -55,7 +60,7 @@ def test_startup_calls_build_transcription_service_with_telegram_config() -> Non
     config = _runtime_config(allowlist=[123456])
     mock_mem0_client = MagicMock()
     with (
-        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.bootstrap_with_catalog", return_value=(config, _catalog())),
         patch("assistant.api.lifespan.build_transcription_service") as mock_factory,
         patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock) as mock_polling,
         patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
@@ -76,7 +81,7 @@ def test_startup_starts_polling_when_telegram_enabled() -> None:
     config = _runtime_config(allowlist=[123456])
     mock_mem0_client = MagicMock()
     with (
-        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.bootstrap_with_catalog", return_value=(config, _catalog())),
         patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock) as mock_polling,
         patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
         patch("assistant.memory.mem0.write.MemoryClient", mock_mem0_client),
@@ -100,7 +105,7 @@ def test_startup_skips_telegram_when_disabled() -> None:
         update={"telegram": config.telegram.model_copy(update={"enabled": False})}
     )
     with (
-        patch("assistant.api.lifespan.bootstrap", return_value=config),
+        patch("assistant.api.lifespan.bootstrap_with_catalog", return_value=(config, _catalog())),
         patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock) as mock_polling,
     ):
         from assistant.api.main import app

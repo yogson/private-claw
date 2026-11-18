@@ -7,6 +7,7 @@ import hmac as _hmac_module
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,8 +25,10 @@ from assistant.channels.telegram.models import (
     MessageType,
     NormalizedEvent,
 )
+from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import TelegramChannelConfig
+from tests.assistant.capability_helpers import StaticCatalog, snapshot_of
 
 _SECRET = "test-hmac-secret"
 _CHAT_ID = 123456
@@ -35,6 +38,7 @@ _CAP_DEFS: dict[str, CapabilityDefinition] = {
     "web_search": CapabilityDefinition(capability_id="web_search", prompt="Search the web."),
     "shell_execute": CapabilityDefinition(capability_id="shell_execute", prompt="Run shell."),
 }
+_CATALOG = StaticCatalog(snapshot_of(_CAP_DEFS))
 
 
 def _make_event(text: str | None = None, callback_data: str | None = None) -> NormalizedEvent:
@@ -103,7 +107,7 @@ class TestCapabilitySelectCallbacks:
 
 class TestCapabilitySelectService:
     def test_build_capabilities_menu_empty_defs(self) -> None:
-        svc = CapabilitySelectService(capability_definitions={}, hmac_secret=_SECRET)
+        svc = CapabilitySelectService(StaticCatalog(snapshot_of({})), hmac_secret=_SECRET)
         resp = svc.build_capabilities_menu(
             current_session_id="tg:1",
             chat_id=_CHAT_ID,
@@ -114,7 +118,7 @@ class TestCapabilitySelectService:
         assert "No capabilities available" in resp.text
 
     def test_build_capabilities_menu_returns_interactive(self) -> None:
-        svc = CapabilitySelectService(capability_definitions=_CAP_DEFS, hmac_secret=_SECRET)
+        svc = CapabilitySelectService(_CATALOG, hmac_secret=_SECRET)
         resp = svc.build_capabilities_menu(
             current_session_id="tg:1",
             chat_id=_CHAT_ID,
@@ -126,7 +130,7 @@ class TestCapabilitySelectService:
         assert len(resp.actions) == len(_CAP_DEFS)
 
     def test_enabled_capability_marked_with_checkmark(self) -> None:
-        svc = CapabilitySelectService(capability_definitions=_CAP_DEFS, hmac_secret=_SECRET)
+        svc = CapabilitySelectService(_CATALOG, hmac_secret=_SECRET)
         resp = svc.build_capabilities_menu(
             current_session_id="tg:1",
             chat_id=_CHAT_ID,
@@ -139,16 +143,51 @@ class TestCapabilitySelectService:
         assert "web_search" in marked[0].label
 
     def test_verify_callback_valid(self) -> None:
-        svc = CapabilitySelectService(capability_definitions=_CAP_DEFS, hmac_secret=_SECRET)
+        svc = CapabilitySelectService(_CATALOG, hmac_secret=_SECRET)
         signed = svc.sign_callback("shell_execute", _CHAT_ID)
         result = svc.verify_callback(signed, _CHAT_ID)
         assert result == "shell_execute"
 
     def test_verify_callback_wrong_chat(self) -> None:
-        svc = CapabilitySelectService(capability_definitions=_CAP_DEFS, hmac_secret=_SECRET)
+        svc = CapabilitySelectService(_CATALOG, hmac_secret=_SECRET)
         signed = svc.sign_callback("shell_execute", _CHAT_ID)
         result = svc.verify_callback(signed, 999999)
         assert result is None
+
+
+class TestCapabilityMenuFollowsCatalog:
+    def _write(self, tmp_path: Path, name: str, body: str) -> None:
+        caps = tmp_path / "capabilities"
+        caps.mkdir(exist_ok=True)
+        (caps / name).write_text(body)
+
+    def _menu(self, svc: CapabilitySelectService) -> str:
+        return svc.build_capabilities_menu(
+            current_session_id="tg:1", chat_id=_CHAT_ID, trace_id="t", enabled_capabilities=[]
+        ).text
+
+    def test_capability_added_on_disk_appears_after_refresh(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\n")
+        svc = CapabilitySelectService(
+            CapabilityCatalog(tmp_path, min_refresh_interval=0), hmac_secret=_SECRET
+        )
+        assert "beta" not in self._menu(svc)
+        self._write(tmp_path, "b.yaml", "capability_id: beta\n")
+        text = self._menu(svc)
+        assert "`alpha`" in text and "`beta`" in text
+
+    def test_broken_manifest_shows_warning_and_keeps_list(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\n")
+        svc = CapabilitySelectService(
+            CapabilityCatalog(tmp_path, min_refresh_interval=0), hmac_secret=_SECRET
+        )
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\nbogus_key: 1\n")
+        text = self._menu(svc)
+        assert "⚠️" in text and "still using revision 1" in text
+        assert "bogus_key: extra fields not permitted" in text
+        assert "`alpha`" in text
+        self._write(tmp_path, "a.yaml", "capability_id: alpha\nprompt: fixed\n")
+        assert "⚠️" not in self._menu(svc)
 
 
 class TestAdapterCapabilitySelect:
@@ -164,7 +203,7 @@ class TestAdapterCapabilitySelect:
             session_store=MagicMock(),
             model_allowlist=["claude-sonnet-4-5"],
             default_model_id="claude-sonnet-4-5",
-            capability_definitions=_CAP_DEFS,
+            capability_catalog=_CATALOG,
             default_capabilities=["web_search"],
         )
 
@@ -180,7 +219,7 @@ class TestAdapterCapabilitySelect:
             allowlist=[_CHAT_ID],
             session_resume_hmac_secret=_SECRET,
         )
-        adapter = TelegramAdapter(config, capability_definitions=None)
+        adapter = TelegramAdapter(config, capability_catalog=None)
         event = _make_event(text="/capabilities")
         assert adapter.is_capabilities_request(event) is False
 
