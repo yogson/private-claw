@@ -24,6 +24,8 @@ from assistant.core.capabilities.schemas import (
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from tests.assistant.capability_helpers import snapshot_of
 
+SYNC_MODULE = "assistant.core.capabilities.claude_code_settings"
+
 
 @pytest.fixture(autouse=True)
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -205,12 +207,12 @@ def test_settings_sync_rewrites_only_when_claude_code_settings_change(tmp_path: 
         )
 
     sync = ClaudeCodeSettingsSync(
-        _snap(1, ["Read"]),
-        resolve_active=lambda snapshot: ["a"],
-        settings_path=settings_path,
+        resolve_active=lambda snapshot: ["a"], settings_path=settings_path
     )
-    sync(_snap(2, ["Read"], prompt="prompt-only change"))
-    assert not settings_path.exists()
+    assert sync.apply(_snap(1, ["Read"]))  # startup apply
+    with patch(f"{SYNC_MODULE}.apply_claude_code_settings") as apply:
+        sync(_snap(2, ["Read"], prompt="prompt-only change"))
+    apply.assert_not_called()
     sync(_snap(3, ["Read", "Bash(git:*)"]))
     assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read", "Bash(git:*)"]
 
@@ -343,13 +345,12 @@ def test_read_only_claude_dir_is_skipped(tmp_home: Path) -> None:
 def test_settings_sync_survives_and_retries_a_failed_write(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     sync = ClaudeCodeSettingsSync(
-        snapshot_of(_defs(["Read"]), revision=1),
-        resolve_active=lambda snapshot: ["a"],
-        settings_path=settings_path,
+        resolve_active=lambda snapshot: ["a"], settings_path=settings_path
     )
+    assert sync.apply(snapshot_of(_defs(["Read"]), revision=1))
     with patch("os.replace", side_effect=OSError(errno.ENOSPC, "No space left on device")):
-        sync(snapshot_of(_defs(["Read", "Bash"]), revision=2))  # never raises
-    assert not settings_path.exists()
+        assert not sync.apply(snapshot_of(_defs(["Read", "Bash"]), revision=2))  # never raises
+    assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read"]
     sync(snapshot_of(_defs(["Read", "Bash"]), revision=3))  # same settings: retried
     assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read", "Bash"]
 
@@ -377,12 +378,43 @@ def test_settings_sync_retries_after_a_skipped_apply(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text("{broken")
     sync = ClaudeCodeSettingsSync(
-        snapshot_of(_defs(["Read"]), revision=1),
-        resolve_active=lambda snapshot: ["a"],
-        settings_path=settings_path,
+        resolve_active=lambda snapshot: ["a"], settings_path=settings_path
     )
-    sync(snapshot_of(_defs(["Read", "Bash"]), revision=2))
+    assert sync.apply(snapshot_of(_defs(["Read"]), revision=1)) is False
+    assert not sync.apply(snapshot_of(_defs(["Read", "Bash"]), revision=2))
     assert settings_path.read_text() == "{broken"
     settings_path.write_text("{}")  # owner fixes the file
     sync(snapshot_of(_defs(["Read", "Bash"]), revision=3))
     assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read", "Bash"]
+
+
+def test_skipped_startup_apply_is_retried_with_unchanged_settings(tmp_path: Path) -> None:
+    """A write skipped at startup is not recorded as applied (review N-d on #56)."""
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text("{broken")
+    sync = ClaudeCodeSettingsSync(
+        resolve_active=lambda snapshot: ["a"], settings_path=settings_path
+    )
+    with capture_logs() as logs:
+        assert not sync.apply(snapshot_of(_defs(["Read"]), revision=1))  # startup: skipped
+        settings_path.write_text('{"model": "opus"}')  # owner fixes the file
+        # A revision that leaves claude_code_settings unchanged still retries the write.
+        sync(snapshot_of(_defs(["Read"]), revision=2))
+    assert json.loads(settings_path.read_text()) == {
+        "model": "opus",
+        "permissions": {"allow": ["Read"], "deny": []},
+    }
+    events = [e["event"] for e in logs]
+    assert events == [
+        "capabilities.claude_code_settings.skipped",
+        "capabilities.claude_code_settings.applied",
+    ]
+
+
+def test_startup_without_claude_code_settings_writes_and_logs_nothing(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    sync = ClaudeCodeSettingsSync(resolve_active=lambda snapshot: [], settings_path=settings_path)
+    with capture_logs() as logs:
+        assert sync.apply(snapshot_of(_defs(["Read"])))
+    assert logs == []
+    assert not settings_path.exists()

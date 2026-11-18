@@ -147,39 +147,57 @@ def _settings_fingerprint(
     return json.dumps(payload, sort_keys=True)
 
 
-class ClaudeCodeSettingsSync:
-    """Re-apply :func:`apply_claude_code_settings` when a revision changes the inputs.
+_NO_SETTINGS = _settings_fingerprint({}, [])
 
-    Registered as a catalog subscriber. It tracks the ``claude_code_settings`` of the
-    active capabilities (resolved by the caller-supplied ``resolve_active`` callback) and
-    writes ``settings.json`` only when they differ from what was applied last, so revisions
-    that touch only prompts or tools never rewrite the file.
+
+class ClaudeCodeSettingsSync:
+    """Apply :func:`apply_claude_code_settings` at startup and on revisions that change it.
+
+    The app calls :meth:`apply` once with the initial snapshot and then registers the sync
+    as a catalog subscriber. It tracks the ``claude_code_settings`` of the active
+    capabilities (resolved by the caller-supplied ``resolve_active`` callback) and writes
+    ``settings.json`` only when they differ from what was last applied successfully, so
+    revisions that touch only prompts or tools never rewrite the file. An apply that was
+    skipped (unusable or unwritable ``settings.json``) is not recorded, so the next
+    revision retries it.
     """
 
     def __init__(
         self,
-        initial: CapabilitySnapshot,
         resolve_active: Callable[[CapabilitySnapshot], list[str]],
         settings_path: Path | None = None,
     ) -> None:
         self._resolve_active = resolve_active
         self._settings_path = settings_path
-        self._applied = _settings_fingerprint(initial.definitions, resolve_active(initial))
+        self._applied: str | None = None  # fingerprint of the last successful apply
 
     def __call__(self, snapshot: CapabilitySnapshot) -> None:
-        """Apply the settings of ``snapshot`` if they changed since the last apply."""
+        """Catalog subscriber: :meth:`apply` the settings of a new revision."""
+        self.apply(snapshot)
+
+    def apply(self, snapshot: CapabilitySnapshot) -> bool:
+        """Apply the settings of ``snapshot`` if they changed since the last successful apply.
+
+        Returns ``False`` when the apply was skipped (logged; retried on the next call).
+        """
         active = self._resolve_active(snapshot)
         fingerprint = _settings_fingerprint(snapshot.definitions, active)
         if fingerprint == self._applied:
-            return
+            return True
         if not apply_claude_code_settings(snapshot.definitions, active, self._settings_path):
-            return  # skipped (unusable settings.json): retried with the next revision
+            return False  # skipped and logged: retried with the next revision
+        first = self._applied is None
         self._applied = fingerprint
+        if first and fingerprint == _NO_SETTINGS:
+            return True  # startup without any claude_code_settings: nothing was written
         logger.info(
-            "capabilities.claude_code_settings.reapplied",
+            "capabilities.claude_code_settings.applied"
+            if first
+            else "capabilities.claude_code_settings.reapplied",
             revision=snapshot.revision,
             active_capabilities=active,
         )
+        return True
 
 
 class McpServersTarget(Protocol):

@@ -61,14 +61,14 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.capability_catalog = capability_catalog
     default_policy = runtime_config.capabilities
-    # ~/.claude/settings.json follows revisions that change the active capabilities'
-    # claude_code_settings (bootstrap applied revision 1).
-    capability_catalog.subscribe(
-        ClaudeCodeSettingsSync(
-            capability_catalog.current(),
-            resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
-        )
+    # ~/.claude/settings.json gets revision 1 now and then follows revisions that change the
+    # active capabilities' claude_code_settings. A skipped write (unusable or unwritable
+    # file) never aborts startup and is retried with the next revision.
+    settings_sync = ClaudeCodeSettingsSync(
+        resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
     )
+    settings_sync.apply(capability_catalog.current())
+    capability_catalog.subscribe(settings_sync)
 
     store: StoreFacade | None = None
     polling_task: asyncio.Task[None] | None = None

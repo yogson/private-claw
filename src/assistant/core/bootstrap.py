@@ -12,7 +12,6 @@ import structlog
 
 from assistant.agent.tools.registry import _resolve_entrypoint
 from assistant.core.capabilities.catalog import CapabilityCatalog
-from assistant.core.capabilities.claude_code_settings import apply_claude_code_settings
 from assistant.core.capabilities.loader import CapabilityLoadError
 from assistant.core.capabilities.resolver import (
     find_missing_capabilities,
@@ -116,7 +115,8 @@ def bootstrap_with_catalog(
     )
     _validate_mcp_capabilities(runtime_config, definitions, active)
     _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)
-    apply_claude_code_settings(definitions, active)
+    # ~/.claude/settings.json is applied by ClaudeCodeSettingsSync (api/lifespan.py), which
+    # records whether the write succeeded so a skipped write is retried.
 
     return runtime_config, catalog
 

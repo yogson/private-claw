@@ -262,9 +262,11 @@ Derived state follows revisions:
 - Sub-agent MCP servers (`claude_code_settings.mcp_servers` of the default policy's active
   set) are recomputed and handed to both Claude Code backends on every new revision
   (`SubagentMcpServersSync`); tasks already running keep their servers.
-- `~/.claude/settings.json` is re-applied only when a revision changes the
-  `claude_code_settings` of the default policy's active capabilities
-  (`ClaudeCodeSettingsSync`). The merge semantics are unchanged: if no active capability
+- `~/.claude/settings.json` is applied once at startup and then re-applied only when a
+  revision changes the `claude_code_settings` of the default policy's active capabilities
+  (`ClaudeCodeSettingsSync`, created in `api/lifespan.py`). The sync records only a
+  successful apply, so a write skipped at startup or later is retried with the next
+  revision even if that revision leaves `claude_code_settings` unchanged. The merge semantics are unchanged: if no active capability
   defines settings any more, the file is left as it is. The writer
   (`core/capabilities/claude_settings_file.py`) only owns `permissions.allow`,
   `permissions.deny` and `mcpServers` and preserves every other key. If the existing file
