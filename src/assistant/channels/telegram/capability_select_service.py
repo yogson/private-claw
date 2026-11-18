@@ -8,6 +8,7 @@ The list is read from the capability catalog on every render, so manifests added
 removed or broken on disk show up without a restart.
 """
 
+import re
 import uuid
 
 from assistant.channels.telegram.capability_select_callbacks import (
@@ -21,6 +22,7 @@ from assistant.core.capabilities.snapshot import CapabilitySnapshot
 _BUTTON_LABEL_MAX = 64
 _MAX_ERRORS_SHOWN = 3
 _ERROR_MAX_CHARS = 200
+_LOCATION_RE = re.compile(r"line (\d+), column (\d+)")
 
 
 class CapabilitySelectService:
@@ -116,11 +118,22 @@ def _error_lines(snapshot: CapabilitySnapshot) -> list[str]:
         f"⚠️ Capability manifests have errors; still using revision {snapshot.revision}:",
     ]
     for issue in errors[:_MAX_ERRORS_SHOWN]:
-        message = issue.message
-        if len(message) > _ERROR_MAX_CHARS:
-            message = message[: _ERROR_MAX_CHARS - 1] + "…"
-        lines.append(f"• `{message.replace('`', "'")}`")
+        lines.append(f"• `{_display_message(issue.message)}`")
     if len(errors) > _MAX_ERRORS_SHOWN:
         lines.append(f"• …and {len(errors) - _MAX_ERRORS_SHOWN} more (see logs)")
     lines.append("")
     return lines
+
+
+def _display_message(message: str) -> str:
+    # The full message stays in the logs. PyYAML appends the offending source line(s) after
+    # the first line ("in <byte string>, line N, column M:" + snippet), which may hold
+    # secrets (e.g. MCP server env), so only the first line and the location are shown.
+    first, _, rest = message.partition("\n")
+    first = first.strip()
+    location = _LOCATION_RE.search(rest)
+    if location is not None and _LOCATION_RE.search(first) is None:
+        first += f" (line {location[1]}, column {location[2]})"
+    if len(first) > _ERROR_MAX_CHARS:
+        first = first[: _ERROR_MAX_CHARS - 1] + "…"
+    return first.replace("`", "'")
