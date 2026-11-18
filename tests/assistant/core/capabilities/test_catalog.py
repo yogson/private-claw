@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import threading
 import time
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -393,6 +394,24 @@ def test_read_error_recovers_once_permissions_are_fixed(
     events = [e["event"] for e in logs]
     assert events.count("capabilities.reload_failed") == 1
     assert events.count("capabilities.reload_recovered") == 1
+
+
+def test_subscriber_may_call_back_into_the_catalog(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    seen: list[int] = []
+
+    def reentrant(snapshot: CapabilitySnapshot) -> None:
+        seen.append(catalog.refresh().revision)
+        catalog.reload("from subscriber")
+
+    catalog.subscribe(reentrant)
+    _write(tmp_path, "a.yaml", _manifest("a", "v2"))
+    worker = threading.Thread(target=catalog.refresh, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "subscriber deadlocked on the catalog lock"
+    assert seen == [2]
 
 
 def test_scan_failure_is_logged_once_and_recovery_is_logged(

@@ -33,4 +33,8 @@ class CapabilityCatalogInterface(ABC):
 
     @abstractmethod
     def subscribe(self, callback: SnapshotSubscriber) -> None:
-        """Call ``callback(snapshot)`` after every successful swap to a new revision."""
+        """Call ``callback(snapshot)`` after every successful swap to a new revision.
+
+        Callbacks run after the catalog's lock is released, so they may call back into the
+        catalog; their exceptions are logged and never raised.
+        """

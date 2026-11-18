@@ -46,7 +46,9 @@ class CapabilityCatalog(CapabilityCatalogInterface):
     the built-in duplicate-id and nested-reference checks.
 
     Thread-safety: refresh/reload are serialized by a lock; readers get the current
-    snapshot through a single attribute read (atomic swap).
+    snapshot through a single attribute read (atomic swap). Subscribers are called after
+    the lock is released (so they may call ``refresh()``/``reload()`` themselves), each
+    new revision at most once and never after a newer revision.
     """
 
     def __init__(
@@ -63,6 +65,8 @@ class CapabilityCatalog(CapabilityCatalogInterface):
         self._min_refresh_interval = min_refresh_interval
         self._clock = clock
         self._lock = threading.Lock()
+        self._notify_lock = threading.Lock()
+        self._notified_revision = 1
         self._subscribers: list[SnapshotSubscriber] = []
         self._reported: frozenset[str] = frozenset()
         self._blocked = False
@@ -104,13 +108,17 @@ class CapabilityCatalog(CapabilityCatalogInterface):
             if now - self._last_check < self._min_refresh_interval:
                 return self._snapshot
             self._last_check = now
-            return self._guarded(force=False, reason="change_detected")
+            snapshot = self._guarded(force=False, reason="change_detected")
+        self._notify(snapshot)
+        return snapshot
 
     def reload(self, reason: str) -> CapabilitySnapshot:
         """Re-read every manifest regardless of the stat signature."""
         with self._lock:
             self._last_check = self._clock()
-            return self._guarded(force=True, reason=reason)
+            snapshot = self._guarded(force=True, reason=reason)
+        self._notify(snapshot)
+        return snapshot
 
     def subscribe(self, callback: SnapshotSubscriber) -> None:
         """Register ``callback`` for successful swaps to a new revision."""
@@ -167,8 +175,6 @@ class CapabilityCatalog(CapabilityCatalogInterface):
                 changed=_changed_ids(current.definitions, candidate.definitions),
             )
         self._report(self._snapshot)
-        if self._snapshot.revision != current.revision:
-            self._notify(self._snapshot)
         return self._snapshot
 
     def _report(self, snapshot: CapabilitySnapshot, exc_info: BaseException | None = None) -> None:
@@ -192,6 +198,11 @@ class CapabilityCatalog(CapabilityCatalogInterface):
         self._reported = messages
 
     def _notify(self, snapshot: CapabilitySnapshot) -> None:
+        # Called without self._lock held; the guard drops repeats and stale revisions.
+        with self._notify_lock:
+            if snapshot.revision <= self._notified_revision:
+                return
+            self._notified_revision = snapshot.revision
         for callback in list(self._subscribers):
             try:
                 callback(snapshot)
