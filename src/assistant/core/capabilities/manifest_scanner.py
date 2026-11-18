@@ -20,6 +20,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import structlog
+
 from assistant.core.capabilities.loader import (
     ManifestParseError,
     discover_capability_manifests,
@@ -28,6 +30,8 @@ from assistant.core.capabilities.loader import (
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilityLoadIssue, ManifestFileState
 from assistant.core.capabilities.validation import CapabilityValidator, validate_nested_references
+
+logger = structlog.get_logger(__name__)
 
 type ManifestParser = Callable[[str, bytes], CapabilityDefinition]
 type StatSignature = tuple[tuple[str, int, int], ...]
@@ -87,8 +91,11 @@ class ManifestScanner:
         for path in discover_capability_manifests(self._dir):
             try:
                 st = path.stat()
-            except OSError:
-                continue  # removed between listing and stat; the next refresh settles it
+            except OSError as exc:
+                # Removed between listing and stat (the next refresh settles it), or a
+                # dangling symlink: either way the file contributes no capability.
+                logger.debug("capabilities.manifest_skipped", file=path.name, error=str(exc))
+                continue
             entries.append((path, st.st_mtime_ns, st.st_size))
         signature = tuple((path.name, mtime_ns, size) for path, mtime_ns, size in entries)
         return signature, entries

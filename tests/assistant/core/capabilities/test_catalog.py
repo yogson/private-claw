@@ -437,3 +437,15 @@ def test_editor_temp_files_never_block_a_reload(catalog: CapabilityCatalog, tmp_
     snap = catalog.refresh()
     assert snap.revision == 2
     assert snap.errors == ()
+
+
+def test_dangling_symlink_is_skipped_with_a_debug_log(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    (tmp_path / "capabilities" / "c.yaml").symlink_to(tmp_path / "nowhere.yaml")
+    with capture_logs() as logs:
+        snap = catalog.refresh()
+    assert set(snap.definitions) == {"a", "b"}
+    assert snap.errors == ()
+    skipped = [e for e in logs if e["event"] == "capabilities.manifest_skipped"]
+    assert [(e["file"], e["log_level"]) for e in skipped] == [("c.yaml", "debug")]
