@@ -273,10 +273,10 @@ Derived state follows revisions:
   is unreadable, not valid JSON or not a JSON object, it is left untouched and
   `capabilities.claude_code_settings.skipped` is logged; the next revision retries. A write
   that fails (read-only `~/.claude` or target, full disk) is skipped the same way and is
-  never raised, so it cannot abort startup. Writes
-  are atomic (temp file in the same directory + `os.replace`), keep the file mode (a new
-  file gets `0600`), follow a symlinked `settings.json` to its target, and are skipped
-  when the merged content is already on disk. `allow`/`deny` are still replaced as a whole,
+  never raised, so it cannot abort startup. Writes are atomic (temp file in the same
+  directory + `os.replace`, then a best-effort fsync of the directory), keep the file mode
+  (a new file gets `0600`), follow a symlinked `settings.json` to its target, and are
+  skipped when the merged content is already on disk. `allow`/`deny` are still replaced as a whole,
   so entries added there by hand are dropped on the next apply.
 
 Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),

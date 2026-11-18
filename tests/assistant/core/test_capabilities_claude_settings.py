@@ -355,6 +355,44 @@ def test_settings_sync_survives_and_retries_a_failed_write(tmp_path: Path) -> No
     assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read", "Bash"]
 
 
+def _is_directory_fd(fd: int) -> bool:
+    return stat.S_ISDIR(os.fstat(fd).st_mode)
+
+
+def test_write_fsyncs_the_directory_after_the_rename(tmp_path: Path) -> None:
+    settings_path = tmp_path / "claude" / "settings.json"
+    synced: list[tuple[str, bool]] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd: int) -> None:
+        synced.append(("fsync", _is_directory_fd(fd)))
+        real_fsync(fd)
+
+    def replace(src: str, dst: Path) -> None:
+        synced.append(("replace", False))
+        real_replace(src, dst)
+
+    with patch("os.fsync", side_effect=fsync), patch("os.replace", side_effect=replace):
+        assert apply_claude_code_settings(_defs(["Read"]), ["a"], settings_path)
+    # File data first, then the rename, then the directory entry.
+    assert synced == [("fsync", False), ("replace", False), ("fsync", True)]
+
+
+def test_directory_fsync_failure_is_ignored(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        if _is_directory_fd(fd):
+            raise OSError(errno.EINVAL, "Invalid argument")  # e.g. unsupported on this FS
+        real_fsync(fd)
+
+    with patch("os.fsync", side_effect=fsync), capture_logs() as logs:
+        assert apply_claude_code_settings(_defs(["Read"]), ["a"], settings_path)
+    assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read"]
+    assert logs == []
+
+
 def test_symlinked_settings_file_stays_a_link(tmp_path: Path) -> None:
     target = tmp_path / "dotfiles" / "settings.json"
     target.parent.mkdir()

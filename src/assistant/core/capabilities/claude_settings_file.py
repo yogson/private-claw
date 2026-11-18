@@ -6,7 +6,8 @@ Safe read and atomic write of Claude Code's ``settings.json``.
 The file belongs to the owner and to Claude Code itself; this code only merges a few keys
 into it. Reads refuse anything that is not a JSON object (so a hand-edited or half-written
 file is never replaced by a stripped-down one), and writes go to a temp file in the same
-directory followed by ``os.replace``, so readers never see a torn file.
+directory followed by ``os.replace`` and a best-effort fsync of the directory, so readers
+never see a torn file and the rename survives a power loss where the platform allows it.
 """
 
 import contextlib
@@ -71,3 +72,22 @@ def write_settings_file(path: Path, data: dict[str, Any]) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
+    _fsync_directory(target.parent)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist the rename itself (best effort).
+
+    Without it a power loss can bring the old file back (never a torn one). Platforms or
+    filesystems that cannot open or fsync a directory (e.g. Windows) are ignored.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
