@@ -14,6 +14,8 @@ from assistant.core.confirmation.history import (
     ConfirmationRecorderInterface,
     SessionConfirmationRecorder,
     format_resolution_text,
+    is_confirmation_record,
+    neutralize_confirmation_marker,
 )
 from assistant.core.confirmation.memory_update import (
     MEMORY_BODY_MAX_CHARS,
@@ -58,5 +60,7 @@ __all__ = [
     "SessionConfirmationRecorder",
     "build_memory_update_draft",
     "format_resolution_text",
+    "is_confirmation_record",
     "memory_body_length_error",
+    "neutralize_confirmation_marker",
 ]

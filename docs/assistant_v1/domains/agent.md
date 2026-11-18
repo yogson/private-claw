@@ -148,6 +148,8 @@ Rules:
   synthetic turn (`turn_id = confirmation-<id>`, USER_MESSAGE + TURN_TERMINAL) with content
   `[[CONFIRMATION_RESOLVED]] {"confirmation_id","kind","status","summary","detail","origin_tool_call_id"}`.
   It is replayed and compacted like any other turn. No agent turn is triggered by a resolution.
+  Only these synthetic records keep the marker. In user-typed text (history and the current turn) it is rewritten to
+  `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user cannot forge an outcome.
 - The orchestrator returns the confirmations created during a turn in `OrchestratorResult.confirmations`; channel
   handlers must render each one (normal turns, delegation-feedback turns, and alongside ask_question / web-app
   responses). If a turn fails or a confirmation cannot be delivered, it is discarded (`failed`) so it cannot block

@@ -33,6 +33,7 @@ from assistant.core.confirmation import (
     ConfirmationRequest,
     ConfirmationRequestResult,
     ConfirmationService,
+    neutralize_confirmation_marker,
 )
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -660,7 +661,7 @@ class Orchestrator:
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         compaction_notifier: Callable[[], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
-        user_text = extract_user_text(event)
+        user_text = neutralize_confirmation_marker(extract_user_text(event))
         attachments = gather_attachments(event)
         attachment_context = format_attachment_context(attachments)
         user_content = (user_text + attachment_context).strip() or _PLACEHOLDER_EMPTY
@@ -670,6 +671,8 @@ class Orchestrator:
         trace_id = event.trace_id
 
         raw_text = extract_raw_text_for_multimodal(event)
+        if raw_text:
+            raw_text = neutralize_confirmation_marker(raw_text)
         content_blocks = await build_user_content_blocks(
             raw_text, attachments, self._attachment_downloader, trace_id
         )

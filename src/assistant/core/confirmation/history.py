@@ -24,6 +24,18 @@ from assistant.store.models import (
 
 CONFIRMATION_RESOLVED_MARKER = "[[CONFIRMATION_RESOLVED]]"
 CONFIRMATION_TURN_PREFIX = "confirmation-"
+# What the marker becomes in user-typed text, so a user cannot forge a resolution.
+_NEUTRALIZED_MARKER = "[[user-typed: CONFIRMATION_RESOLVED]]"
+
+
+def is_confirmation_record(record: SessionRecord) -> bool:
+    """True for the synthetic resolution records written by SessionConfirmationRecorder."""
+    return record.turn_id.startswith(CONFIRMATION_TURN_PREFIX) and record.event_id == record.turn_id
+
+
+def neutralize_confirmation_marker(text: str) -> str:
+    """Defuse the resolution marker in text that did not come from the recorder."""
+    return text.replace(CONFIRMATION_RESOLVED_MARKER, _NEUTRALIZED_MARKER)
 
 
 class ConfirmationRecorderInterface(Protocol):

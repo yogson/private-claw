@@ -13,6 +13,10 @@ import structlog
 
 from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.agent.interfaces import LLMMessage, MessageRole
+from assistant.core.confirmation.history import (
+    is_confirmation_record,
+    neutralize_confirmation_marker,
+)
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.memory.retrieval.models import RetrievalResult
@@ -322,6 +326,9 @@ def records_to_messages(records: list[SessionRecord]) -> list[LLMMessage]:
         record = records[i]
         if record.record_type == SessionRecordType.USER_MESSAGE:
             content = record.payload.get("content", "")
+            if content and not is_confirmation_record(record):
+                # Only the recorder's synthetic turn may carry a resolution marker.
+                content = neutralize_confirmation_marker(content)
             if content:
                 messages.append(LLMMessage(role=MessageRole.USER, content=content))
             i += 1
