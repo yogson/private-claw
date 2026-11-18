@@ -8,9 +8,9 @@ import yaml
 from assistant.core.capabilities.loader import (
     CapabilityLoadError,
     discover_capability_manifests,
-    expand_nested_capabilities,
     load_capability_definitions,
 )
+from assistant.core.capabilities.resolver import expand_nested_capabilities
 from assistant.core.capabilities.schemas import CapabilityDefinition
 
 
@@ -247,3 +247,30 @@ def test_expand_preserves_order() -> None:
     }
     result = expand_nested_capabilities(["a", "d"], defs)
     assert result == ["a", "b", "c", "d"]
+
+
+def test_load_unknown_key_fails_with_clear_message(tmp_path: Path) -> None:
+    """Bug 4: unknown manifest keys are validation errors, not silently dropped."""
+    caps_dir = tmp_path / "capabilities"
+    caps_dir.mkdir()
+    (caps_dir / "a.yaml").write_text("capability_id: a\nnested_capabilites: [b]\n")
+    with pytest.raises(
+        CapabilityLoadError, match=r"\[a\.yaml\] nested_capabilites: extra fields not permitted"
+    ):
+        load_capability_definitions(config_dir=tmp_path)
+
+
+def test_load_unknown_nested_key_fails(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    caps_dir.mkdir()
+    (caps_dir / "a.yaml").write_text(
+        "capability_id: a\ntools:\n  - tool_id: t\n    enabeld: false\n"
+    )
+    with pytest.raises(CapabilityLoadError, match=r"tools\.0\.enabeld: extra fields not permitted"):
+        load_capability_definitions(config_dir=tmp_path)
+
+
+@pytest.mark.parametrize("config_name", ["config"])
+def test_tracked_manifests_pass_strict_schema(config_name: str) -> None:
+    root = Path(__file__).resolve().parents[4] / config_name
+    assert load_capability_definitions(config_dir=root)

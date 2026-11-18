@@ -6,9 +6,14 @@ Pydantic schemas for capability manifests (config/capabilities/*.yaml).
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant.core.config.schemas import CommandAllowlistEntry
+
+# Manifests are strict (unknown keys are validation errors, so a typo such as
+# ``nested_capabilites:`` fails loudly instead of being dropped) and immutable: the
+# catalog shares one parsed instance across snapshots, turns and adapters.
+_MANIFEST_MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True)
 
 
 def _coerce_command_allowlist(v: object) -> list[CommandAllowlistEntry]:
@@ -32,6 +37,8 @@ def _coerce_command_allowlist(v: object) -> list[CommandAllowlistEntry]:
 
 class CapabilityToolOverride(BaseModel):
     """Per-tool param overrides within a capability."""
+
+    model_config = _MANIFEST_MODEL_CONFIG
 
     shell_readonly_commands: list[str] | None = None
     command_allowlist: list[CommandAllowlistEntry] | None = None
@@ -63,6 +70,8 @@ class CapabilityToolOverride(BaseModel):
 class CapabilityToolBinding(BaseModel):
     """Tool binding within a capability manifest."""
 
+    model_config = _MANIFEST_MODEL_CONFIG
+
     tool_id: str
     enabled: bool = True
     params_override: CapabilityToolOverride | None = None
@@ -71,12 +80,16 @@ class CapabilityToolBinding(BaseModel):
 class ClaudeCodePermissions(BaseModel):
     """Permissions block for ~/.claude/settings.json."""
 
+    model_config = _MANIFEST_MODEL_CONFIG
+
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
 
 
 class ClaudeCodeSettings(BaseModel):
     """Settings to merge into ~/.claude/settings.json when capability is activated."""
+
+    model_config = _MANIFEST_MODEL_CONFIG
 
     permissions: ClaudeCodePermissions = Field(default_factory=ClaudeCodePermissions)
     # Merged into settings.json as top-level "mcpServers" (Claude Code key).
@@ -88,6 +101,8 @@ class CapabilityDefinition(BaseModel):
 
     Each file defines prompt + toolset + optional per-tool overrides.
     """
+
+    model_config = _MANIFEST_MODEL_CONFIG
 
     capability_id: str
     prompt: str = ""
