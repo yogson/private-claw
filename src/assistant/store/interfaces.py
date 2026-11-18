@@ -158,7 +158,13 @@ class SessionStoreInterface(ABC):
         """Delete all persisted context for a session. Returns True when removed."""
 
     @abstractmethod
-    async def replace_session(self, session_id: str, records: list[SessionRecord]) -> None:
+    async def replace_session(
+        self,
+        session_id: str,
+        records: list[SessionRecord],
+        *,
+        preserve_after_sequence: int | None = None,
+    ) -> None:
         """Atomically replace all records in a session.
 
         Writes *records* to a temporary file first, then atomically renames it
@@ -166,6 +172,10 @@ class SessionStoreInterface(ABC):
         - If the write fails, the old session data is untouched.
         - No concurrent coroutine can observe a partially-written state.
         The entire operation is performed while holding the session lock.
+
+        When *preserve_after_sequence* is set, records currently stored with a
+        greater sequence (appended after the caller's snapshot, e.g. by an
+        out-of-band writer) are kept and re-appended after *records*.
         """
 
     @abstractmethod

@@ -1034,10 +1034,16 @@ class Orchestrator:
         # summary + kept_records (last N turns verbatim). replace_session avoids
         # the gap between clear_session and append where data could be lost
         # (disk error) or corrupted (concurrent writes).
+        # The summarizer call above yields to the event loop, and some writers
+        # (confirmation resolutions) append outside the session turn lock: carry
+        # over anything stored after this snapshot instead of overwriting it.
         records_to_restore = (
             system_records + previous_summaries + [new_summary_record] + kept_records
         )
-        await self._store.sessions.replace_session(session_id, records_to_restore)
+        snapshot_sequence = max((r.sequence for r in records), default=-1)
+        await self._store.sessions.replace_session(
+            session_id, records_to_restore, preserve_after_sequence=snapshot_sequence
+        )
 
         logger.info(
             "orchestrator.session_compacted",

@@ -187,15 +187,29 @@ class FilesystemSessionStore(SessionStoreInterface):
             path.unlink()
             return True
 
-    async def replace_session(self, session_id: str, records: list[SessionRecord]) -> None:
+    async def replace_session(
+        self,
+        session_id: str,
+        records: list[SessionRecord],
+        *,
+        preserve_after_sequence: int | None = None,
+    ) -> None:
         """Atomically replace all records in a session.
 
         Writes *records* to a temporary file, then uses ``os.replace()`` to
         atomically swap it into place.  The session lock is held for the
         entire operation so no concurrent coroutine can interleave.
+
+        With *preserve_after_sequence*, records stored after the caller's
+        snapshot (sequence greater than it) are carried over, re-sequenced
+        after *records*, so a concurrent append is not lost.
         """
         lock = self._get_lock(session_id)
         async with lock:
+            if preserve_after_sequence is not None:
+                records = await self._with_late_records(
+                    session_id, records, preserve_after_sequence
+                )
             path = self._session_path(session_id)
             content = "".join(self._serialize_record(r) + "\n" for r in records)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -212,6 +226,25 @@ class FilesystemSessionStore(SessionStoreInterface):
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
                 raise
+
+    async def _with_late_records(
+        self, session_id: str, records: list[SessionRecord], snapshot_sequence: int
+    ) -> list[SessionRecord]:
+        # Caller holds the session lock.
+        current = await self._read_all_records(session_id)
+        known_event_ids = {r.event_id for r in records}
+        late = [
+            r
+            for r in current
+            if r.sequence > snapshot_sequence and r.event_id not in known_event_ids
+        ]
+        if not late:
+            return records
+        next_seq = max([snapshot_sequence, *(r.sequence for r in records)]) + 1
+        carried = [
+            r.model_copy(update={"sequence": next_seq + offset}) for offset, r in enumerate(late)
+        ]
+        return [*records, *carried]
 
     async def replay_for_turn(self, session_id: str, budget: int) -> list[SessionRecord]:
         """
