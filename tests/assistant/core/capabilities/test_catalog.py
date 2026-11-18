@@ -393,3 +393,19 @@ def test_read_error_recovers_once_permissions_are_fixed(
     events = [e["event"] for e in logs]
     assert events.count("capabilities.reload_failed") == 1
     assert events.count("capabilities.reload_recovered") == 1
+
+
+def test_scan_failure_is_logged_once_and_recovery_is_logged(
+    catalog: CapabilityCatalog, tmp_path: Path
+) -> None:
+    with capture_logs() as logs:
+        with patch.object(catalog._scanner, "scan", side_effect=PermissionError("denied")):
+            for _ in range(3):
+                assert "refresh failed: denied" in catalog.refresh().blocking_errors[0].message
+        snap = catalog.refresh()
+    assert snap.revision == 1
+    assert snap.errors == ()
+    failed = [e for e in logs if e["event"] == "capabilities.reload_failed"]
+    assert len(failed) == 1
+    assert isinstance(failed[0]["exc_info"], PermissionError)  # traceback kept, once
+    assert [e["event"] for e in logs].count("capabilities.reload_recovered") == 1

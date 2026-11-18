@@ -128,10 +128,11 @@ class CapabilityCatalog(CapabilityCatalogInterface):
                 return self._snapshot
             return self._apply(signature, files, force=force, reason=reason)
         except Exception as exc:
-            logger.exception("capabilities.refresh_error", lkg_revision=self._snapshot.revision)
             issue = CapabilityLoadIssue("validation", f"refresh failed: {exc}")
             self._signature = None  # retry on the next refresh
-            self._snapshot = replace(self._snapshot, errors=(issue,))
+            if self._snapshot.errors != (issue,):
+                self._snapshot = replace(self._snapshot, errors=(issue,))
+            self._report(self._snapshot, exc_info=exc)  # traceback once per distinct error
             return self._snapshot
 
     def _apply(
@@ -170,8 +171,9 @@ class CapabilityCatalog(CapabilityCatalogInterface):
             self._notify(self._snapshot)
         return self._snapshot
 
-    def _report(self, snapshot: CapabilitySnapshot) -> None:
+    def _report(self, snapshot: CapabilitySnapshot, exc_info: BaseException | None = None) -> None:
         messages = frozenset(issue.message for issue in snapshot.errors)
+        extra = {"exc_info": exc_info} if exc_info is not None else {}
         for issue in snapshot.errors:
             if issue.message in self._reported:
                 continue
@@ -181,6 +183,7 @@ class CapabilityCatalog(CapabilityCatalogInterface):
                 error=issue.message,
                 kind=issue.kind,
                 lkg_revision=snapshot.revision,
+                **extra,
             )
         blocked = bool(snapshot.blocking_errors)
         if self._blocked and not blocked:
