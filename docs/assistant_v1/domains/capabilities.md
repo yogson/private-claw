@@ -269,7 +269,9 @@ Derived state follows revisions:
   (`core/capabilities/claude_settings_file.py`) only owns `permissions.allow`,
   `permissions.deny` and `mcpServers` and preserves every other key. If the existing file
   is unreadable, not valid JSON or not a JSON object, it is left untouched and
-  `capabilities.claude_code_settings.skipped` is logged; the next revision retries. Writes
+  `capabilities.claude_code_settings.skipped` is logged; the next revision retries. A write
+  that fails (read-only `~/.claude` or target, full disk) is skipped the same way and is
+  never raised, so it cannot abort startup. Writes
   are atomic (temp file in the same directory + `os.replace`), keep the file mode (a new
   file gets `0600`), follow a symlinked `settings.json` to its target, and are skipped
   when the merged content is already on disk. `allow`/`deny` are still replaced as a whole,

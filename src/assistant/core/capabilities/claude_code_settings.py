@@ -69,9 +69,10 @@ def apply_claude_code_settings(
 
     Only ``permissions.allow``, ``permissions.deny`` and ``mcpServers`` are owned here;
     every other key is preserved. The write is atomic and skipped when nothing changes. An
-    existing file that is unreadable or not a JSON object is never overwritten: a warning
-    is logged and ``False`` is returned. Returns ``True`` when the file holds the merged
-    settings (or there was nothing to merge).
+    existing file that is unreadable or not a JSON object is never overwritten, and a
+    failed write (read-only directory, full disk, ...) is never raised: in both cases a
+    warning is logged and ``False`` is returned. Returns ``True`` when the file holds the
+    merged settings (or there was nothing to merge).
     """
     if settings_path is None:
         settings_path = Path.home() / ".claude" / "settings.json"
@@ -117,7 +118,10 @@ def apply_claude_code_settings(
         merged["mcpServers"] = merged_mcp
 
     if merged != existing:
-        write_settings_file(settings_path, merged)
+        try:
+            write_settings_file(settings_path, merged)
+        except OSError as exc:  # read-only ~/.claude or target, full disk, ...
+            return _skip(settings_path, f"cannot write settings: {exc}")
     return True
 
 
@@ -126,7 +130,7 @@ def _skip(settings_path: Path, reason: str) -> bool:
         "capabilities.claude_code_settings.skipped",
         path=str(settings_path),
         error=reason,
-        hint="settings.json left untouched; fix or remove it to apply capability settings",
+        hint="settings.json left untouched; fix the file or its directory to apply them",
     )
     return False
 

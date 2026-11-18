@@ -1,5 +1,6 @@
 """Tests for merging capability claude_code_settings into Claude settings.json."""
 
+import errno
 import json
 import os
 import stat
@@ -299,12 +300,58 @@ def test_failed_write_leaves_original_intact(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text('{"model": "opus"}')
     with (
-        patch("os.replace", side_effect=OSError("disk full")),
-        pytest.raises(OSError, match="disk full"),
+        patch("os.replace", side_effect=OSError(errno.ENOSPC, "No space left on device")),
+        capture_logs() as logs,
     ):
-        apply_claude_code_settings(_defs(["Read"]), ["a"], settings_path)
+        assert not apply_claude_code_settings(_defs(["Read"]), ["a"], settings_path)
     assert settings_path.read_text() == '{"model": "opus"}'
     assert sorted(p.name for p in tmp_path.iterdir()) == ["home", "settings.json"]
+    assert [e["event"] for e in logs] == ["capabilities.claude_code_settings.skipped"]
+    assert "No space left on device" in logs[0]["error"]
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["tempfile.mkstemp", "os.fsync", "os.replace", "pathlib.Path.mkdir"],
+)
+def test_write_failure_is_logged_and_skipped(tmp_home: Path, target: str) -> None:
+    error = PermissionError(errno.EACCES, "Permission denied")
+    with patch(target, side_effect=error), capture_logs() as logs:
+        assert not apply_claude_code_settings(_defs(["Read"]), ["a"])  # never raises
+    assert [e["event"] for e in logs] == ["capabilities.claude_code_settings.skipped"]
+    assert "Permission denied" in logs[0]["error"]
+    claude_dir = tmp_home / ".claude"
+    leftovers = sorted(p.name for p in claude_dir.iterdir()) if claude_dir.exists() else []
+    assert leftovers == []  # no partial file, no temp file
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_read_only_claude_dir_is_skipped(tmp_home: Path) -> None:
+    claude_dir = tmp_home / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text('{"model": "opus"}')
+    claude_dir.chmod(0o500)
+    try:
+        with capture_logs() as logs:
+            assert not apply_claude_code_settings(_defs(["Read"]), ["a"])
+    finally:
+        claude_dir.chmod(0o700)
+    assert (claude_dir / "settings.json").read_text() == '{"model": "opus"}'
+    assert [e["event"] for e in logs] == ["capabilities.claude_code_settings.skipped"]
+
+
+def test_settings_sync_survives_and_retries_a_failed_write(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    sync = ClaudeCodeSettingsSync(
+        snapshot_of(_defs(["Read"]), revision=1),
+        resolve_active=lambda snapshot: ["a"],
+        settings_path=settings_path,
+    )
+    with patch("os.replace", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+        sync(snapshot_of(_defs(["Read", "Bash"]), revision=2))  # never raises
+    assert not settings_path.exists()
+    sync(snapshot_of(_defs(["Read", "Bash"]), revision=3))  # same settings: retried
+    assert json.loads(settings_path.read_text())["permissions"]["allow"] == ["Read", "Bash"]
 
 
 def test_symlinked_settings_file_stays_a_link(tmp_path: Path) -> None:
