@@ -1,5 +1,6 @@
 """CapabilityCatalog: snapshot/revision semantics, change detection, last-known-good."""
 
+import errno
 import hashlib
 import os
 import threading
@@ -373,20 +374,31 @@ def test_racy_file_is_rehashed_only_until_its_mtime_settles(tmp_path: Path) -> N
     assert spy.calls == ["a.yaml"]  # same hash on the re-read: no re-parse
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
-def test_read_error_recovers_once_permissions_are_fixed(
+def test_read_error_recovers_once_the_cause_is_fixed(
     catalog: CapabilityCatalog, tmp_path: Path
 ) -> None:
+    # Patched rather than chmod 000, so the test also runs (and fails) as root.
     path = _write(tmp_path, "a.yaml", _manifest("a", "alpha v2"))
-    with capture_logs() as logs:
-        path.chmod(0)
-        try:
-            snap = catalog.refresh()
-            assert snap.revision == 1
-            assert "read error" in snap.blocking_errors[0].message
-            assert catalog.refresh().blocking_errors  # retried, still failing
-        finally:
-            path.chmod(0o644)  # neither mtime nor size changes
+    _set_mtime(path, time.time_ns() - 20 * RACY_WINDOW_NS)  # settled: not re-read as racy
+    denied = {path}
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self in denied:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    with (
+        patch.object(Path, "read_bytes", autospec=True, side_effect=read_bytes),
+        capture_logs() as logs,
+    ):
+        snap = catalog.refresh()
+        assert snap.revision == 1
+        assert [i.message for i in snap.blocking_errors] == [
+            "[a.yaml] read error: Permission denied"
+        ]
+        assert catalog.refresh().blocking_errors  # retried, still failing
+        denied.clear()  # the cause is fixed; neither mtime nor size changes
         snap = catalog.refresh()
     assert snap.revision == 2
     assert snap.errors == ()
