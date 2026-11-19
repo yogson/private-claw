@@ -191,10 +191,14 @@ Rules:
   `min_turns_before_compact`: a resolution stored after the first kept turn is kept with it, older ones are
   summarized. No agent turn is triggered by a resolution.
   Only these synthetic records keep the marker. In user-controlled text (history and the current turn, including
-  attachment file names and text-file content) it is rewritten to `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user
-  cannot forge an outcome. Matching is done after NFKC normalization and casefolding, with format characters
-  (zero-width, bidi marks) dropped and any separator between the two words, so near-miss spellings such as
-  `[[confirmation resolved]]` or full-width brackets are rewritten too. Tool results are not rewritten.
+  attachment file names and text-file content) it is rewritten, best-effort, to
+  `[[user-typed: CONFIRMATION_RESOLVED]]`. This is defense in depth for what the agent believes, not a security
+  boundary: the real guarantee is that only a signed button press by the requesting user resolves or applies a
+  confirmation, whatever the text says. Matching is done after NFKC normalization and casefolding, with format
+  characters (zero-width, bidi marks) dropped, any separator between the two words, and one or two square or curly
+  brackets (`[[confirmation resolved]]`, `[CONFIRMATION_RESOLVED]`, `{{CONFIRMATION_RESOLVED}}`, full-width brackets).
+  Known limitation: homoglyphs (Cyrillic letters, a digit `0`) and a marker split across messages or content blocks
+  are not detected; a channel the user cannot type into would be the robust fix. Tool results are not rewritten.
 - The orchestrator returns the confirmations created during a turn in `OrchestratorResult.confirmations`; channel
   handlers must render each one (normal turns, delegation-feedback turns, and alongside ask_question / web-app
   responses).

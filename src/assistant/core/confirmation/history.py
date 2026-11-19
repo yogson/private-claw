@@ -48,12 +48,16 @@ CONFIRMATION_TOOL_NAMES: frozenset[str] = frozenset(
         CAPABILITY_PROPOSE_ROLLBACK_TOOL_NAME,
     }
 )
-# What the marker becomes in user-typed text, so a user cannot forge a resolution.
+# What the marker becomes in user-typed text. Best-effort, defense in depth for the
+# agent's belief only: the real guarantee is that nothing but a signed button press by
+# the requesting user resolves or applies a confirmation.
 _NEUTRALIZED_MARKER = "[[user-typed: CONFIRMATION_RESOLVED]]"
 # The marker and the near-miss spellings a model reads the same way, matched on the
 # normalized view of the text (_normalized_view): any case, any separator (or none)
-# between the words, whitespace inside the brackets.
-_MARKER_VARIANT_RE = re.compile(r"\[\s*\[\s*confirmation[\W_]*resolved\s*\]\s*\]")
+# between the words, whitespace inside one or two square or curly brackets. Known
+# limitation: homoglyphs (Cyrillic letters, a digit 0) and a marker split across
+# messages or content blocks are not detected.
+_MARKER_VARIANT_RE = re.compile(r"(?:[\[{]\s*){1,2}confirmation[\W_]*resolved(?:\s*[\]}]){1,2}")
 
 
 def is_confirmation_record(record: SessionRecord) -> bool:
@@ -92,9 +96,11 @@ def unresolved_pending_ids(records: Iterable[SessionRecord]) -> list[str]:
 def neutralize_confirmation_marker(text: str) -> str:
     """Defuse the resolution marker in text that did not come from the recorder.
 
-    Also catches near-miss spellings (``[[confirmation resolved]]``, full-width or
-    zero-width characters, ...). Only the matched spans are rewritten; the rest of the
-    text is kept as is.
+    Best effort: also catches near-miss spellings (``[confirmation resolved]``,
+    ``{{CONFIRMATION_RESOLVED}}``, full-width or zero-width characters, ...) but not
+    homoglyphs or a marker split across messages. It only keeps the agent from believing
+    typed text; it is not what protects a confirmation. Only the matched spans are
+    rewritten; the rest of the text is kept as is.
     """
     normalized, origin = _normalized_view(text)
     parts: list[str] = []
