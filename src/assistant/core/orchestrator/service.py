@@ -36,6 +36,7 @@ from assistant.core.confirmation import (
     ConfirmationRequest,
     ConfirmationRequestResult,
     ConfirmationService,
+    is_confirmation_record,
     neutralize_confirmation_marker,
     unresolved_pending_ids,
 )
@@ -907,6 +908,12 @@ class Orchestrator:
         after a capability change), the check short-circuits: the model has
         already adapted and must not be blocked.
 
+        Synthetic confirmation-resolution turns (``confirmation-<id>``) are not model
+        turns and are skipped when picking the most recent turn. Otherwise a resolution
+        record (from a button press, or written by turn-start reconciliation after a
+        restart) would hide the tool calls of the real last turn and let the LLM run
+        where the user should get the warning.
+
         MCP tools (``mcp_<server>_<tool>``, see ``is_mcp_tool_name``) are excluded from
         the comparison: they are discovered from the servers at runtime and are not
         listed as tool ids.
@@ -916,9 +923,11 @@ class Orchestrator:
         # Identify the most recently completed turn.  Records from build_replay
         # are ordered by sequence and represent only complete turns, so the last
         # record's turn_id is the most recently completed turn.
+        confirmation_turn_ids = {r.turn_id for r in records if is_confirmation_record(r)}
         last_turn_id: str | None = None
         for record in records:
-            last_turn_id = record.turn_id
+            if record.turn_id not in confirmation_turn_ids:
+                last_turn_id = record.turn_id
 
         if last_turn_id is None:
             return None

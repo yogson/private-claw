@@ -1165,6 +1165,48 @@ class TestOrchestratorExecuteTurn:
         assert unresolved_pending_ids(await store.replay_for_turn("tg:123", 200)) == []
 
     @pytest.mark.asyncio
+    async def test_reconcile_record_does_not_bypass_tool_mismatch_warning(
+        self,
+        tmp_path: Path,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        # History ends with a memory proposal; after the restart the memory tool is gone.
+        store = FilesystemSessionStore(tmp_path)
+        mock_store.sessions = store
+        await persist_pending_proposal(store, "tg:123", ORPHAN_ID)
+        restarted = ConfirmationService(
+            ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+        )
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=restarted,
+        )
+
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids", return_value=set()
+        ):
+            first = await orch.execute_turn(_minimal_event(event_id="ev-1", text="hi"))
+            second = await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi again"))
+
+        # Same as without the reconcile record: the user is warned and the LLM never runs,
+        # on every turn until the capability is re-enabled.
+        for result in (first, second):
+            assert result is not None
+            assert "not currently active" in result.text and MEMORY_TOOL_NAME in result.text
+        mock_pydantic_adapter.run_turn.assert_not_awaited()
+        # The reconcile record itself is still written.
+        stored = await store.read_session("tg:123")
+        assert any(r.event_id == f"confirmation-{ORPHAN_ID}" for r in stored)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("restart_before_next_turn", [False, True])
     async def test_stopped_turn_confirmation_is_recorded_by_next_turn(
         self,
@@ -1474,6 +1516,29 @@ class TestDetectToolMismatch:
             return_value=set(),
         ):
             assert orch._detect_tool_mismatch(records, _runtime_config()) is None
+
+    def test_confirmation_record_turns_are_not_the_most_recent_turn(self) -> None:
+        """A synthetic resolution turn after a tool-calling turn does not hide its tools."""
+        orch = self._make_orch()
+        turn_id = f"confirmation-{ORPHAN_ID}"
+        records = [
+            _tool_call_record(turn_id="t1", tool_name="missing_tool", sequence=0),
+            SessionRecord(
+                session_id="s1",
+                sequence=1,
+                event_id=turn_id,
+                turn_id=turn_id,
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": f"msg-{turn_id}", "content": "[[CONFIRMATION_RESOLVED]] {}"},
+            ),
+        ]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={"other_tool"},
+        ):
+            result = orch._detect_tool_mismatch(records, _runtime_config())
+        assert result is not None and "missing_tool" in result
 
     def test_returns_none_when_tool_name_empty(self) -> None:
         """Records with an empty tool_name payload should not cause false positives."""
