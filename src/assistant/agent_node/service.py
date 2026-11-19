@@ -131,7 +131,10 @@ def build_objective(
             f"Base branch: {repo.base_branch}\n"
             f"The worktree is already on the work branch {repo.branch}, created from "
             f"{repo.base_branch}. Commit your changes on this branch and do not switch "
-            "branches. Do not push and do not open a pull request."
+            "branches. Do not push and do not open a pull request.\n"
+            f"Paths to {repo.path} in the project context refer to the main checkout: "
+            "make every change in your worktree instead, and do not modify the main "
+            "checkout."
         )
     return "\n\n".join(parts)
 

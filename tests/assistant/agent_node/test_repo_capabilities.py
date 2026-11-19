@@ -81,6 +81,7 @@ class TestCapabilityContext:
         )
         assert ctx < system < user < objective.index("--- Environment ---")
         assert metadata["capabilities"] == ["widgets"]
+        assert "do not modify the main checkout" in objective
 
     async def test_many_capabilities_and_nested_are_included_once(self, env: Env) -> None:
         _use(
