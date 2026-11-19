@@ -18,12 +18,21 @@ Naming convention:
 
 Catalog usage model:
 - Startup: load and validate full catalog/manifests.
-- Turn-time: expose the active capability set (config enabled set + per-session `/capabilities` override) to the model.
-- Dynamic shortlist-based exposure of descriptors is not planned (see #55 and `domains/capabilities.md`, "Dynamic Activation Model (Not planned)").
+- Turn-time: expose the active capability set to the model: config `enabled_capabilities`, or the per-session `/capabilities` override when set, which replaces `enabled_capabilities` for that session, expanded through `nested_capabilities`, minus `denied_capabilities`.
+- Dynamic shortlist-based exposure of descriptors is not planned (see [#55](https://github.com/yogson/private-claw/issues/55) and `domains/capabilities.md`, "Dynamic Activation Model (Not planned)").
 
 ## Catalog Record Contract
 
-Each catalog entry should be backed by a descriptor record used for capability resolution (dynamic activation is not planned, see #55):
+> **Aspirational, not implemented.** The descriptor record below is a catalog-level design shape,
+> not what the runtime uses. Capability resolution (`resolve_active_capabilities`) works on the
+> `CapabilityDefinition` manifest (`config/capabilities/*.yaml`, `core/capabilities/schemas.py`),
+> which has only: `capability_id`, `prompt`, `tools` (bindings with `tool_id`, `enabled`,
+> `params_override`), `tool_overrides`, `claude_code_settings`, `nested_capabilities` and
+> `mcp_servers`. None of `domain`, `summary`, `permissions.*`, `input_schema`, `safety_notes`,
+> `examples` or `status` exist there. Dynamic activation is not planned (see
+> [#55](https://github.com/yogson/private-claw/issues/55)).
+
+Each catalog entry could be described by a descriptor record with these fields:
 
 - `capability_id`
 - `domain`
@@ -137,5 +146,5 @@ These are catalog-level policy invariants. Runtime enforcement behavior is defin
 - Side-effecting capabilities require audit logging and bounded timeouts.
 - MCP-backed capabilities must pass both capability policy and MCP server/tool allowlist checks.
 - High-risk capabilities (`shell`, mutating `gh`, write-capable `fs`) require stricter budget and approval rules.
-- Candidate ranking and per-turn shortlist injection (historical design, top 1-3) are not planned; see #55.
+- Candidate ranking and per-turn shortlist injection (historical design, top 1-3) are not planned; see [#55](https://github.com/yogson/private-claw/issues/55).
 

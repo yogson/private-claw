@@ -193,9 +193,15 @@ Capability loading has two phases:
   - Reject invalid or duplicate manifests as startup errors.
 
 - Turn phase:
-  - Resolve required capability IDs from user intent plus memory hints.
-  - Check capability policy allow/deny gates before invocation.
-  - Load runtime entrypoint only for selected capabilities (lazy per-turn invocation), not for entire registry.
+  - Resolve the active capability set once per turn with `resolve_active_capabilities` over the
+    CapabilityCatalog snapshot (config `enabled_capabilities`, or the per-session `/capabilities`
+    override when set, expanded through `nested_capabilities`, minus `denied_capabilities`). The
+    system prompt and tool definitions are built from this full active set; there is no
+    orchestrator-side intent-based candidate selection (not planned, see
+    [#55](https://github.com/yogson/private-claw/issues/55)).
+  - The model chooses among the tools of the active set via provider-native tool calls.
+  - Check capability policy allow/deny gates at invocation; tool entrypoints run only when the model
+    calls the tool.
 
 Capability path is required when:
 - Action is side-effecting and non-trivial.
@@ -206,23 +212,23 @@ If no appropriate capability exists for a high-risk intent:
 - Do not execute from memory-only instructions.
 - Ask for confirmation-limited fallback or refuse with actionable guidance to create/register capability.
 
-### 4) Capability Selection Heuristics
+### 4) Capability Selection (Not planned: ranking heuristics)
 
-When multiple capabilities are eligible, rank by:
-- policy eligibility (must pass),
-- exact intent-capability mapping from memory metadata,
-- required input completeness from current turn,
-- lower risk profile (prefer read-only when user intent allows),
-- deterministic tie-breaker (`capability_id` lexical order or configured priority).
+> **Not planned / historical.** An earlier design had the orchestrator rank eligible capabilities
+> (policy eligibility, intent-capability mappings from memory metadata, input completeness, lower
+> risk, deterministic tie-breaker) and pick candidates before model exposure. This does not exist
+> and is not planned (see [#55](https://github.com/yogson/private-claw/issues/55) and
+> `domains/capabilities.md`, "Dynamic Activation Model (Not planned)"). It is not a requirement.
 
-The selected capability and rejection reasons for alternatives must be auditable.
+Current behavior: the model picks among the tools of the static active capability set via native
+tool calls; policy gates run at invocation, and the invoked tool and its outcome are auditable.
 
 ### 5) Focused Context Budgeting
 
 The orchestrator must enforce strict context budgets to avoid prompt bloat:
 - Always include: current user turn + minimal recent session window.
 - Add memory artifacts only up to Memory domain category caps.
-- Add capability metadata only for candidates in final shortlist.
+- Capability prompt/tool metadata comes from the full active capability set only (see `domains/capabilities.md`); there is no per-turn shortlist (not planned, [#55](https://github.com/yogson/private-claw/issues/55)).
 - Exclude irrelevant historical tool outputs and stale low-confidence memory.
 
 Recommended assembly order under token pressure:
@@ -239,7 +245,6 @@ When projected tokens exceed budget:
 ### 6) Anti-Overwhelm Rules
 
 To keep reasoning tractable and responses concise:
-- Keep candidate capabilities shortlist small (for example, top 1-3).
 - Keep memory bundle compact and deduplicated.
 - Prefer one execution path per turn unless user explicitly requests comparison.
 - If ambiguity remains after retrieval/ranking, ask a narrow clarification question instead of loading more context.
@@ -249,8 +254,8 @@ To keep reasoning tractable and responses concise:
 1. Classify turn.
 2. Decide retrieval scope (none/minimal/standard) with explicit trigger reason.
 3. Retrieve and score memory candidates (if triggered), apply caps.
-4. Resolve capability candidates from intent + memory mappings.
-5. Enforce policy gates and select capability (or direct-model path).
+4. Resolve the active capability set (`resolve_active_capabilities`); no per-turn candidate selection (not planned).
+5. Expose the active set's tools to the model; policy gates are enforced at tool invocation (or direct-model path when no tool is called).
 6. Assemble bounded prompt/context in priority order.
 7. Execute route.
 8. Persist response, audits, and any memory update intents.
@@ -264,7 +269,7 @@ To coordinate Agent, Capabilities, and Memory domains safely:
   - Receives scored compact memory bundle plus retrieval audit data.
 
 - Agent -> Capabilities:
-  - Sends resolved intent, inputs, and candidate capability IDs.
+  - Sends the model's native tool call (tool id and inputs) for a tool of the active capability set.
   - Receives policy decision and normalized execution result/error.
 
 - Memory -> Agent:
