@@ -125,9 +125,9 @@ manifest edits and rollbacks; see `domains/capabilities.md` "Agent-Driven Manife
 registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff). A kind can
 also attach content that the user must receive in full before deciding (`attachments`, below).
 
-Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `origin_tool_call_id`, `payload`,
-`summary_for_user`, `dedupe_key`, `attachments`, `status` (`pending|approved|rejected|expired|failed`), `created_at`,
-`expires_at`, `resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
+Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `user_id`, `origin_tool_call_id`,
+`payload`, `summary_for_user`, `dedupe_key`, `attachments`, `status` (`pending|approved|rejected|expired|failed`),
+`created_at`, `expires_at`, `resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
 
 Attachments (`ConfirmationAttachment`: `title`, `parts`): optional, empty for `memory_update`. `capability_edit` uses
 one for a prompt change: the full prompt diff, see `domains/capabilities.md`. Core produces the content, already
@@ -179,6 +179,9 @@ Rules:
   catalog serves counts as `applied`; `stale`, `not_editable`, `rejected_invalid`, `backup_failed`, `write_failed` and
   `reload_rejected` are `failed` with a precise detail.
 - Only a button press is approval; text replies never resolve a confirmation.
+- A request is bound to the user of the turn that requested it (`user_id`). A press by any other user (e.g. another
+  member of an allow-listed group chat) is answered with a "not yours" toast and changes nothing (`not_owner`); the
+  owner's approval writes to the owner's scope.
 - `summary_for_user` is capped at `SUMMARY_MAX_CHARS` (3500) with an explicit "[truncated: N more chars not shown]"
   note. Kinds where the user must see everything they approve reject over-long proposals before requesting.
 - Every final state (approved, rejected, expired, failed/not delivered) is appended to the session as its own complete

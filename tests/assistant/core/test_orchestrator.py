@@ -1027,6 +1027,8 @@ class TestOrchestratorExecuteTurn:
         assert result is not None
         assert [c.kind for c in result.confirmations] == ["memory_update"]
         assert confirmations.pending_for_session("tg:123") is result.confirmations[0]
+        # N3: bound to the turn's user, so only they can approve it.
+        assert result.confirmations[0].user_id == "123"
         appended = [rec for call in mock_store.sessions.append.call_args_list for rec in call[0][0]]
         results = [r for r in appended if r.record_type == SessionRecordType.TOOL_RESULT]
         assert [r.event_id for r in results] == ["tool-result-tool-1"]

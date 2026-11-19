@@ -36,6 +36,7 @@ class _Handler:
 
     def __init__(self, outcome: ConfirmationOutcome | None = None, delay: float = 0.0) -> None:
         self.calls = 0
+        self.user_ids: list[str | None] = []
         self._outcome = outcome or ConfirmationOutcome(ok=True, status="written", detail="ok")
         self._delay = delay
 
@@ -43,6 +44,7 @@ class _Handler:
         self, request: ConfirmationRequest, *, user_id: str | None
     ) -> ConfirmationOutcome:
         self.calls += 1
+        self.user_ids.append(user_id)
         await asyncio.sleep(self._delay)
         return self._outcome
 
@@ -429,3 +431,26 @@ async def test_request_keeps_attachments_untruncated() -> None:
     assert request is not None
     assert request.attachments[0].parts == parts
     assert "truncated" in request.summary_for_user  # the summary cap does not touch parts
+
+
+async def test_press_by_another_user_is_rejected_without_resolving() -> None:
+    """N3: a confirmation is bound to the user of the turn that requested it."""
+    handler, recorder = _Handler(), _Recorder()
+    service = _service(handler, recorder)
+    request = (await service.request(SESSION, _draft(), user_id="owner")).request
+    assert request is not None and request.user_id == "owner"
+
+    for intruder in ("other", None):
+        result = await service.resolve(
+            request.confirmation_id, ConfirmationDecision.APPROVE, user_id=intruder
+        )
+        assert result.not_owner and not result.changed
+    assert request.is_pending and request.ui_ref is None
+    assert handler.calls == 0 and recorder.records == []
+
+    result = await service.resolve(
+        request.confirmation_id, ConfirmationDecision.APPROVE, user_id="owner"
+    )
+    assert result.changed and not result.not_owner
+    assert request.status == ConfirmationStatus.APPROVED
+    assert handler.user_ids == ["owner"]  # the write goes to the owner's scope

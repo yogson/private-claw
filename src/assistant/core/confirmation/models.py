@@ -126,6 +126,8 @@ class ConfirmationRequest(BaseModel):
     confirmation_id: str
     kind: str
     session_id: str
+    # User of the turn that requested it; when set, only this user may resolve it.
+    user_id: str | None = None
     origin_tool_call_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     summary_for_user: str
@@ -167,7 +169,10 @@ class ConfirmationResolveResult(BaseModel):
 
     ``request`` is ``None`` for unknown ids (e.g. after a restart). ``changed`` is
     False when the request was already resolved or expired before this call.
+    ``not_owner`` is True when another user than the requesting one pressed the button;
+    the request is then left unchanged.
     """
 
     request: ConfirmationRequest | None = None
     changed: bool = False
+    not_owner: bool = False

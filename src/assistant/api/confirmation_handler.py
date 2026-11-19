@@ -15,7 +15,9 @@ fails, the confirmation is discarded (``failed``, session slot released) and no 
 are left behind for it.
 
 Confirmation callbacks are always answered explicitly (real status toast + edited
-message without keyboard) and never fall through to the orchestrator/LLM.
+message without keyboard) and never fall through to the orchestrator/LLM. A press by
+another user than the one the confirmation was requested for only gets a "not yours"
+toast; the request and the message stay unchanged.
 """
 
 import asyncio
@@ -27,6 +29,7 @@ import structlog
 from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
 from assistant.channels.telegram.confirmation_callbacks import ConfirmationCallbackState
 from assistant.channels.telegram.confirmation_render import (
+    NOT_OWNER_TEXT,
     message_fits,
     render_attachment_messages,
     render_resolved_text,
@@ -35,6 +38,7 @@ from assistant.channels.telegram.confirmation_render import (
 from assistant.channels.telegram.polling import acknowledge_callback_safely
 from assistant.core.confirmation import (
     ConfirmationRequest,
+    ConfirmationResolveResult,
     ConfirmationService,
     ConfirmationUiRef,
 )
@@ -227,9 +231,13 @@ async def handle_confirmation_callback(
     answer = _PROCESSING_FAILED_TEXT
     edited_text: str | None = None
     try:
-        request = await _resolve(event, adapter, service, chat_id, message_id)
-        answer = status_text(request)
-        edited_text = render_resolved_text(original_text, request)
+        result = await _resolve(event, adapter, service, chat_id, message_id)
+        if result.not_owner:
+            # Another user pressed: answer only, leave the request and the message as is.
+            answer = NOT_OWNER_TEXT
+        else:
+            answer = status_text(result.request)
+            edited_text = render_resolved_text(original_text, result.request)
     except Exception:
         logger.exception("confirmation.callback.failed", trace_id=event.trace_id)
     finally:
@@ -252,7 +260,7 @@ async def _resolve(
     service: ConfirmationService | None,
     chat_id: int,
     message_id: int | None,
-) -> ConfirmationRequest | None:
+) -> ConfirmationResolveResult:
     # Buttons are signed for the session that requested them; a known request is
     # verified against its own session (the chat may have switched sessions since),
     # an unknown id against the chat's current session.
@@ -263,9 +271,9 @@ async def _resolve(
         logger.info(
             "confirmation.callback.not_valid", state=parsed.state.value, trace_id=event.trace_id
         )
-        return None
+        return ConfirmationResolveResult()
     if service is None:
-        return None
+        return ConfirmationResolveResult()
     ui_ref = (
         ConfirmationUiRef(chat_id=chat_id, message_id=message_id)
         if chat_id and message_id is not None
@@ -279,6 +287,7 @@ async def _resolve(
         confirmation_id=parsed.confirmation_id,
         known=result.request is not None,
         changed=result.changed,
+        not_owner=result.not_owner,
         status=result.request.status.value if result.request else "unknown",
         trace_id=event.trace_id,
     )
@@ -286,4 +295,4 @@ async def _resolve(
         # Valid signature for this session but unknown id (e.g. pending across a
         # restart): tell the agent it expired so it does not wait for an outcome.
         await service.record_unknown_expired(parsed.confirmation_id, session_id)
-    return result.request
+    return result

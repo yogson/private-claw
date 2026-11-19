@@ -387,7 +387,7 @@ class Orchestrator:
             user_id=user_id,
             vocabulary_store=self._vocabulary_store,
             confirmation_requester=self._build_confirmation_requester(
-                session_id, created_confirmations
+                session_id, created_confirmations, user_id
             ),
             capability_edit_service=self._capability_edit_service,
         )
@@ -809,7 +809,7 @@ class Orchestrator:
             reset_trace_id(token)
 
     def _build_confirmation_requester(
-        self, session_id: str, created: list[ConfirmationRequest] | None
+        self, session_id: str, created: list[ConfirmationRequest] | None, user_id: str | None
     ) -> Callable[[ConfirmationDraft], Awaitable[ConfirmationRequestResult]] | None:
         service = self._confirmations
         if service is None:
@@ -829,7 +829,7 @@ class Orchestrator:
                     f"Tool {draft.origin_tool_name!r} requested a confirmation but is not in "
                     "CONFIRMATION_TOOL_NAMES (assistant.core.confirmation.history)"
                 )
-            outcome = await service.request(session_id, draft)
+            outcome = await service.request(session_id, draft, user_id=user_id)
             if outcome.created and outcome.request is not None and created is not None:
                 created.append(outcome.request)
             return outcome

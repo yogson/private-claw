@@ -22,6 +22,7 @@ NO_LONGER_VALID_TEXT = "⌛ Expired: this confirmation is no longer valid."
 # actually arrived (e.g. a timeout), so the user may be looking at these buttons: do
 # not claim they could not be delivered.
 NOT_DELIVERED_TEXT = "⚠️ This confirmation is no longer valid."
+NOT_OWNER_TEXT = "⛔ Only the user who asked can answer this confirmation."
 _TITLES = {
     "memory_update": "🧠 Save this to memory?",
     "capability_edit": "🛠 Apply this capability change?",

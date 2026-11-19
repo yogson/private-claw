@@ -74,11 +74,14 @@ class ConfirmationService:
         self._requests: dict[str, ConfirmationRequest] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def request(self, session_id: str, draft: ConfirmationDraft) -> ConfirmationRequestResult:
+    async def request(
+        self, session_id: str, draft: ConfirmationDraft, *, user_id: str | None = None
+    ) -> ConfirmationRequestResult:
         """Create a pending confirmation, or return the existing one with the same dedupe_key.
 
         At most one confirmation may be pending per session: a different proposal
-        while one is pending returns ``blocked_by`` and creates nothing.
+        while one is pending returns ``blocked_by`` and creates nothing. ``user_id`` (the
+        turn's user) binds the request: only that user may resolve it.
         """
         await self.expire_due()
         current = self.pending_for_session(session_id)
@@ -91,6 +94,7 @@ class ConfirmationService:
             confirmation_id=new_confirmation_id(),
             kind=draft.kind,
             session_id=session_id,
+            user_id=user_id,
             origin_tool_call_id=draft.origin_tool_call_id,
             payload=draft.payload,
             summary_for_user=_cap_summary(draft.summary_for_user),
@@ -128,11 +132,22 @@ class ConfirmationService:
         user_id: str | None = None,
         ui_ref: ConfirmationUiRef | None = None,
     ) -> ConfirmationResolveResult:
-        """Apply a user decision exactly once; repeated or racing calls are no-ops."""
+        """Apply a user decision exactly once; repeated or racing calls are no-ops.
+
+        A decision by another user than the one the request is bound to changes nothing
+        (``not_owner``).
+        """
         self._prune_resolved(self._clock())
         request = self._requests.get(confirmation_id)
         if request is None:
             return ConfirmationResolveResult()
+        if request.user_id is not None and user_id != request.user_id:
+            logger.info(
+                "confirmation.resolve_not_owner",
+                confirmation_id=confirmation_id,
+                session_id=request.session_id,
+            )
+            return ConfirmationResolveResult(request=request, not_owner=True)
         async with self._lock_for(confirmation_id):
             if ui_ref is not None and request.ui_ref is None:
                 request.ui_ref = ui_ref
