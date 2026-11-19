@@ -1,0 +1,30 @@
+# agent-node compatible HTTP ingress (optional domain).
+# Lets the operational-graphs system (automation) submit jobs over HTTP
+# (POST /jobs, POST /jobs/{id}/cancel, GET /jobs/{id}) and get the result back
+# through a signed completion webhook. Delete this file to disable the ingress.
+# Environment override prefix: ASSISTANT_AGENT_NODE_
+
+enabled: false
+
+# Bearer token the caller must present. Prefer the env var over writing it here:
+#   ASSISTANT_AGENT_NODE_AUTH_TOKEN=...
+auth_token: ""
+
+# Model for jobs that do not name one (must be in model.yaml model_allowlist).
+# null: the delegation default model.
+default_model: null
+
+# Delegation backend that runs the jobs.
+backend: claude_code_streaming
+
+# repo_full_name -> local checkout the sub-agent works in. A request naming any
+# other repository is refused with 422.
+repositories:
+  owner/repo:
+    path: /absolute/path/to/local/checkout
+    capabilities: []
+
+# Per-attempt webhook timeout, and how long after the job's effective deadline
+# an undelivered webhook is given up on.
+webhook_timeout_seconds: 10
+webhook_deadline_margin_seconds: 149

@@ -172,3 +172,60 @@ class TestResolveConfigDir:
     ) -> None:
         monkeypatch.setenv("ASSISTANT_CONFIG_DIR", str(config_dir))
         assert resolve_config_dir() == config_dir
+
+
+class TestAgentNodeDomain:
+    """agent_node.yaml is optional: absent means the ingress is disabled."""
+
+    def test_missing_file_loads_as_none(self, config_dir: Path) -> None:
+        assert not (config_dir / "agent_node.yaml").exists()
+        cfg = ConfigLoader(config_dir).load()
+        assert cfg.agent_node is None
+
+    def test_present_file_is_loaded(self, config_dir: Path) -> None:
+        (config_dir / "agent_node.yaml").write_text(
+            yaml.dump(
+                {
+                    "enabled": True,
+                    "auth_token": "t0k",
+                    "repositories": {"o/r": {"path": "/srv/r", "capabilities": ["x"]}},
+                }
+            )
+        )
+        cfg = ConfigLoader(config_dir).load()
+        assert cfg.agent_node is not None
+        assert cfg.agent_node.enabled is True
+        assert cfg.agent_node.repositories["o/r"].path == "/srv/r"
+        assert cfg.agent_node.repositories["o/r"].capabilities == ["x"]
+
+    def test_invalid_present_file_fails_startup(self, config_dir: Path) -> None:
+        (config_dir / "agent_node.yaml").write_text(
+            yaml.dump({"enabled": True, "repositories": {"o/r": {"path": "relative/path"}}})
+        )
+        with pytest.raises(ConfigLoadError, match="agent_node.yaml"):
+            ConfigLoader(config_dir).load()
+
+    def test_auth_token_env_override(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (config_dir / "agent_node.yaml").write_text(yaml.dump({"enabled": True, "auth_token": ""}))
+        monkeypatch.setenv("ASSISTANT_AGENT_NODE_AUTH_TOKEN", "from-env")
+        cfg = ConfigLoader(config_dir).load()
+        assert cfg.agent_node is not None
+        assert cfg.agent_node.auth_token == "from-env"
+
+    def test_effective_config_redacts_token_and_tolerates_absence(self, config_dir: Path) -> None:
+        assert ConfigLoader(config_dir).effective_config()["config"]["agent_node"] is None
+        (config_dir / "agent_node.yaml").write_text(
+            yaml.dump({"enabled": True, "auth_token": "super-secret"})
+        )
+        result = ConfigLoader(config_dir).effective_config()
+        assert result["config"]["agent_node"]["auth_token"] == "***REDACTED***"
+        assert "super-secret" not in str(result)
+
+    def test_repo_example_config_is_valid(self) -> None:
+        raw = yaml.safe_load(Path("config/agent_node.yaml").read_text())
+        from assistant.core.config.schemas import AgentNodeConfig
+
+        cfg = AgentNodeConfig(**raw)
+        assert cfg.enabled is False

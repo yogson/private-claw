@@ -334,6 +334,37 @@ class CompactionConfig(BaseModel):
     )
 
 
+class AgentNodeRepositoryConfig(BaseModel):
+    """One repository the agent-node HTTP ingress may run jobs against."""
+
+    path: str = Field(min_length=1, description="Absolute path of the local checkout")
+    capabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_absolute(cls, v: str) -> str:
+        if not Path(v).expanduser().is_absolute():
+            raise ValueError("repository path must be absolute")
+        return v
+
+
+class AgentNodeConfig(BaseModel):
+    """agent-node compatible HTTP ingress (config/agent_node.yaml).
+
+    The whole domain is optional: an absent file means the ingress is disabled.
+    Env override prefix: ASSISTANT_AGENT_NODE_ (e.g. ASSISTANT_AGENT_NODE_AUTH_TOKEN).
+    """
+
+    enabled: bool = False
+    auth_token: str = ""
+    default_model: str | None = None
+    backend: str = "claude_code_streaming"
+    repositories: dict[str, AgentNodeRepositoryConfig] = Field(default_factory=dict)
+    webhook_timeout_seconds: float = Field(default=10.0, ge=1)
+    # The webhook is abandoned this long after the job's effective deadline.
+    webhook_deadline_margin_seconds: int = Field(default=149, ge=0)
+
+
 class RuntimeConfig(BaseModel):
     """Aggregated runtime configuration across all domains."""
 
@@ -347,4 +378,5 @@ class RuntimeConfig(BaseModel):
     store: StoreConfig
     memory: MemoryConfig
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+    agent_node: AgentNodeConfig | None = None  # None: config/agent_node.yaml absent
     config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution

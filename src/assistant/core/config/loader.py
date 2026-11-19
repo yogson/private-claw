@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 
 from assistant.core.config.env_utils import apply_env_overrides
 from assistant.core.config.schemas import (
+    AgentNodeConfig,
     AppConfig,
     CapabilitiesPolicyConfig,
     CompactionConfig,
@@ -46,10 +47,14 @@ _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
     "store": ("store.yaml", StoreConfig, "ASSISTANT_STORE"),
     "memory": ("memory.yaml", MemoryConfig, "ASSISTANT_MEMORY"),
     "compaction": ("compaction.yaml", CompactionConfig, "ASSISTANT_COMPACTION"),
+    "agent_node": ("agent_node.yaml", AgentNodeConfig, "ASSISTANT_AGENT_NODE"),
 }
 
 # Domains that default silently when config file is absent.
 _OPTIONAL_DOMAINS: set[str] = {"compaction"}
+
+# Domains whose absence is meaningful: a missing file loads as None (feature disabled).
+_ABSENT_IS_NONE_DOMAINS: set[str] = {"agent_node"}
 
 
 class ConfigLoadError(Exception):
@@ -87,7 +92,14 @@ class ConfigLoader:
         errors: list[str] = []
         domains: dict[str, Any] = {}
         for domain_name, (filename, schema_cls, env_prefix) in _DOMAIN_MAP.items():
-            if domain_name in _OPTIONAL_DOMAINS:
+            if domain_name in _ABSENT_IS_NONE_DOMAINS:
+                absent_errors: list[str] = []
+                obj, _ = self._load_domain(filename, schema_cls, env_prefix, absent_errors)
+                if obj is None and all("not found" in e for e in absent_errors):
+                    absent_errors = []
+                errors.extend(absent_errors)
+                domains[domain_name] = obj
+            elif domain_name in _OPTIONAL_DOMAINS:
                 optional_errors: list[str] = []
                 obj, _ = self._load_domain(filename, schema_cls, env_prefix, optional_errors)
                 # If the only error is a missing file, use defaults silently.
