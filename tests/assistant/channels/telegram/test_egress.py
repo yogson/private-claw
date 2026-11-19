@@ -6,8 +6,8 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
-from aiogram.methods import SendMessage
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
+from aiogram.methods import EditMessageText, SendMessage
 
 from assistant.channels.telegram.egress import TelegramEgress, TelegramSendError
 from assistant.channels.telegram.models import ActionButton, ChannelResponse, MessageType
@@ -259,3 +259,29 @@ class TestTelegramEgresSend:
         chunks = egress._split_text(text)
         assert len(chunks) == 2
         assert chunks[0].endswith("\n")
+
+
+class TestTelegramEgressEditMessageText:
+    @staticmethod
+    def _bad_request(message: str) -> TelegramBadRequest:
+        return TelegramBadRequest(EditMessageText(chat_id=123, message_id=7, text="x"), message)
+
+    @pytest.mark.asyncio
+    async def test_not_modified_is_not_an_error(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        error = self._bad_request(
+            "Bad Request: message is not modified: specified new message content and reply "
+            "markup are exactly the same as a current content and reply markup of the message"
+        )
+        with patch.object(egress._bot, "edit_message_text", AsyncMock(side_effect=error)):
+            await egress.edit_message_text(123, 7, "same")
+
+    @pytest.mark.asyncio
+    async def test_other_bad_requests_still_raise(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        error = self._bad_request("Bad Request: message to edit not found")
+        with (
+            patch.object(egress._bot, "edit_message_text", AsyncMock(side_effect=error)),
+            pytest.raises(TelegramBadRequest),
+        ):
+            await egress.edit_message_text(123, 7, "text")

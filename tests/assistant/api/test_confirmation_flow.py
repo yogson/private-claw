@@ -261,6 +261,34 @@ async def test_ack_failure_is_logged_and_resolution_still_completes() -> None:
     adapter.edit_message_text.assert_awaited_once()  # type: ignore[attr-defined]
 
 
+async def test_repeated_press_logs_no_warning_and_still_answers() -> None:
+    """N6: Telegram rejects the identical re-edit as "message is not modified"."""
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageText
+    from structlog.testing import capture_logs
+
+    adapter, handler = _adapter(), _Handler()
+    del adapter.edit_message_text  # use the real adapter -> egress path
+    not_modified = TelegramBadRequest(
+        EditMessageText(chat_id=CHAT_ID, message_id=MESSAGE_ID, text="x"),
+        "Bad Request: message is not modified",
+    )
+    bot_edit = AsyncMock(side_effect=[None, not_modified])
+    adapter._egress._bot.edit_message_text = bot_edit  # type: ignore[method-assign]  # noqa: SLF001
+    service = _service(handler)
+    request = await _pending(service)
+    data = _button_data(adapter, request, 0)
+
+    await _press(adapter, service, data)
+    with capture_logs() as logs:
+        await _press(adapter, service, data)
+
+    assert handler.calls == 1 and bot_edit.await_count == 2
+    assert adapter.acknowledge_callback.await_count == 2  # type: ignore[attr-defined]
+    assert _ack_text(adapter) == "✅ Saved."
+    assert not [e for e in logs if e["log_level"] in ("warning", "error", "critical")]
+
+
 async def test_normal_turn_sends_text_then_one_message_per_confirmation() -> None:
     adapter, service = _adapter(), _service()
     request = await _pending(service)

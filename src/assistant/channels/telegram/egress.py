@@ -10,7 +10,12 @@ from typing import Any, Final
 
 import structlog
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -219,13 +224,23 @@ class TelegramEgress:
         await self._bot.answer_callback_query(callback_query_id=callback_id, text=toast)
 
     async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
-        """Replace a sent message's text (plain) and drop its inline keyboard."""
-        await self._bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text[:_TELEGRAM_MAX_MESSAGE_LENGTH],
-            reply_markup=None,
-        )
+        """Replace a sent message's text (plain) and drop its inline keyboard.
+
+        An edit to identical content (e.g. a repeated press of an already-resolved
+        confirmation) is rejected by Telegram as "message is not modified": the message
+        is already in the requested state, so that is not an error.
+        """
+        try:
+            await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text[:_TELEGRAM_MAX_MESSAGE_LENGTH],
+                reply_markup=None,
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in exc.message.lower():
+                raise
+            logger.debug("telegram.edit_not_modified", chat_id=chat_id, message_id=message_id)
 
     async def close(self) -> None:
         await self._bot.session.close()
