@@ -6,7 +6,7 @@ Pydantic schemas for capability manifests (config/capabilities/*.yaml).
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from assistant.core.config.schemas import CommandAllowlistEntry
 
@@ -115,7 +115,8 @@ class CapabilityDefinition(BaseModel):
     # Opt-in for agent-proposed edits (CapabilityEditService, kind ``capability_edit``):
     # only manifests a human marked ``self_edit: true`` may be edited, and only after the
     # user approves each edit with buttons. The agent can never change this flag itself.
-    self_edit: bool = False
+    # Strict: only a real YAML boolean opts in ("yes", "true", 1 are validation errors).
+    self_edit: StrictBool = False
 
     def get_effective_tool_overrides(self, tool_id: str) -> dict[str, Any]:
         """Merge tool_overrides[tool_id] with any inline params from tools list."""

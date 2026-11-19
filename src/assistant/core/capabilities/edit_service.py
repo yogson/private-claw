@@ -12,7 +12,10 @@ handler are thin wrappers around it.
   edited span stay byte-identical. The result must parse and validate (strict schema plus the
   catalog's cross-file checks) before it is proposed and again before it is applied.
 - The agent can change neither ``capability_id`` (that would be a rename, i.e. create +
-  delete) nor ``self_edit`` (only a human sets or clears it).
+  delete) nor ``self_edit`` (only a human sets or clears it). This is enforced on the YAML
+  node tree (``manifest_structure``: exactly one of each top-level key, no duplicate or
+  merge keys, no aliases, ``self_edit`` is the plain boolean ``true``) and again on the
+  parsed result, never by text matching: YAML escapes and merge keys hide keys from text.
 - Every proposal carries the sha256 of the raw bytes it was computed from. Approval re-checks
   it, so a proposal that is stale because the file changed in between is never applied.
 - Before every applied edit the current bytes are backed up to
@@ -46,6 +49,10 @@ from assistant.core.capabilities.atomic_file import atomic_write_bytes
 from assistant.core.capabilities.edit_summary import capability_change_summary
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
+from assistant.core.capabilities.manifest_structure import (
+    ManifestStructureError,
+    check_manifest_structure,
+)
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 
@@ -53,7 +60,6 @@ logger = structlog.get_logger(__name__)
 
 HISTORY_DIR_NAME = ".capability_history"
 DEFAULT_HISTORY_RETENTION = 50
-SELF_EDIT_KEY = "self_edit"
 
 STATUS_APPLIED = "applied"
 STATUS_REJECTED_INVALID = "rejected_invalid"
@@ -237,8 +243,8 @@ class CapabilityEditService:
         target = self._resolve(capability_id)
         current = self._read_current(target)
         _check_base(target, current, base_sha256)
-        new_text = _replace_guarded(current.text, old_string, new_string)
-        after = self._validate_result(target, new_text)
+        new_text = _replace_exact(current.text, old_string, new_string)
+        after = self._validate_result(target, current, new_text)
         new_sha = _sha256(new_text.encode("utf-8"))
         payload = {
             "op": OP_EDIT,
@@ -280,7 +286,7 @@ class CapabilityEditService:
                 f"history entry {history_id} is identical to the current manifest",
             )
         new_text = _decode(restored, f"history entry {history_id}")
-        after = self._validate_result(target, new_text)
+        after = self._validate_result(target, current, new_text)
         payload = {
             "op": OP_ROLLBACK,
             "capability_id": capability_id,
@@ -385,7 +391,7 @@ class CapabilityEditService:
                     "Re-read and propose again.",
                 )
             if op == OP_EDIT:
-                new_text = _replace_guarded(
+                new_text = _replace_exact(
                     current.text,
                     str(payload.get("old_string", "")),
                     str(payload.get("new_string", "")),
@@ -398,7 +404,7 @@ class CapabilityEditService:
                 )
             else:
                 raise CapabilityEditError(STATUS_REJECTED_INVALID, f"unknown op {op!r}")
-            self._validate_result(target, new_text)
+            self._validate_result(target, current, new_text)
         except CapabilityEditError as exc:
             return EditOutcome(False, exc.status, exc.reason)
         new_bytes = new_text.encode("utf-8")
@@ -564,10 +570,30 @@ class CapabilityEditService:
                 "(self_edit: true must be set by a human)",
             )
         text = _decode(raw, target.path.name, status=STATUS_NOT_EDITABLE)
+        try:
+            # Only the plain boolean ``true`` opts in (not YAML 1.1 ``yes``/``on``), and a
+            # file that already hides a second opt-in is not editable at all.
+            check_manifest_structure(text)
+        except ManifestStructureError as exc:
+            raise CapabilityEditError(
+                STATUS_NOT_EDITABLE,
+                f"{target.path.name} on disk is not editable by the agent: {exc}",
+            ) from exc
         return _Current(raw=raw, text=text, sha256=_sha256(raw), definition=definition)
 
-    def _validate_result(self, target: _Target, new_text: str) -> CapabilityDefinition:
+    def _validate_result(
+        self, target: _Target, current: _Current, new_text: str
+    ) -> CapabilityDefinition:
+        """Every check an edit, a rollback and an approval run on the resulting text."""
         name = target.path.name
+        # 1. Node tree: protected keys exist exactly once, no duplicate/merge keys, no aliases.
+        try:
+            check_manifest_structure(new_text)
+        except ManifestStructureError as exc:
+            raise CapabilityEditError(
+                STATUS_REJECTED_INVALID, f"the resulting manifest is refused: {exc}"
+            ) from exc
+        # 2. Schema.
         try:
             after = parse_capability_manifest(name, new_text.encode("utf-8"))
         except ManifestParseError as exc:
@@ -575,17 +601,9 @@ class CapabilityEditService:
                 STATUS_REJECTED_INVALID,
                 f"the resulting manifest is invalid: {'; '.join(exc.messages)}",
             ) from exc
-        if after.capability_id != target.capability_id:
-            raise CapabilityEditError(
-                STATUS_REJECTED_INVALID,
-                f"capability_id must stay '{target.capability_id}' (renaming or creating "
-                "capabilities is not supported)",
-            )
-        if after.self_edit is not True:
-            raise CapabilityEditError(
-                STATUS_REJECTED_INVALID,
-                "self_edit must stay true; only a human may change it",
-            )
+        # 3. Parsed values of the protected keys are unchanged.
+        check_protected_fields(target.capability_id, current.definition, after)
+        # 4. Cross-file checks a catalog reload would run.
         definitions = dict(target.snapshot.definitions)
         definitions[target.capability_id] = after
         issues = [i.message for i in self._catalog.validate_candidate(definitions) if i.blocking]
@@ -708,8 +726,25 @@ def _decode(raw: bytes, what: str, status: str = STATUS_REJECTED_INVALID) -> str
         raise CapabilityEditError(status, f"{what} is not UTF-8 text") from exc
 
 
-def _replace_guarded(text: str, old_string: str, new_string: str) -> str:
-    """Exact, unique replacement that never touches the ``self_edit`` key."""
+def check_protected_fields(
+    capability_id: str, before: CapabilityDefinition, after: CapabilityDefinition
+) -> None:
+    """Parsed ``capability_id`` and ``self_edit`` must be unchanged (and ``self_edit`` true)."""
+    if after.capability_id != capability_id or after.capability_id != before.capability_id:
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            f"capability_id must stay '{capability_id}' (renaming or creating "
+            "capabilities is not supported)",
+        )
+    if after.self_edit is not True or after.self_edit != before.self_edit:
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            "self_edit must stay true; only a human may change it",
+        )
+
+
+def _replace_exact(text: str, old_string: str, new_string: str) -> str:
+    """Exact, unique replacement (the protected keys are checked on the result)."""
     if not old_string:
         raise CapabilityEditError(STATUS_REJECTED_INVALID, "old_string must not be empty")
     if old_string == new_string:
@@ -724,33 +759,8 @@ def _replace_guarded(text: str, old_string: str, new_string: str) -> str:
             STATUS_REJECTED_INVALID,
             f"old_string is not unique ({count} occurrences); include more surrounding context",
         )
-    if SELF_EDIT_KEY in new_string:
-        raise CapabilityEditError(
-            STATUS_REJECTED_INVALID,
-            "new_string must not contain 'self_edit': only a human may set or change it",
-        )
     start = text.index(old_string)
-    end = start + len(old_string)
-    offset = 0
-    for line in text.splitlines(keepends=True):
-        line_start, line_end = offset, offset + len(line.rstrip("\r\n"))
-        offset += len(line)
-        if SELF_EDIT_KEY in line and start < line_end and end > line_start:
-            raise CapabilityEditError(
-                STATUS_REJECTED_INVALID,
-                "the edit overlaps the self_edit line: only a human may change it",
-            )
-    new_text = text[:start] + new_string + text[end:]
-    if _self_edit_lines(text) != _self_edit_lines(new_text):
-        raise CapabilityEditError(
-            STATUS_REJECTED_INVALID,
-            "the edit changes a line containing self_edit: only a human may change it",
-        )
-    return new_text
-
-
-def _self_edit_lines(text: str) -> list[str]:
-    return [line for line in text.splitlines() if SELF_EDIT_KEY in line]
+    return text[:start] + new_string + text[start + len(old_string) :]
 
 
 def _dedupe_key(capability_id: str, base_sha256: str, *parts: str) -> str:

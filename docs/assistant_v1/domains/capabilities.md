@@ -291,8 +291,10 @@ explicit user approval through the generic confirmation mechanism (kind `capabil
 see `domains/agent.md` "User Confirmations").
 
 Opt-in and scope:
-- `self_edit: bool = false` in `CapabilityDefinition`. Only manifests a human marked
-  `self_edit: true` are readable/editable by the agent, and only if the file (after
+- `self_edit: StrictBool = false` in `CapabilityDefinition` (a quoted `"true"`/`"yes"` or
+  `1` is a validation error). Only manifests a human marked with the plain YAML boolean
+  `self_edit: true` are readable/editable by the agent (YAML 1.1 `yes`/`on` load as true
+  but do not opt in), and only if the file (after
   following symlinks) lives inside the active config dir (e.g. `config.local/`). A symlink
   that resolves elsewhere is `not_editable`; a symlink inside the config dir is written at
   its target, so the link survives.
@@ -324,19 +326,27 @@ Components:
 
 Proposal validation (no write):
 1. Resolve `capability_id` → file through the catalog snapshot (see opt-in rules above).
-   The file on disk must parse with `self_edit: true`, else `not_editable`.
+   The file on disk must parse with `self_edit: true` and pass the structural check of
+   step 5, else `not_editable` (so a file that already hides a second opt-in is never
+   edited).
 2. sha256 of the raw bytes ≠ `base_sha256` → `stale` ("call capability_read again").
 3. Exact match on the **raw text**: `old_string` non-empty, different from `new_string`,
    exactly one occurrence, else `rejected_invalid`. The replacement keeps comments and
    formatting outside the edited span byte-identical (no YAML round-trip, no new dependency).
-4. The result must parse and validate against the strict schema (`extra="forbid"`), pass
-   the catalog's cross-file checks on a candidate snapshot (`validate_candidate`: nested
-   references, tool bindings of the default policy), keep `capability_id`, and keep
-   `self_edit: true`.
-5. `self_edit` guard (`rejected_invalid`): `new_string` must not contain `self_edit`,
-   `old_string` must not overlap a line containing it, the lines containing `self_edit`
-   must be byte-identical before and after, and the parsed result must still say
-   `self_edit: true` (this also catches escaped duplicate keys such as `"self\x5fedit"`).
+4. The result must parse and validate against the strict schema (`extra="forbid"`), keep
+   the parsed `capability_id` and `self_edit: true` unchanged, and pass the catalog's
+   cross-file checks on a candidate snapshot (`validate_candidate`: nested references,
+   tool bindings of the default policy).
+5. Structural guard of the protected keys (`core/capabilities/manifest_structure.py`,
+   `rejected_invalid`), run on the `yaml.compose` node tree **before** parsing, never on
+   the text (YAML escapes such as `"self\x5fedit"` and merge keys hide keys from text
+   matching): exactly one YAML document with a mapping root; no merge keys (`<<`) and no
+   aliases anywhere; scalar keys only; no two keys of one mapping equal after unescaping
+   and NFKC + casefold (so duplicates, quoting and case variants collide); no top-level key
+   that only normalises to `self_edit`/`capability_id`; exactly one top-level `self_edit`
+   and one `capability_id`; `self_edit` is the plain boolean `true`. Comments may mention
+   `self_edit` freely. The same check runs at propose, on rollback content and again at
+   apply.
 6. The draft payload is `{op: edit, capability_id, file, base_sha256, new_sha256,
    old_string, new_string, reason, base_revision}`; rollbacks carry `op: rollback` and
    `target_history_id` instead of the strings. `dedupe_key` = sha256 of

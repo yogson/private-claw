@@ -25,7 +25,9 @@ from assistant.core.capabilities.edit_service import (
     CapabilityEditError,
     CapabilityEditService,
     EditProposal,
+    check_protected_fields,
 )
+from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilityLoadIssue
 
@@ -241,7 +243,7 @@ def test_stale_base_sha_at_propose(service: CapabilityEditService) -> None:
 @pytest.mark.parametrize(
     ("old", "new", "match"),
     [
-        ("prompt: |\n  Be concise.", "prompt: [unclosed", "invalid"),  # YAML error
+        ("prompt: |\n  Be concise.", "prompt: [unclosed", "YAML parse error"),
         ("tools:\n", "unknown_field: 1\ntools:\n", "extra fields not permitted"),  # schema
         ("tool_id: memory_search", "tool_id: not_a_tool", "cross-file"),  # unknown tool
         ("capability_id: editable", "capability_id: renamed", "capability_id must stay"),
@@ -256,31 +258,134 @@ def test_invalid_results_are_rejected_at_propose(
 
 
 @pytest.mark.parametrize(
-    ("old", "new"),
+    ("old", "new", "match"),
     [
-        ("self_edit: true", "self_edit: false"),  # flip
-        ("self_edit: true\n", ""),  # delete the line
-        ("true\nprompt", "false\nprompt"),  # overlaps the key line (value only)
-        ("tools:\n", "self_edit: true\ntools:\n"),  # duplicate key
-        ("tools:\n", "tools:\n  # self_edit mention\n"),  # any new self_edit text
-        ("editable\n", "editable "),  # joins the self_edit line to the previous one
-        ("true\n", "true # c\n"),  # rewrites the end of the self_edit line
+        ("self_edit: true", "self_edit: false", "plain YAML boolean true"),  # flip
+        ("self_edit: true", 'self_edit: "true"', "plain YAML boolean true"),  # quoted
+        ("self_edit: true", "self_edit: yes", "plain YAML boolean true"),  # YAML 1.1 bool
+        ("self_edit: true\n", "", "exactly one top-level 'self_edit'"),  # delete the line
+        ("true\nprompt", "false\nprompt", "plain YAML boolean true"),  # value only
+        ("tools:\n", "self_edit: true\ntools:\n", "duplicate key"),  # plain duplicate
+        # Reviewer repro B1: an escaped duplicate *before* the real line, value true.
+        (
+            "capability_id: editable\n",
+            'capability_id: editable\n"self\\x5fedit": true\n',
+            "duplicate key",
+        ),
+        ("tools:\n", '"self\\x5fedit": false\ntools:\n', "duplicate key"),
+        ("tools:\n", "Self_Edit: true\ntools:\n", "duplicate key"),  # case variant
+        ("tools:\n", "'self_edit': true\ntools:\n", "duplicate key"),  # quoting variant
+        # Reviewer repro B1: a merge key that carries a hidden second opt-in.
+        (
+            "capability_id: editable\n",
+            'capability_id: editable\n<<: {"self\\x5fedit": true}\n',
+            "merge keys",
+        ),
+        ("tools:\n", "<<: {prompt: x}\ntools:\n", "merge keys"),
+        ("self_edit: true", "self_edit: &t true\nx: *t", "aliases"),
+        ("capability_id: editable\n", "", "exactly one top-level 'capability_id'"),
+        ("editable\n", "editable\ncapability_id: editable\n", "duplicate key"),
     ],
 )
-def test_self_edit_cannot_be_changed(service: CapabilityEditService, old: str, new: str) -> None:
+def test_protected_keys_cannot_be_changed_duplicated_or_hidden(
+    service: CapabilityEditService, old: str, new: str, match: str
+) -> None:
     err = _error(_propose, service, old, new)
     assert err.status == STATUS_REJECTED_INVALID
-    assert "self_edit" in err.reason
+    assert match in err.reason, err.reason
 
 
-def test_escaped_duplicate_self_edit_key_is_caught_by_the_parsed_check(
-    service: CapabilityEditService,
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("tools:\n", "tools:\n  # self_edit mention\n"),  # comments are free text
+        ("true\n", "true  # set by a human\n"),  # a comment on the self_edit line
+    ],
+)
+def test_comments_mentioning_self_edit_are_allowed(
+    service: CapabilityEditService, old: str, new: str
 ) -> None:
-    # The text never says "self_edit", but YAML decodes the escape into a duplicate key
-    # whose last value wins: the parsed result must still have self_edit: true.
-    err = _error(_propose, service, "tools:\n", '"self\\x5fedit": false\ntools:\n')
-    assert err.status == STATUS_REJECTED_INVALID
-    assert "self_edit must stay true" in err.reason
+    assert _propose(service, old, new).payload["op"] == "edit"
+
+
+def test_reviewer_repro_hidden_opt_in_never_reaches_the_file(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    # The exact repro from the PR review: manifest ``ed`` with a planted escaped
+    # duplicate or merge key, both of which used to be accepted and survive a revoke.
+    _manifest(config_dir, "ed.yaml").write_text(
+        "capability_id: ed\nself_edit: true\nprompt: hello\n"
+    )
+    service._catalog.reload(reason="test")  # noqa: SLF001
+    base = service.read("ed").base_sha256
+    for new in (
+        'capability_id: ed\n"self\\x5fedit": true\n',
+        'capability_id: ed\n<<: {"self\\x5fedit": true}\n',
+    ):
+        err = _error(service.propose_edit, "ed", "capability_id: ed\n", new, "tidy", base)
+        assert err.status == STATUS_REJECTED_INVALID
+    assert _manifest(config_dir, "ed.yaml").read_text().count("self") == 1
+
+
+def test_parsed_protected_field_check_is_its_own_layer() -> None:
+    # Behind the structural check: the parsed values must also be unchanged.
+    before = CapabilityDefinition(capability_id="editable", self_edit=True)
+    check_protected_fields("editable", before, before)
+    for after, match in (
+        (CapabilityDefinition(capability_id="editable", self_edit=False), "self_edit must stay"),
+        (CapabilityDefinition(capability_id="other", self_edit=True), "capability_id must stay"),
+    ):
+        with pytest.raises(CapabilityEditError, match=match):
+            check_protected_fields("editable", before, after)
+    with pytest.raises(CapabilityEditError, match="self_edit must stay"):
+        check_protected_fields("editable", CapabilityDefinition(capability_id="editable"), before)
+
+
+@pytest.mark.parametrize("flag", ['"true"', "'yes'", '"on"', "1", "0", "null"])
+def test_self_edit_is_a_strict_boolean_in_the_schema(flag: str) -> None:
+    with pytest.raises(ManifestParseError, match="self_edit"):
+        parse_capability_manifest("x.yaml", f"capability_id: x\nself_edit: {flag}\n".encode())
+
+
+@pytest.mark.parametrize("flag", ["yes", "on", "On", '!!bool "true"'])
+def test_yaml_11_booleans_do_not_make_a_manifest_editable(config_dir: Path, flag: str) -> None:
+    # YAML 1.1 resolves these to a boolean (so the manifest loads), but only the plain
+    # ``true`` opts in to agent edits.
+    (config_dir / "capabilities" / "loose.yaml").write_text(
+        f"capability_id: loose\nself_edit: {flag}\nprompt: hi\n"
+    )
+    catalog = CapabilityCatalog(config_dir, validator=_tool_validator, min_refresh_interval=0)
+    err = _error(CapabilityEditService(catalog).read, "loose")
+    assert err.status == STATUS_NOT_EDITABLE and "plain YAML boolean true" in err.reason
+
+
+def test_a_file_that_already_hides_a_second_opt_in_is_not_editable(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    _manifest(config_dir).write_text(
+        EDITABLE.replace("tools:\n", '"self\\x5fedit": true\ntools:\n')
+    )
+    service._catalog.reload(reason="test")  # noqa: SLF001
+    err = _error(service.read, "editable")
+    assert err.status == STATUS_NOT_EDITABLE and "duplicate key" in err.reason
+
+
+async def test_apply_rechecks_the_structure_of_a_tampered_payload(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    hidden = 'capability_id: editable\n<<: {"self\\x5fedit": true}\n'
+    new_text = EDITABLE.replace("capability_id: editable\n", hidden)
+    payload = {
+        **proposal.payload,
+        "old_string": "capability_id: editable\n",
+        "new_string": hidden,
+        "new_sha256": _sha(new_text),
+    }
+    outcome = await service.apply(payload, confirmation_id="c1", session_id="s", user_id=None)
+    assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
+    assert "merge keys" in outcome.detail
+    assert _manifest(config_dir).read_text() == EDITABLE
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +648,23 @@ async def test_rollback_to_a_version_without_self_edit_is_rejected(
         service.read("editable").base_sha256,
     )
     assert err.status == STATUS_REJECTED_INVALID and "self_edit" in err.reason
+
+
+async def test_rollback_to_a_version_with_a_hidden_opt_in_is_rejected(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    history_id = service.history("editable")[0].history_id
+    entry = config_dir / HISTORY_DIR_NAME / "editable"
+    content = EDITABLE.replace("tools:\n", '<<: {"self\\x5fedit": true}\ntools:\n')
+    (entry / f"{history_id}.yaml").write_text(content)
+    sidecar = json.loads((entry / f"{history_id}.json").read_text())
+    sidecar["sha256"] = _sha(content)
+    (entry / f"{history_id}.json").write_text(json.dumps(sidecar))
+
+    base = service.read("editable").base_sha256
+    err = _error(service.propose_rollback, "editable", history_id, "undo", base)
+    assert err.status == STATUS_REJECTED_INVALID and "merge keys" in err.reason
 
 
 async def test_history_is_pruned_to_the_retention(
