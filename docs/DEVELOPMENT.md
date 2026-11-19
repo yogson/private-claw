@@ -112,7 +112,11 @@ would kill the first one's delegations. The launcher enforces separate data dirs
   changes every instance (each picks it up on its next turn). The edit lock is per process,
   so approving edits to the same manifest in two instances at the same moment can race.
   `POST /admin/config/apply` writes the shared YAML files. It writes only the files' own
-  keys plus the change, never env overrides such as an instance's data dir or token.
+  keys plus the payload; env-derived values that are not in the payload are never written.
+  The admin UI form, however, is pre-filled with effective values (env overrides included)
+  and submits them all, so saving a form section on an instance with env overrides (e.g.
+  `ASSISTANT_MEMORY_DEFAULT_USER_ID`) writes those values to the shared config. Save config
+  through the admin UI of the main instance, not an extra one.
 - **Mem0**: `memory.default_user_id` is shared, so memories from one workstream are visible
   in all of them. For separate memories set `ASSISTANT_MEMORY_DEFAULT_USER_ID` under `env:`.
 - **`~/.claude/settings.json`**: every instance writes it at startup and on capability
