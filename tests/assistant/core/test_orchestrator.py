@@ -28,6 +28,7 @@ from assistant.core.config.schemas import (
 )
 from assistant.core.confirmation import (
     CONFIRMATION_RESOLVED_MARKER,
+    ConfirmationDecision,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
     ConfirmationRequest,
@@ -37,6 +38,7 @@ from assistant.core.confirmation import (
     unresolved_pending_ids,
 )
 from assistant.core.events.models import (
+    SYSTEM_USER_ID,
     AttachmentMeta,
     CallbackQueryMeta,
     EventSource,
@@ -1033,6 +1035,44 @@ class TestOrchestratorExecuteTurn:
         results = [r for r in appended if r.record_type == SessionRecordType.TOOL_RESULT]
         assert [r.event_id for r in results] == ["tool-result-tool-1"]
         assert results[0].payload["result"]["status"] == "pending_confirmation"
+
+    @pytest.mark.asyncio
+    async def test_confirmation_from_system_turn_without_requester_is_unbound(
+        self,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+
+        async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
+            await kwargs["deps"].confirmation_requester(_memory_draft())  # type: ignore[attr-defined]
+            return ("ok", [], None)
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_run_turn)
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+        event = _minimal_event(text="[[DELEGATION_COMPLETED]]").model_copy(
+            update={"user_id": SYSTEM_USER_ID, "source": EventSource.SYSTEM}
+        )
+
+        result = await orch.execute_turn(event)
+
+        assert result is not None
+        request = result.confirmations[0]
+        assert request.user_id is None
+        # The chat user can still press the buttons (not "not_owner").
+        pressed = await confirmations.resolve(
+            request.confirmation_id, ConfirmationDecision.REJECT, user_id="123"
+        )
+        assert not pressed.not_owner
 
     @pytest.mark.asyncio
     async def test_confirmations_are_discarded_when_turn_fails(

@@ -42,7 +42,7 @@ from assistant.core.confirmation import (
     neutralize_confirmation_marker,
     unresolved_pending_ids,
 )
-from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
+from assistant.core.events.models import SYSTEM_USER_ID, AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
 from assistant.core.orchestrator.compaction import ChatCompactionService
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
@@ -386,8 +386,12 @@ class Orchestrator:
             streaming_text_notifier=streaming_text_notifier,
             user_id=user_id,
             vocabulary_store=self._vocabulary_store,
+            # A system turn with no known requester leaves the approver unbound: binding it
+            # to the placeholder id would make the confirmation unpressable.
             confirmation_requester=self._build_confirmation_requester(
-                session_id, created_confirmations, user_id
+                session_id,
+                created_confirmations,
+                None if user_id == SYSTEM_USER_ID else user_id,
             ),
             capability_edit_service=self._capability_edit_service,
         )
