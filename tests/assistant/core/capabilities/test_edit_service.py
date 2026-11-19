@@ -388,6 +388,34 @@ async def test_apply_rechecks_the_structure_of_a_tampered_payload(
     assert _manifest(config_dir).read_text() == EDITABLE
 
 
+def test_allowlist_widening_is_spelled_out_in_the_proposal_summary(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    # Reviewer repro B2: used to render as "command_allowlist reordered" with no warning.
+    _manifest(config_dir).write_text(
+        EDITABLE
+        + "tool_overrides:\n  shell_execute_allowlisted:\n    command_allowlist:\n"
+        + '      - {id: git, command_pattern: git, allowed_args_pattern: "^status$", '
+        + "max_timeout_seconds: 10}\n"
+    )
+    proposal = _propose(
+        service, '"^status$", max_timeout_seconds: 10', '".*", max_timeout_seconds: 3600'
+    )
+    assert "⚠ Security-sensitive changes" in proposal.summary
+    assert '[git].allowed_args_pattern: "^status$" → ".*"' in proposal.summary
+    assert "[git].max_timeout_seconds: 10 → 3600" in proposal.summary
+
+
+def test_proposal_whose_sensitive_changes_do_not_fit_is_refused(
+    service: CapabilityEditService,
+) -> None:
+    allow = "".join(f"      - Bash({'y' * 70}{i}:*)\n" for i in range(200))
+    new = f"claude_code_settings:\n  permissions:\n    allow:\n{allow}tools:\n"
+    err = _error(_propose, service, "tools:\n", new)
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "security-sensitive field changes" in err.reason and "smaller edits" in err.reason
+
+
 # ---------------------------------------------------------------------------
 # apply
 # ---------------------------------------------------------------------------

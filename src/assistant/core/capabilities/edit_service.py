@@ -46,7 +46,7 @@ from typing import Any
 import structlog
 
 from assistant.core.capabilities.atomic_file import atomic_write_bytes
-from assistant.core.capabilities.edit_summary import capability_change_summary
+from assistant.core.capabilities.edit_summary import SummaryTooLargeError, capability_change_summary
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
 from assistant.core.capabilities.manifest_structure import (
@@ -257,7 +257,7 @@ class CapabilityEditService:
             "reason": reason,
             "base_revision": target.snapshot.revision,
         }
-        summary = capability_change_summary(
+        summary = _summary(
             capability_id=capability_id,
             file_name=target.path.name,
             reason=reason,
@@ -297,7 +297,7 @@ class CapabilityEditService:
             "reason": reason,
             "base_revision": target.snapshot.revision,
         }
-        summary = capability_change_summary(
+        summary = _summary(
             capability_id=capability_id,
             file_name=target.path.name,
             reason=reason,
@@ -697,6 +697,18 @@ class CapabilityEditService:
             lock = asyncio.Lock()
             self._locks[capability_id] = lock
         return lock
+
+
+def _summary(**kwargs: Any) -> str:
+    """Approver summary; a change whose ⚠ lines do not all fit is refused, never cut."""
+    try:
+        return capability_change_summary(**kwargs)
+    except SummaryTooLargeError as exc:
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            f"the change has {exc.sensitive_changes} security-sensitive field changes, too "
+            "many to show the user in one confirmation; split it into smaller edits",
+        ) from exc
 
 
 def _check_reason(reason: str) -> str:

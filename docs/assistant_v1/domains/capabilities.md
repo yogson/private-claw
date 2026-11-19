@@ -352,15 +352,28 @@ Proposal validation (no write):
    `target_history_id` instead of the strings. `dedupe_key` = sha256 of
    `(capability_id, base_sha256, op, old_string, new_string | history_id)`.
 
-Summary (`summary_for_user`, a summary, not a diff): headline with id and file name,
-the reason (clipped to 300 chars), a `⚠ Grants new tools / MCP servers / permissions`
-line when the change adds tools, MCP servers, nested capabilities, Claude Code `allow`
-permissions or MCP servers, command allowlist / readonly entries, or removes `deny`
-entries, then one line per changed field. List-valued, permission-relevant fields show
-the exact items added (`+`) and removed (`−`); `prompt` shows the size change, the added /
-removed line counts and a ≤300-char excerpt of the added text. The warning is placed before
-the field list so a cut never hides it, and the summary is capped in UTF-16 code units
-(the unit Telegram counts) at `SUMMARY_MAX_CHARS`.
+Summary (`summary_for_user`, `core/capabilities/edit_summary.py`): a generic structural
+diff of the parsed manifests (`model_dump` before vs. after, so shorthands such as
+`command_allowlist: [git]` appear with their effective defaults). Headline with id and file
+name, the reason (clipped to 300 chars with `(+N chars hidden)`), then one line per changed
+leaf with the concrete values: `path: before → after`, `path: + value`, `path: − removed`.
+Lists of entries are matched by their identity field (`tool_id`, `id`, `command_pattern`,
+`name`), so e.g. `tool_overrides.shell_execute_allowlisted.command_allowlist[git].allowed_args_pattern: "^status$" → ".*"`;
+lists of strings show each item added (`+`) or removed (`−`); a pure reorder says
+`order changed`. Values longer than 120 chars are cut with `(+N chars hidden)`. Values under
+`claude_code_settings.mcp_servers.*.env` / `headers` and secret-looking keys are shown as
+`<hidden>` (key names stay visible).
+
+Every top-level field except `prompt` (tools, tool_overrides, params_override, MCP servers,
+nested capabilities, Claude Code permissions and MCP servers, and any field added later) is
+security-sensitive: its lines are marked `⚠`, listed first, and a
+`⚠ Security-sensitive changes …` line precedes the field list. `prompt` shows the size
+change, the added / removed line counts and an excerpt of the added text that says how much
+was cut (`excerpt (first 300 of N added chars)`). The summary is capped in UTF-16 code units
+(the unit Telegram counts) at `SUMMARY_MAX_CHARS`: if it does not fit, non-⚠ lines are
+dropped with an explicit `(+N more changes not shown)` line; if the ⚠ lines alone do not
+fit, the proposal is `rejected_invalid` and the agent is asked to split it into smaller
+edits. `No manifest fields change` appears only when the parsed manifests are identical.
 
 Apply (`CapabilityEditHandler.apply` on Approve; per-capability `asyncio.Lock`, file I/O in
 `asyncio.to_thread`):
