@@ -67,6 +67,12 @@ class FilesystemAgentNodeStore(AgentNodeStoreInterface):
     async def save_job(self, job: JobRecord) -> None:
         await atomic_write_text(self._job_path(job.job_id), job.model_dump_json())
 
+    async def delete_job(self, job_id: str) -> None:
+        self._job_path(job_id).unlink(missing_ok=True)
+
+    async def delete_idempotency(self, key: str) -> None:
+        self._idem_path(key).unlink(missing_ok=True)
+
     async def get_job(self, job_id: str) -> JobRecord | None:
         return self._read(self._job_path(job_id), JobRecord)
 

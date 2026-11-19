@@ -102,6 +102,7 @@ class Env:
     coordinator: DelegationCoordinator
     sender: WebhookSender
     repo: Path
+    data_root: Path
     deliveries: list[httpx.Request] = field(default_factory=list)
     webhook_status: list[int] = field(default_factory=lambda: [200])
 
@@ -165,6 +166,7 @@ async def env(tmp_path: Path) -> AsyncIterator[Env]:
             coordinator=coordinator,
             sender=sender,
             repo=repo,
+            data_root=tmp_path / "data",
             deliveries=deliveries,
         )
         holder["env"] = e

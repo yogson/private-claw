@@ -210,12 +210,14 @@ class IdempotencyRecord(BaseModel):
 
 
 class RepoContext(BaseModel):
-    """Where a repo job runs and what HEAD looked like when it was accepted."""
+    """A repo job: the mapped checkout, its per-job worktree and work branch."""
 
     full_name: str
-    path: str
+    path: str  # the mapped checkout (the worktree's parent repository)
     base_branch: str
-    head_before: str | None = None
+    base_sha: str | None = None
+    branch: str = ""
+    worktree: str | None = None
 
 
 class JobRecord(BaseModel):
@@ -239,6 +241,9 @@ class JobRecord(BaseModel):
     webhook_url: str | None = None
     webhook_signed: bool = False
     timed_out_phase: str | None = None
+    scratch_dir: str | None = None  # workspace of a non-repo job, removed after finalize
+    # Set when the job could not be started (e.g. worktree creation failed): (kind, error).
+    preset_failure: tuple[str, str] | None = None
     final_view: dict[str, Any] | None = None
 
 

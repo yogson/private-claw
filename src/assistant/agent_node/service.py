@@ -16,7 +16,9 @@ interrupted by a restart.
 
 import asyncio
 import contextlib
+import shutil
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,6 +62,8 @@ FILES_UNSUPPORTED_DETAIL = "input files are not supported"
 CANCELLED_WHILE_QUEUED = "cancelled while queued; the agent was not started"
 CANCELLED_WHILE_RUNNING = "cancelled while running; the agent was stopped"
 RETRY_AFTER_SECONDS = 30
+# How long cancel / expiry wait for the worker to stop before answering anyway.
+CANCEL_STOP_TIMEOUT_SECONDS = 15.0
 _RECONCILE_INTERVAL_SECONDS = 5.0
 _CLEANUP_INTERVAL_SECONDS = 3600.0
 # A job whose task never appeared (crash between accept steps) is orphaned after this.
@@ -103,7 +107,7 @@ def _iso(value: datetime) -> str:
 
 
 def build_objective(
-    *, user_prompt: str, system_prompt: str | None, repo: RepoContext | None, job_id: str
+    *, user_prompt: str, system_prompt: str | None, repo: RepoContext | None
 ) -> str:
     """Delegation objective: prompts plus, for a repo job, where and how to work."""
     parts: list[str] = []
@@ -114,11 +118,12 @@ def build_objective(
         parts.append(
             "--- Environment ---\n"
             f"Repository: {repo.full_name}\n"
-            f"Local checkout (your working directory): {repo.path}\n"
+            "Your working directory is a dedicated git worktree of it: "
+            f"{repo.worktree or repo.path}\n"
             f"Base branch: {repo.base_branch}\n"
-            f"Create a work branch named agent-node/{job_id[:12]} from {repo.base_branch} "
-            "and commit your changes there. Do not push, do not open a pull request, "
-            "and do not alter other branches. Leave unrelated uncommitted changes untouched."
+            f"The worktree is already on the work branch {repo.branch}, created from "
+            f"{repo.base_branch}. Commit your changes on this branch and do not switch "
+            "branches. Do not push and do not open a pull request."
         )
     return "\n\n".join(parts)
 
@@ -149,6 +154,7 @@ class AgentNodeService:
         self._create_lock = asyncio.Lock()
         self._finalize_lock = asyncio.Lock()
         self._loop_task: asyncio.Task[None] | None = None
+        self._expiring: dict[str, asyncio.Task[None]] = {}
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -181,22 +187,59 @@ class AgentNodeService:
             await asyncio.sleep(_RECONCILE_INTERVAL_SECONDS)
 
     async def reconcile(self) -> None:
-        """Finalize jobs whose task ended without a callback; enforce the job deadline."""
+        """Finalize jobs whose task ended without a callback; enforce the job deadline.
+
+        An expiry waits on the coordinator to stop the run, which can be slow; each one
+        runs as its own task so it never holds up the rest of the pass.
+        """
         for job in await self._store.list_unfinalized_jobs():
             task = await self._task_store.get(job.job_id)
             if task is not None and task.status not in _TERMINAL:
-                if _now() > datetime.fromisoformat(job.deadline):
-                    await self._expire(job, task)
+                if (
+                    _now() > datetime.fromisoformat(job.deadline)
+                    and job.job_id not in self._expiring
+                ):
+                    expiry = asyncio.create_task(
+                        self._expire(job, task), name=f"agent_node.expire.{job.job_id}"
+                    )
+                    self._expiring[job.job_id] = expiry
+                    expiry.add_done_callback(self._forget_expiry(job.job_id))
                 continue
             await self.finalize(job.job_id, task)
 
+    def _forget_expiry(self, job_id: str) -> Callable[[asyncio.Task[None]], None]:
+        def _done(_task: asyncio.Task[None]) -> None:
+            self._expiring.pop(job_id, None)
+
+        return _done
+
     async def _expire(self, job: JobRecord, task: TaskRecord) -> None:
-        phase = "queued" if task.status == TaskStatus.PENDING else "running"
-        job.timed_out_phase = phase
-        await self._store.save_job(job)
-        logger.info("agent_node.job.deadline_passed", job_id=job.job_id, phase=phase)
-        settled = await self._coordinator.cancel_task(job.job_id)
-        await self.finalize(job.job_id, settled)
+        try:
+            phase = "queued" if task.status == TaskStatus.PENDING else "running"
+            job.timed_out_phase = phase
+            await self._store.save_job(job)
+            logger.info("agent_node.job.deadline_passed", job_id=job.job_id, phase=phase)
+            await self.finalize(job.job_id, await self._stop_task(job.job_id))
+        except Exception:
+            logger.exception("agent_node.job.expire_failed", job_id=job.job_id)
+
+    async def _stop_task(self, job_id: str) -> TaskRecord | None:
+        """Cancel the task, waiting at most ``CANCEL_STOP_TIMEOUT_SECONDS`` for the worker.
+
+        If the backend's teardown is slow, the task record is forced to CANCELLED so the
+        caller can answer; the worker finishes stopping in the background.
+        """
+        stopping = asyncio.ensure_future(self._coordinator.cancel_task(job_id))
+        try:
+            return await asyncio.wait_for(asyncio.shield(stopping), CANCEL_STOP_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning("agent_node.job.cancel_stop_slow", job_id=job_id)
+            current = await self._task_store.get(job_id)
+            if current is not None and current.status not in _TERMINAL:
+                current = await self._task_store.update_status(
+                    job_id, TaskStatus.CANCELLED, error="Cancelled by user"
+                )
+            return current
 
     # -- create ---------------------------------------------------------------------
 
@@ -221,19 +264,21 @@ class AgentNodeService:
         ``body_dump`` is the validated body (``model_dump(mode="json")``) used for the
         fingerprint; ``github_token`` is not in it and is never passed here at all.
         """
-        repo_cfg = None
-        if repo_full_name is not None:
-            repo_cfg = self.config.repositories.get(repo_full_name)
-            if repo_cfg is None:
-                raise JobRejected(422, f"repository {repo_full_name!r} is not configured")
         fingerprint = request_fingerprint(body_dump)
         accepted_at = _now()
 
         async with self._create_lock:
+            # Replay / conflict first: a retry of an accepted job must not depend on the
+            # current repository mapping.
             if idempotency_key is not None:
                 existing = await self._find_existing(idempotency_key)
                 if existing is not None:
                     return await self._replay(existing, fingerprint, requested_deadline)
+            repo_cfg = None
+            if repo_full_name is not None:
+                repo_cfg = self.config.repositories.get(repo_full_name)
+                if repo_cfg is None:
+                    raise JobRejected(422, f"repository {repo_full_name!r} is not configured")
             if requested_deadline is not None and requested_deadline <= accepted_at:
                 raise DeadlineNotInFuture
 
@@ -242,55 +287,24 @@ class AgentNodeService:
             if requested_deadline is not None:
                 deadline = min(deadline, requested_deadline)
             run_seconds = max(1, int((deadline - accepted_at).total_seconds()))
-
             job_id = uuid.uuid4().hex
+
             repo: RepoContext | None = None
             if repo_cfg is not None and repo_full_name is not None:
                 repo_path = str(Path(repo_cfg.path).expanduser())
+                base_sha = await git_inspect.resolve_base(repo_path, base_branch)
+                if base_sha is None:
+                    raise JobRejected(
+                        422, f"base branch {base_branch!r} not found in {repo_full_name!r}"
+                    )
                 repo = RepoContext(
                     full_name=repo_full_name,
                     path=repo_path,
                     base_branch=base_branch,
-                    head_before=await git_inspect.head_sha(repo_path),
+                    base_sha=base_sha,
+                    branch=f"agent-node/{job_id[:12]}",
+                    worktree=str(self._data_root / "agent_node" / "worktrees" / job_id),
                 )
-                workdir = repo_path
-            else:
-                workdir_path = self._data_root / "agent_node" / "workspaces" / job_id
-                await asyncio.to_thread(workdir_path.mkdir, parents=True, exist_ok=True)
-                workdir = str(workdir_path)
-
-            accept = await self._coordinator.enqueue_from_tool(
-                session_id=f"{AGENT_NODE_SESSION_PREFIX}{job_id}",
-                turn_id=job_id,
-                trace_id=job_id,
-                user_id=None,
-                request={
-                    "task_id": job_id,
-                    "objective": build_objective(
-                        user_prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        repo=repo,
-                        job_id=job_id,
-                    ),
-                    "model_id": model or self.config.default_model,
-                    "backend": self.config.backend,
-                    "timeout_seconds": run_seconds,
-                    "backend_params": {"directory": workdir},
-                    "tool_params": self._tool_params(run_seconds),
-                    "task_metadata": {
-                        "source": AGENT_NODE_SOURCE,
-                        "job_id": job_id,
-                        "idempotency_key": idempotency_key,
-                        "deadline": _iso(deadline),
-                        "interactive": False,
-                    },
-                },
-            )
-            if not accept.get("accepted"):
-                reason = str(accept.get("rejection_reason") or "rejected")
-                if accept.get("retryable"):
-                    raise JobRejected(503, reason, retry_after=RETRY_AFTER_SECONDS)
-                raise JobRejected(422, reason)
 
             job = JobRecord(
                 job_id=job_id,
@@ -305,6 +319,10 @@ class AgentNodeService:
                 webhook_url=webhook_url,
                 webhook_signed=bool(webhook_url and webhook_secret),
             )
+            if repo is None:
+                job.scratch_dir = str(self._data_root / "agent_node" / "workspaces" / job_id)
+            # Persist before enqueueing: a crash in between leaves a job the reconcile loop
+            # can see (and fail), never a running task nobody knows about.
             if webhook_url and webhook_secret:
                 await self._store.save_secret(job_id, webhook_secret)
             await self._store.save_job(job)
@@ -318,8 +336,113 @@ class AgentNodeService:
                         ttl_seconds=self._idempotency_ttl,
                     )
                 )
+
+            workdir = await self._prepare_workspace(job)
+            if workdir is None:
+                # Not a refusal: the job exists and is reported failed (workspace_failed).
+                job = await self.finalize(job_id, None) or job
+                logger.warning("agent_node.job.workspace_failed", job_id=job_id)
+                return CreateOutcome(view=await self._view_of(job, None), replayed=False)
+
+            try:
+                accept = await self._coordinator.enqueue_from_tool(
+                    session_id=f"{AGENT_NODE_SESSION_PREFIX}{job_id}",
+                    turn_id=job_id,
+                    trace_id=job_id,
+                    user_id=None,
+                    request={
+                        "task_id": job_id,
+                        "objective": build_objective(
+                            user_prompt=user_prompt, system_prompt=system_prompt, repo=repo
+                        ),
+                        "model_id": self._effective_model(model),
+                        "backend": self.config.backend,
+                        "timeout_seconds": run_seconds,
+                        "backend_params": {"directory": workdir},
+                        "tool_params": self._tool_params(run_seconds),
+                        "task_metadata": {
+                            "source": AGENT_NODE_SOURCE,
+                            "job_id": job_id,
+                            "idempotency_key": idempotency_key,
+                            "deadline": _iso(deadline),
+                            "interactive": False,
+                        },
+                    },
+                )
+            except BaseException:
+                await self._discard(job)
+                raise
+            if not accept.get("accepted"):
+                await self._discard(job)
+                reason = str(accept.get("rejection_reason") or "rejected")
+                if accept.get("retryable"):
+                    raise JobRejected(503, reason, retry_after=RETRY_AFTER_SECONDS)
+                raise JobRejected(422, reason)
         logger.info("agent_node.job.accepted", job_id=job_id, repo=repo_full_name)
         return CreateOutcome(view=await self._view_of(job, None), replayed=False)
+
+    def _effective_model(self, requested: str | None) -> str | None:
+        """Requested model if allowed, else the configured default (None: coordinator default)."""
+        if requested is not None:
+            if requested in self._runtime_config.model.model_allowlist:
+                return requested
+            logger.warning(
+                "agent_node.model_not_allowed",
+                requested=requested,
+                fallback=self.config.default_model or "coordinator default",
+            )
+            return self.config.default_model
+        return self.config.default_model
+
+    async def _prepare_workspace(self, job: JobRecord) -> str | None:
+        """Create the worktree / scratch dir; None (``preset_failure`` stored) on failure."""
+        if job.repo is not None and job.repo.worktree is not None:
+            assert job.repo.base_sha is not None
+            error = await git_inspect.worktree_add(
+                job.repo.path, job.repo.worktree, job.repo.branch, job.repo.base_sha
+            )
+            if error is not None:
+                job.preset_failure = (
+                    ErrorKind.WORKSPACE_FAILED.value,
+                    f"could not create the job worktree: {error}"[:500],
+                )
+                await self._store.save_job(job)
+                return None
+            return job.repo.worktree
+        assert job.scratch_dir is not None
+        try:
+            await asyncio.to_thread(Path(job.scratch_dir).mkdir, parents=True, exist_ok=True)
+        except OSError as exc:
+            job.preset_failure = (
+                ErrorKind.WORKSPACE_FAILED.value,
+                f"could not create the job workspace: {exc}",
+            )
+            await self._store.save_job(job)
+            return None
+        return job.scratch_dir
+
+    async def _cleanup_workspace(self, job: JobRecord) -> None:
+        """Remove the job's worktree (keeping its branch) or scratch dir. Never raises."""
+        try:
+            if job.repo is not None and job.repo.worktree is not None:
+                if Path(job.repo.worktree).exists() and not await git_inspect.worktree_remove(
+                    job.repo.path, job.repo.worktree
+                ):
+                    logger.warning("agent_node.worktree.remove_failed", job_id=job.job_id)
+            elif job.scratch_dir is not None:
+                await asyncio.to_thread(shutil.rmtree, job.scratch_dir, True)
+        except Exception:
+            logger.exception("agent_node.workspace.cleanup_failed", job_id=job.job_id)
+
+    async def _discard(self, job: JobRecord) -> None:
+        """Undo an accept that did not happen: records, secret, workspace (and its branch)."""
+        await self._cleanup_workspace(job)
+        if job.repo is not None and job.repo.worktree is not None:
+            await git_inspect.branch_delete(job.repo.path, job.repo.branch)
+        await self._store.delete_job(job.job_id)
+        if job.idempotency_key is not None:
+            await self._store.delete_idempotency(job.idempotency_key)
+        await self._store.delete_secret(job.job_id)
 
     async def _find_existing(self, key: str) -> tuple[IdempotencyRecord, JobRecord] | None:
         record = await self._store.get_idempotency(key)
@@ -357,6 +480,8 @@ class AgentNodeService:
         ttl = run_seconds + 60
         params["delegation_default_ttl_seconds"] = ttl
         params["delegation_max_ttl_seconds"] = ttl
+        # Jobs queue behind the coordinator's worker slots instead of being refused.
+        params["delegation_skip_concurrency_limit"] = True
         return params
 
     # -- read / cancel -----------------------------------------------------------------
@@ -377,8 +502,7 @@ class AgentNodeService:
         if job is None:
             return None
         if job.final_view is None:
-            task = await self._coordinator.cancel_task(job_id)
-            await self.finalize(job_id, task)
+            await self.finalize(job_id, await self._stop_task(job_id))
         return await self.get_view(job_id)
 
     async def _view_of(self, job: JobRecord, task: TaskRecord | None) -> JobView:
@@ -449,7 +573,7 @@ class AgentNodeService:
                 return job
             if task is not None and task.status not in _TERMINAL:
                 return job
-            if task is None and not self._missing_task_expired(job):
+            if task is None and job.preset_failure is None and not self._missing_task_expired(job):
                 return job
             result_view, status, updated_at = await self._final_result(job, task)
             view = self._base_view(job, status=status, updated_at=updated_at, result=result_view)
@@ -473,6 +597,7 @@ class AgentNodeService:
             job.final_view = payload
             await self._store.save_job(job)
         logger.info("agent_node.job.finalized", job_id=job_id, status=status.value)
+        await self._cleanup_workspace(job)
         if job.webhook_url:
             self._sender.kick()
         return job
@@ -481,6 +606,13 @@ class AgentNodeService:
         self, job: JobRecord, task: TaskRecord | None
     ) -> tuple[JobResultView, JobStatus, str]:
         now_iso = _iso(_now())
+        if job.preset_failure is not None:
+            kind, error = job.preset_failure
+            return (
+                JobResultView(error=error, error_kind=ErrorKind(kind)),
+                JobStatus.FAILED,
+                now_iso,
+            )
         if task is None:
             return (
                 JobResultView(
@@ -559,15 +691,23 @@ class AgentNodeService:
         }
         if job.repo is None:
             return JobResultView(**fields), JobStatus.SUCCEEDED
-        after = await git_inspect.head_sha(job.repo.path)
-        if after is None or after == job.repo.head_before:
-            return JobResultView(**fields), JobStatus.NO_CHANGES
-        fields["commit_sha"] = after
-        fields["branch"] = await git_inspect.current_branch(job.repo.path)
-        if job.repo.head_before is not None:
-            fields["diff_stat"] = await git_inspect.diff_stat(
-                job.repo.path, job.repo.head_before, after
+        # Judged on the work branch's tip against the base commit, not on any HEAD.
+        tip = await git_inspect.branch_tip(job.repo.path, job.repo.branch)
+        if tip is None:
+            return (
+                JobResultView(
+                    error=f"could not read work branch {job.repo.branch!r} after the run",
+                    error_kind=ErrorKind.INTERNAL,
+                    **fields,
+                ),
+                JobStatus.FAILED,
             )
+        if tip == job.repo.base_sha:
+            return JobResultView(**fields), JobStatus.NO_CHANGES
+        fields["commit_sha"] = tip
+        fields["branch"] = job.repo.branch
+        if job.repo.base_sha is not None:
+            fields["diff_stat"] = await git_inspect.diff_stat(job.repo.path, job.repo.base_sha, tip)
         return JobResultView(**fields), JobStatus.SUCCEEDED
 
 
@@ -582,6 +722,10 @@ _TERMINAL = (
 def _failure_kind(error: str) -> ErrorKind:
     lowered = error.lower()
     if lowered.startswith(_RESTART_ERROR_PREFIX.lower()):
+        return ErrorKind.ORPHANED
+    if lowered == "cancelled":
+        # Not a user cancel (those go through cancel_task): the worker was cancelled by
+        # coordinator shutdown.
         return ErrorKind.ORPHANED
     if "timed out" in lowered:
         return ErrorKind.TIMEOUT

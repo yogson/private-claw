@@ -1,12 +1,18 @@
 """Contract tests for POST /jobs, POST /jobs/{id}/cancel and GET /jobs/{id}."""
 
+import asyncio
 import re
+import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from assistant.agent_node import service as service_module
 from assistant.store.models import TaskStatus
+from assistant.subagents.contracts import DelegationResult, DelegationRun
+from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 from tests.assistant.agent_node.conftest import (
     AUTH,
     WEBHOOK_SECRET,
@@ -137,18 +143,36 @@ class TestCreate:
         # The webhook URL carries the suspension token: it stays out of the task record.
         assert WEBHOOK_URL not in task.model_dump_json()
 
-    async def test_repo_job_runs_in_the_mapped_checkout(self, env: Env) -> None:
-        resp = await _create(env, repo_full_name="acme/widgets", base_branch="develop")
+    async def test_repo_job_runs_in_its_own_worktree_on_a_work_branch(self, env: Env) -> None:
+        resp = await _create(env, repo_full_name="acme/widgets", base_branch="main")
         assert resp.status_code == 202
         assert resp.json()["repo_full_name"] == "acme/widgets"
-        task = await env.store.tasks.get(resp.json()["id"])
+        job_id = resp.json()["id"]
+        task = await env.store.tasks.get(job_id)
         assert task is not None
-        assert task.metadata["backend_params"]["directory"] == str(env.repo)
+        directory = Path(task.metadata["backend_params"]["directory"])
+        assert directory != env.repo
+        assert directory == env.data_root / "agent_node" / "worktrees" / job_id
+        assert git(directory, "rev-parse", "--abbrev-ref", "HEAD") == f"agent-node/{job_id[:12]}"
+        assert git(directory, "rev-parse", "HEAD") == git(env.repo, "rev-parse", "main")
+        # The mapped checkout itself is left alone.
+        assert git(env.repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
         objective = task.metadata["objective"]
         assert "acme/widgets" in objective
-        assert str(env.repo) in objective
-        assert "Base branch: develop" in objective
+        assert "Base branch: main" in objective
+        assert f"agent-node/{job_id[:12]}" in objective
+        assert "do not switch branches" in objective
         assert "pull request" in objective  # explicitly told not to open one
+
+    async def test_unknown_base_branch_is_422_and_leaves_nothing_behind(self, env: Env) -> None:
+        resp = await _create(env, repo_full_name="acme/widgets", base_branch="develop")
+        assert resp.status_code == 422
+        assert "develop" in resp.json()["detail"]
+        assert await env.store.tasks.list_by_status(TaskStatus.PENDING) == []
+        assert not (env.data_root / "agent_node" / "worktrees").exists() or not list(
+            (env.data_root / "agent_node" / "worktrees").iterdir()
+        )
+        assert await env.store.agent_node.list_unfinalized_jobs() == []
 
     async def test_job_without_repo_gets_a_scratch_workspace(self, env: Env) -> None:
         resp = await _create(env)
@@ -281,23 +305,92 @@ class TestRejections:
         assert "someone/else" in resp.json()["detail"]
         assert await env.store.tasks.list_by_status(TaskStatus.PENDING) == []
 
-    async def test_concurrency_limit_is_503_with_retry_after(self, env: Env) -> None:
-        assert (await _create(env, headers=_key("a"))).status_code == 202
-        assert (await _create(env, headers=_key("b"))).status_code == 202
-        resp = await _create(env, headers=_key("c"))
+    async def test_jobs_queue_behind_worker_slots_instead_of_being_refused(self, env: Env) -> None:
+        # The fixture allows 2 concurrent delegations; the ingress does not enforce that as
+        # a refusal, the extra jobs simply wait as pending tasks.
+        for key in ("a", "b", "c", "d"):
+            assert (await _create(env, headers=_key(key))).status_code == 202
+        assert len(await env.store.tasks.list_by_status(TaskStatus.PENDING)) == 4
+
+    async def test_window_budget_refusal_is_503_and_leaves_nothing_behind(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def refuse(**_kwargs: Any) -> dict[str, Any]:
+            return {
+                "accepted": False,
+                "rejection_reason": "global token budget exceeded",
+                "retryable": True,
+            }
+
+        monkeypatch.setattr(env.coordinator, "enqueue_from_tool", refuse)
+        resp = await _create(
+            env,
+            repo_full_name="acme/widgets",
+            webhook_url=WEBHOOK_URL,
+            webhook_secret=WEBHOOK_SECRET,
+        )
         assert resp.status_code == 503
         assert int(resp.headers["retry-after"]) > 0
-        # Nothing was recorded for the refused request: a retry with the same key is a new job.
-        await env.coordinator.cancel_task(
-            (await env.store.tasks.list_by_status(TaskStatus.PENDING))[0].task_id
-        )
-        retry = await _create(env, headers=_key("c"))
-        assert retry.status_code == 202
+        await self._assert_nothing_left(env)
 
-    async def test_model_outside_allowlist_is_422(self, env: Env) -> None:
-        resp = await _create(env, model="gpt-9")
+    async def test_per_task_budget_refusal_is_422(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def refuse(**_kwargs: Any) -> dict[str, Any]:
+            return {
+                "accepted": False,
+                "rejection_reason": "task token budget exceeded",
+                "retryable": False,
+            }
+
+        monkeypatch.setattr(env.coordinator, "enqueue_from_tool", refuse)
+        resp = await _create(env)
         assert resp.status_code == 422
-        assert "not allowed" in resp.json()["detail"]
+        await self._assert_nothing_left(env)
+
+    async def test_job_and_idempotency_are_persisted_before_enqueue(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+        real = env.coordinator.enqueue_from_tool
+
+        async def spy(**kwargs: Any) -> dict[str, Any]:
+            job_id = kwargs["request"]["task_id"]
+            seen["job"] = await env.store.agent_node.get_job(job_id)
+            seen["idem"] = await env.store.agent_node.get_idempotency("exec-1:node-1")
+            seen["secret"] = await env.store.agent_node.get_secret(job_id)
+            return await real(**kwargs)
+
+        monkeypatch.setattr(env.coordinator, "enqueue_from_tool", spy)
+        resp = await _create(env, webhook_url=WEBHOOK_URL, webhook_secret=WEBHOOK_SECRET)
+        assert resp.status_code == 202
+        assert seen["job"] is not None and seen["idem"] is not None
+        assert seen["secret"] == WEBHOOK_SECRET
+
+    async def _assert_nothing_left(self, env: Env) -> None:
+        assert await env.store.tasks.list_by_status(TaskStatus.PENDING) == []
+        assert await env.store.agent_node.list_unfinalized_jobs() == []
+        assert await env.store.agent_node.get_idempotency("exec-1:node-1") is None
+        for sub in ("worktrees", "workspaces", "secrets"):
+            root = (
+                env.data_root / ("agent_node" if sub != "secrets" else "runtime/agent_node") / sub
+            )
+            assert not root.exists() or list(root.iterdir()) == [], sub
+        assert git(env.repo, "branch", "--list", "agent-node/*") == ""
+        assert git(env.repo, "worktree", "list").count("\n") == 0
+
+    async def test_model_outside_allowlist_falls_back_to_the_default(self, env: Env) -> None:
+        resp = await _create(env, model="gpt-9")
+        assert resp.status_code == 202
+        assert resp.json()["model"] == "gpt-9"  # echoed as requested
+        task = await env.store.tasks.get(resp.json()["id"])
+        assert task is not None and task.metadata["model_id"] == "claude-sonnet-4-5"
+
+    async def test_model_fallback_prefers_configured_default_model(self, env: Env) -> None:
+        env.service.config.default_model = "claude-haiku-4-5"
+        resp = await _create(env, model="gpt-9")
+        task = await env.store.tasks.get(resp.json()["id"])
+        assert task is not None and task.metadata["model_id"] == "claude-haiku-4-5"
 
     @pytest.mark.parametrize(
         "body",
@@ -387,11 +480,11 @@ class TestCompletionMapping:
 
     async def test_repo_job_with_new_commit_reports_branch_and_sha(self, env: Env) -> None:
         job_id = (await _create(env, repo_full_name="acme/widgets")).json()["id"]
-        git(env.repo, "checkout", "-q", "-b", f"agent-node/{job_id[:12]}")
-        (env.repo / "b.txt").write_text("b\n")
-        git(env.repo, "add", "-A")
-        git(env.repo, "commit", "-q", "-m", "work")
-        sha = git(env.repo, "rev-parse", "HEAD")
+        worktree = env.data_root / "agent_node" / "worktrees" / job_id
+        (worktree / "b.txt").write_text("b\n")
+        git(worktree, "add", "-A")
+        git(worktree, "commit", "-q", "-m", "work")
+        sha = git(worktree, "rev-parse", "HEAD")
         await env.complete(job_id)
         view = (await env.client.get(f"/jobs/{job_id}", headers=AUTH)).json()
         assert view["status"] == "succeeded"
@@ -399,10 +492,91 @@ class TestCompletionMapping:
         assert view["result"]["branch"] == f"agent-node/{job_id[:12]}"
         assert "b.txt" in view["result"]["diff_stat"]
         assert view["result"]["pr_url"] is None and view["result"]["pr_number"] is None
+        # The worktree is gone, the branch and its commit are kept, the checkout is untouched.
+        assert not worktree.exists()
+        assert git(env.repo, "rev-parse", f"agent-node/{job_id[:12]}") == sha
+        assert git(env.repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+        assert git(env.repo, "rev-parse", "main") != sha
+
+    async def test_commits_elsewhere_do_not_count(self, env: Env) -> None:
+        """HEAD of the mapped checkout moving (a human committing) is not the job's work."""
+        job_id = (await _create(env, repo_full_name="acme/widgets")).json()["id"]
+        (env.repo / "human.txt").write_text("h\n")
+        git(env.repo, "add", "-A")
+        git(env.repo, "commit", "-q", "-m", "human")
+        await env.complete(job_id)
+        view = (await env.client.get(f"/jobs/{job_id}", headers=AUTH)).json()
+        assert view["status"] == "no_changes"
+
+    async def test_unreadable_work_branch_after_the_run_is_failed_internal(self, env: Env) -> None:
+        job_id = (await _create(env, repo_full_name="acme/widgets")).json()["id"]
+        worktree = env.data_root / "agent_node" / "worktrees" / job_id
+        git(worktree, "checkout", "-q", "--detach")
+        git(env.repo, "branch", "-D", f"agent-node/{job_id[:12]}")
+        await env.complete(job_id)
+        view = (await env.client.get(f"/jobs/{job_id}", headers=AUTH)).json()
+        assert view["status"] == "failed"
+        assert view["result"]["error_kind"] == "internal"
+
+    async def test_worktree_creation_failure_is_a_failed_job(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def broken(*_args: Any) -> str | None:
+            return "fatal: disk on fire"
+
+        monkeypatch.setattr("assistant.agent_node.git_inspect.worktree_add", broken)
+        resp = await _create(
+            env,
+            repo_full_name="acme/widgets",
+            webhook_url=WEBHOOK_URL,
+            webhook_secret=WEBHOOK_SECRET,
+        )
+        assert resp.status_code == 202
+        view = resp.json()
+        assert view["status"] == "failed"
+        assert view["result"]["error_kind"] == "workspace_failed"
+        assert "disk on fire" in view["result"]["error"]
+        assert await env.store.tasks.list_by_status(TaskStatus.PENDING) == []  # never enqueued
+        await env.sender.deliver_due()
+        assert len(env.deliveries) == 1
+        replay = await _create(
+            env,
+            repo_full_name="acme/widgets",
+            webhook_url=WEBHOOK_URL,
+            webhook_secret=WEBHOOK_SECRET,
+        )
+        assert replay.status_code == 200 and replay.json()["id"] == view["id"]
+
+    async def test_scratch_workspace_is_removed_after_finalize(self, env: Env) -> None:
+        job_id = (await _create(env)).json()["id"]
+        scratch = env.data_root / "agent_node" / "workspaces" / job_id
+        assert scratch.is_dir()
+        await env.complete(job_id)
+        assert not scratch.exists()
+
+    async def test_cancel_removes_the_worktree_but_keeps_the_branch(self, env: Env) -> None:
+        job_id = (await _create(env, repo_full_name="acme/widgets")).json()["id"]
+        worktree = env.data_root / "agent_node" / "worktrees" / job_id
+        assert worktree.is_dir()
+        await env.client.post(f"/jobs/{job_id}/cancel", headers=AUTH)
+        assert not worktree.exists()
+        assert git(env.repo, "branch", "--list", f"agent-node/{job_id[:12]}")
+
+    async def test_replay_does_not_depend_on_the_current_repo_mapping(self, env: Env) -> None:
+        first = await _create(env, repo_full_name="acme/widgets")
+        env.service.config.repositories.clear()
+        replay = await _create(env, repo_full_name="acme/widgets")
+        assert replay.status_code == 200
+        assert replay.json()["id"] == first.json()["id"]
+        # A brand-new key still gets the repo check.
+        assert (
+            await _create(env, headers=_key("other"), repo_full_name="acme/widgets")
+        ).status_code == 422
 
     @pytest.mark.parametrize(
         ("error", "kind"),
         [
+            ("cancelled", "orphaned"),  # worker cancelled by coordinator shutdown
             ("claude run timed out", "timeout"),
             ("claude-agent-sdk run timed out", "timeout"),
             ("Task interrupted by process restart", "orphaned"),
@@ -507,3 +681,75 @@ class TestCancel:
         resp = await env.client.post("/jobs/" + "f" * 32 + "/cancel", headers=AUTH)
         assert resp.status_code == 404
         assert resp.json() == {"detail": "job not found"}
+
+
+class _TeardownHangsBackend(DelegationBackendAdapterInterface):
+    """Runs until cancelled, then takes a long time to tear down."""
+
+    @property
+    def backend_id(self) -> str:
+        return "claude_code_streaming"
+
+    async def execute(self, request: DelegationRun) -> DelegationResult:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.5)
+            raise
+        raise AssertionError("unreachable")
+
+
+class TestBoundedStop:
+    async def _running_job(self, env: Env) -> str:
+        env.coordinator._backends["claude_code_streaming"] = _TeardownHangsBackend()  # noqa: SLF001
+        await env.coordinator.start()
+        job_id = (
+            await _create(env, webhook_url=WEBHOOK_URL, webhook_secret=WEBHOOK_SECRET)
+        ).json()["id"]
+        for _ in range(60):
+            task = await env.store.tasks.get(job_id)
+            if task is not None and task.status == TaskStatus.RUNNING:
+                return str(job_id)
+            await asyncio.sleep(0.1)
+        raise AssertionError("task never started")
+
+    async def test_cancel_answers_within_the_bound_when_teardown_hangs(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(service_module, "CANCEL_STOP_TIMEOUT_SECONDS", 0.3)
+        job_id = await self._running_job(env)
+        try:
+            started = time.monotonic()
+            resp = await env.client.post(f"/jobs/{job_id}/cancel", headers=AUTH)
+            elapsed = time.monotonic() - started
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "cancelled"
+            assert elapsed < 1.2  # the backend needs 1.5 s to tear down
+            await env.sender.deliver_due()
+            assert len(env.deliveries) == 1
+        finally:
+            await env.coordinator.stop()
+
+    async def test_slow_expiry_does_not_block_reconcile(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(service_module, "CANCEL_STOP_TIMEOUT_SECONDS", 0.3)
+        job_id = await self._running_job(env)
+        try:
+            job = await env.store.agent_node.get_job(job_id)
+            assert job is not None
+            job.deadline = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+            await env.store.agent_node.save_job(job)
+            started = time.monotonic()
+            await env.service.reconcile()
+            assert time.monotonic() - started < 0.25  # expiry runs on its own task
+            for _ in range(30):
+                view = await env.service.get_view(job_id)
+                assert view is not None
+                if view.status.value == "failed":
+                    break
+                await asyncio.sleep(0.1)
+            assert view.status.value == "failed"
+            assert view.result.error_kind is not None and view.result.error_kind.value == "timeout"
+        finally:
+            await env.coordinator.stop()
