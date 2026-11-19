@@ -509,6 +509,19 @@ def test_reviewer_repros_are_visible_in_the_proposal(
     )
 
 
+@pytest.mark.parametrize(
+    "value", [".nan", ".inf", "2024-01-01", "!!binary YQ==", "!!set {a: null}", "{1: x}"]
+)
+def test_non_json_mcp_values_are_rejected_at_propose(
+    service: CapabilityEditService, config_dir: Path, value: str
+) -> None:
+    # Reviewer repro S7: these used to be accepted and crash json.dumps at sub-agent launch.
+    _manifest(config_dir).write_text(_SERVER)
+    err = _error(_propose, service, "n: 1\n", f"n: {value}\n")
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "MCP server settings must be" in err.reason or "not valid JSON" in err.reason
+
+
 def test_added_delegation_block_with_empty_allowlists_is_visible(
     service: CapabilityEditService,
 ) -> None:

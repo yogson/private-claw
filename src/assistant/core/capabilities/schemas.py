@@ -4,6 +4,7 @@ Component ID: CMP_CORE_CAPABILITIES
 Pydantic schemas for capability manifests (config/capabilities/*.yaml).
 """
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
@@ -86,14 +87,52 @@ class ClaudeCodePermissions(BaseModel):
     deny: list[str] = Field(default_factory=list)
 
 
+def check_json_native(value: object) -> None:
+    """Raise ``ValueError`` unless ``value`` is plain JSON: dicts with string keys, lists,
+    strings, ints, finite floats, booleans and null.
+
+    MCP server settings are handed to the Claude Code CLI as ``json.dumps`` output. YAML
+    can also produce dates, bytes (``!!binary``), sets (``!!set``), ``.nan`` / ``.inf``
+    and non-string keys, which either crash ``json.dumps`` when a sub-agent starts or
+    become invalid / silently converted JSON. Iterative, so deep nesting cannot overflow.
+    """
+    stack: list[tuple[object, str]] = [(value, "")]
+    while stack:
+        item, path = stack.pop()
+        if isinstance(item, dict):
+            for key, sub in item.items():
+                if not isinstance(key, str):
+                    raise ValueError(
+                        f"{path or 'value'}: key of type {type(key).__name__}; MCP server "
+                        "settings must be plain JSON (string keys only)"
+                    )
+                stack.append((sub, f"{path}.{key}" if path else key))
+        elif isinstance(item, list):
+            stack.extend((sub, f"{path}[{i}]") for i, sub in enumerate(item))
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError(f"{path or 'value'}: {item} is not valid JSON")
+        elif item is not None and not isinstance(item, str | int | float):  # bool is an int
+            raise ValueError(
+                f"{path or 'value'}: value of type {type(item).__name__}; MCP server settings "
+                "must be plain JSON (strings, numbers, booleans, null, lists, mappings)"
+            )
+
+
 class ClaudeCodeSettings(BaseModel):
     """Settings to merge into ~/.claude/settings.json when capability is activated."""
 
     model_config = _MANIFEST_MODEL_CONFIG
 
     permissions: ClaudeCodePermissions = Field(default_factory=ClaudeCodePermissions)
-    # Merged into settings.json as top-level "mcpServers" (Claude Code key).
+    # Merged into settings.json as top-level "mcpServers" (Claude Code key); handed to
+    # sub-agents as JSON, so only plain JSON values are accepted.
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("mcp_servers")
+    @classmethod
+    def _json_native(cls, v: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        check_json_native(v)
+        return v
 
 
 class CapabilityDefinition(BaseModel):
