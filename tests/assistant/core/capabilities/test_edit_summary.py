@@ -203,7 +203,123 @@ def test_changed_env_value_is_masked() -> None:
 
     text = _summary(server("old-secret"), server("new-secret"))
     assert "⚠ claude_code_settings.mcp_servers.gh.env.T: <hidden> → <hidden>" in text
-    assert "secret" not in text
+    assert "old-secret" not in text and "new-secret" not in text
+
+
+# --- S4: secrets stay masked whatever the agent does to their container ------------
+
+_TOKEN = "ghp_SECRETVALUE123"
+_MCP = "⚠ claude_code_settings.mcp_servers.gh"
+
+
+def _server(**fields: object) -> CapabilityDefinition:
+    return _cap(claude_code_settings={"mcp_servers": {"gh": {"command": "x", **fields}}})
+
+
+@pytest.mark.parametrize(
+    ("container", "old", "new", "expected"),
+    [
+        # Reviewer repro S4: dict → string printed the old values whole.
+        (
+            "env",
+            {"GITHUB_TOKEN": _TOKEN, "LOG_LEVEL": "info"},
+            "x",
+            '{"GITHUB_TOKEN": <hidden>, "LOG_LEVEL": <hidden>} → <hidden>',
+        ),
+        (
+            "env",
+            {"GITHUB_TOKEN": _TOKEN},
+            [f"GITHUB_TOKEN={_TOKEN}2"],
+            '{"GITHUB_TOKEN": <hidden>} → ["GITHUB_TOKEN="<hidden>]',
+        ),
+        ("env", "x", {"GITHUB_TOKEN": _TOKEN}, '<hidden> → {"GITHUB_TOKEN": <hidden>}'),
+        (
+            "headers",
+            {"Authorization": f"Bearer {_TOKEN}"},
+            "x",
+            '{"Authorization": <hidden>} → <hidden>',
+        ),
+        (
+            "env",
+            {"NESTED": {"TOKEN": _TOKEN}},
+            [{"TOKEN": _TOKEN}],
+            '{"NESTED": {"TOKEN": <hidden>}} → [{"TOKEN": <hidden>}]',
+        ),
+    ],
+)
+def test_type_change_of_a_secret_container_keeps_values_masked(
+    container: str, old: object, new: object, expected: str
+) -> None:
+    text = _summary(_server(**{container: old}), _server(**{container: new}))
+    assert f"{_MCP}.{container}: {expected}" in text
+    assert _TOKEN not in text and "Bearer" not in text and "info" not in text
+
+
+def test_env_list_items_show_the_variable_name_only() -> None:
+    before = _server(env=[f"GITHUB_TOKEN={_TOKEN}", "PLAIN"])
+    after = _server(env=[f"GITHUB_TOKEN={_TOKEN}x", "PLAIN", "Bearer abc=def"])
+    text = _summary(before, after)
+    assert f'{_MCP}.env: + "GITHUB_TOKEN="<hidden>' in text
+    assert f'{_MCP}.env: − "GITHUB_TOKEN="<hidden>' in text
+    # Not a KEY=value item: hidden entirely (no part of the value before "=" leaks).
+    assert f"{_MCP}.env: + <hidden>" in text
+    assert _TOKEN not in text and "Bearer" not in text and "abc" not in text
+
+
+def test_masked_only_change_says_a_secret_changed() -> None:
+    text = _summary(_server(env={"T": "old-secret"}), _server(env={"T": "new-secret"}))
+    assert f"{_MCP}.env.T: <hidden> → <hidden> (secret value changed)" in text
+    nested = _summary(_server(auth={"bearer": "s1"}), _server(auth={"bearer": "s2"}))
+    assert f"{_MCP}.auth.bearer: <hidden> → <hidden> (secret value changed)" in nested
+    assert "s1" not in nested and "s2" not in nested
+
+
+def test_secret_keys_inside_a_replaced_plain_value_are_masked() -> None:
+    before = _server(options={"api_key": _TOKEN, "url": "https://x"})
+    text = _summary(before, _server(options="none"))
+    assert f'{_MCP}.options: {{"api_key": <hidden>, "url": "https://x"}} → "none"' in text
+    assert _TOKEN not in text
+
+
+def test_removed_secret_scalar_is_masked() -> None:
+    text = _summary(_server(token=_TOKEN), _server())
+    assert f"{_MCP}.token: − removed (was <hidden>)" in text
+    assert _TOKEN not in text
+
+
+def test_secret_paths_cover_every_secret_bearing_field() -> None:
+    from assistant.core.capabilities.edit_summary import is_secret_path
+
+    mcp = ("claude_code_settings", "mcp_servers", "srv")
+    for keys in [
+        (*mcp, "env"),
+        (*mcp, "env", "GITHUB_TOKEN"),
+        (*mcp, "headers"),
+        (*mcp, "headers", "X-Api"),
+        (*mcp, "Headers", "X"),
+        (*mcp, "api_key"),
+        (*mcp, "auth", "bearer"),
+        (*mcp, "password"),
+        (*mcp, "client_secret"),
+        (*mcp, "credentials", "0"),
+        (*mcp, "private_key"),
+        (*mcp, "cookie"),
+    ]:
+        assert is_secret_path(keys), keys
+    for keys in [
+        ("claude_code_settings", "mcp_servers", "token-server"),  # server name only
+        (*mcp, "command"),
+        (*mcp, "args"),
+        ("claude_code_settings", "mcp_servers"),
+        ("tool_overrides", "delegate_subagent_task", "delegation_per_task_token_cap"),
+        ("mcp_servers",),
+    ]:
+        assert not is_secret_path(keys), keys
+
+
+def test_server_named_like_a_secret_still_shows_its_command() -> None:
+    after = _cap(claude_code_settings={"mcp_servers": {"token-server": {"command": "evil"}}})
+    assert 'mcp_servers.token-server.command: + "evil"' in _summary(_cap(), after)
 
 
 def test_removing_only_is_still_listed() -> None:

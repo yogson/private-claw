@@ -9,8 +9,14 @@ before and after definitions, so string shorthands such as ``command_allowlist: 
 show up with their effective defaults). Every changed leaf gets its own line with the
 concrete before → after values; lists of entries are matched by their identity field
 (``tool_id``, ``id``, ``command_pattern``, ``name``), lists of strings show the items
-added (``+``) and removed (``−``) element by element. Values under MCP ``env``/``headers``
-and secret-looking keys are masked: only the key names are shown.
+added (``+``) and removed (``−``) element by element.
+
+Secrets: inside ``claude_code_settings.mcp_servers.<server>``, every value at or below an
+``env`` / ``headers`` key or a secret-looking key (``token``, ``secret``, ``auth``, ...) is
+masked as ``<hidden>``, whatever its type: dicts keep their key names, ``KEY=value``
+list items keep ``KEY``, everything else is hidden. This also holds when the agent
+changes the type of such a value (``env: {...}`` → ``"x"``) or replaces an enclosing
+value. A change that only touches hidden values says ``(secret value changed)``.
 
 Values on ``⚠`` lines are never cut. A changed string longer than ``VALUE_MAX_CHARS`` is
 shown as a diff excerpt: a little of the unchanged context around the differing segment,
@@ -59,7 +65,10 @@ DIFF_CONTEXT_CHARS = 20
 MASKED = "<hidden>"
 _NON_SENSITIVE_FIELDS = frozenset({"prompt"})
 _IDENTITY_FIELDS = ("tool_id", "id", "command_pattern", "name")
+_MCP_SERVERS_PATH = ("claude_code_settings", "mcp_servers")
 _SECRET_CONTAINERS = frozenset({"env", "headers"})
+# ``KEY=value`` items of a hidden list keep ``KEY`` only when it looks like a variable name.
+_ENV_ITEM_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.-]{0,79})=.*", re.S)
 _SECRET_KEY_RE = re.compile(
     r"token|secret|passw|api[_-]?key|auth|credential|cookie|private[_-]?key", re.I
 )
@@ -109,12 +118,59 @@ class _Change:
 
     @property
     def masked(self) -> bool:
-        """Values inside a Claude Code MCP server's env/headers or under secret-like keys."""
-        if self.keys[:2] != ("claude_code_settings", "mcp_servers") or len(self.keys) < 4:
-            return False
-        return any(k in _SECRET_CONTAINERS for k in self.keys[3:-1]) or bool(
-            _SECRET_KEY_RE.search(self.keys[-1])
-        )
+        """The changed value itself is secret (see :func:`is_secret_path`)."""
+        return is_secret_path(self.keys)
+
+
+def is_secret_path(keys: tuple[str, ...]) -> bool:
+    """True for ``claude_code_settings.mcp_servers.<server>.…`` paths that pass through an
+    ``env`` / ``headers`` key or a secret-looking key (the server name itself excluded).
+
+    ``keys[3:]`` includes the last key, so a change *at* ``env`` (e.g. a type change from
+    a dict to a string) is secret too, not only the leaves below it.
+    """
+    if keys[:2] != _MCP_SERVERS_PATH:
+        return False
+    return any(k.lower() in _SECRET_CONTAINERS or _SECRET_KEY_RE.search(k) for k in keys[3:])
+
+
+class _Hidden:
+    """A masked secret value; ``key`` is the visible name of a ``KEY=value`` list item."""
+
+    __slots__ = ("key",)
+
+    def __init__(self, key: str | None = None) -> None:
+        self.key = key
+
+
+def _redact(value: Any, keys: tuple[str, ...], *, item: bool = False) -> Any:
+    """``value`` (found at ``keys``; ``item``: an element of the list at ``keys``) with
+    every secret part replaced by :class:`_Hidden`."""
+    if is_secret_path(keys):
+        return _hide_item(value) if item else _hide(value)
+    depth = min(len(keys), len(_MCP_SERVERS_PATH))
+    if keys[:depth] != _MCP_SERVERS_PATH[:depth]:
+        return value  # not in (or above) the free-form MCP server settings
+    if isinstance(value, dict):
+        return {k: _redact(v, (*keys, str(k))) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(v, keys if item else (*keys, str(i))) for i, v in enumerate(value)]
+    return value
+
+
+def _hide(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _hide(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_hide_item(v) for v in value]
+    return _Hidden()
+
+
+def _hide_item(value: Any) -> Any:
+    if isinstance(value, str):
+        match = _ENV_ITEM_RE.fullmatch(value)
+        return _Hidden(match.group(1) if match else None)
+    return _hide(value)
 
 
 def capability_change_summary(
@@ -310,21 +366,28 @@ def _render(change: _Change) -> str:
     prefix = _SENSITIVE_PREFIX if change.sensitive else _PLAIN_PREFIX
     strict = change.sensitive
 
+    item = change.kind in ("item_added", "item_removed")
+    old = _redact(change.old, change.keys, item=item)
+    new = _redact(change.new, change.keys, item=item)
+
     def fmt(value: Any) -> str:
-        return MASKED if change.masked else _value(value, change.path, strict=strict)
+        return _value(value, change.path, strict=strict)
 
     if change.kind == "changed":
-        if not change.masked and isinstance(change.old, str) and isinstance(change.new, str):
-            body = _string_change(change.old, change.new, change.path, strict=strict)
+        if isinstance(old, str) and isinstance(new, str):
+            body = _string_change(old, new, change.path, strict=strict)
         else:
-            body = f"{fmt(change.old)} → {fmt(change.new)}"
+            before, after = fmt(old), fmt(new)
+            body = f"{before} → {after}"
+            if before == after:  # only masked parts differ
+                body += " (secret value changed)"
     elif change.kind in ("added", "item_added"):
-        body = f"+ {fmt(change.new)}"
+        body = f"+ {fmt(new)}"
     elif change.kind == "item_removed":
-        body = f"− {fmt(change.old)}"
+        body = f"− {fmt(old)}"
     elif change.kind == "removed":
         is_container = isinstance(change.old, dict | list) and change.old
-        body = "− removed" if is_container else f"− removed (was {fmt(change.old)})"
+        body = "− removed" if is_container else f"− removed (was {fmt(old)})"
     elif change.kind == "new_entry":
         body = "+ new entry"
     else:
@@ -411,7 +474,10 @@ def _value(value: Any, path: str, *, strict: bool) -> str:
 
 
 def _literal(value: Any) -> str:
-    """One-line, unambiguous rendering of a JSON value (strings quoted and escaped)."""
+    """One-line, unambiguous rendering of a JSON value (strings quoted and escaped, masked
+    secrets as an unquoted ``<hidden>``)."""
+    if isinstance(value, _Hidden):
+        return MASKED if value.key is None else f'"{escape(value.key)}="{MASKED}'
     if isinstance(value, str):
         return f'"{escape(value)}"'
     if isinstance(value, dict):

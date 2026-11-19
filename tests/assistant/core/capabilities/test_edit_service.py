@@ -446,6 +446,52 @@ def test_sensitive_change_too_long_to_show_in_full_is_refused(
     assert "smaller edit" in err.reason
 
 
+_SECRET = "ghp_SECRETVALUE123"
+_WITH_ENV = (
+    EDITABLE
+    + "claude_code_settings:\n  mcp_servers:\n    gh:\n      command: gh-mcp\n"
+    + f"      env:\n        GITHUB_TOKEN: {_SECRET}\n        LOG_LEVEL: info\n"
+)
+
+
+def test_env_replaced_by_a_string_does_not_leak_the_secret(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    # Reviewer repro S4.
+    _manifest(config_dir).write_text(_WITH_ENV)
+    env_block = f"env:\n        GITHUB_TOKEN: {_SECRET}\n        LOG_LEVEL: info\n"
+    with capture_logs() as logs:
+        proposal = _propose(service, env_block, "env: x\n")
+    assert (
+        '⚠ claude_code_settings.mcp_servers.gh.env: {"GITHUB_TOKEN": <hidden>, '
+        '"LOG_LEVEL": <hidden>} → <hidden>' in proposal.summary
+    )
+    assert _SECRET not in proposal.summary
+    assert _SECRET not in repr(logs)
+
+
+def test_yaml_errors_do_not_quote_the_manifest_line(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    # PyYAML embeds the offending source line in str(exc); it may hold a secret.
+    _manifest(config_dir).write_text(_WITH_ENV)
+    err = _error(_propose, service, f"GITHUB_TOKEN: {_SECRET}\n", f'GITHUB_TOKEN: "{_SECRET}\n')
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "YAML parse error" in err.reason and "line " in err.reason
+    assert _SECRET not in err.reason
+
+
+def test_unparsable_file_on_disk_does_not_quote_the_manifest_line(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    _manifest(config_dir).write_text(
+        _WITH_ENV.replace(f"GITHUB_TOKEN: {_SECRET}", f'GITHUB_TOKEN: "{_SECRET}')
+    )
+    err = _error(service.read, "editable")
+    assert err.status == STATUS_NOT_EDITABLE and "does not parse on disk" in err.reason
+    assert _SECRET not in err.reason
+
+
 # ---------------------------------------------------------------------------
 # apply
 # ---------------------------------------------------------------------------

@@ -85,7 +85,22 @@ def _compose_single(text: str) -> Node | None:
         node: Node | None = yaml.compose(text, Loader=yaml.SafeLoader)
         return node
     except yaml.YAMLError as exc:
-        raise ManifestStructureError(f"YAML parse error: {exc}") from exc
+        raise ManifestStructureError(f"YAML parse error: {describe_yaml_error(exc)}") from exc
+
+
+def describe_yaml_error(exc: yaml.YAMLError) -> str:
+    """A YAML error without the source excerpt PyYAML embeds in ``str(exc)``.
+
+    The excerpt quotes the offending manifest line, which may hold an MCP ``env`` secret;
+    these messages go to the agent and to the logs.
+    """
+    if not isinstance(exc, yaml.MarkedYAMLError):
+        return type(exc).__name__
+    text = "; ".join(part for part in (exc.context, exc.problem) if part) or "invalid YAML"
+    mark = exc.problem_mark or exc.context_mark
+    if mark is not None:
+        text += f" (line {mark.line + 1}, column {mark.column + 1})"
+    return text
 
 
 def _walk(node: Node, seen: set[int]) -> None:

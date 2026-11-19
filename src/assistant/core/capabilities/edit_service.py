@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+import yaml
 
 from assistant.core.capabilities.atomic_file import atomic_write_bytes
 from assistant.core.capabilities.edit_summary import (
@@ -58,6 +59,7 @@ from assistant.core.capabilities.loader import ManifestParseError, parse_capabil
 from assistant.core.capabilities.manifest_structure import (
     ManifestStructureError,
     check_manifest_structure,
+    describe_yaml_error,
 )
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
@@ -577,9 +579,14 @@ class CapabilityEditService:
         try:
             definition = parse_capability_manifest(target.path.name, raw)
         except ManifestParseError as exc:
+            cause = exc.__cause__
+            detail = (
+                f"YAML parse error: {describe_yaml_error(cause)}"
+                if isinstance(cause, yaml.YAMLError)
+                else "; ".join(exc.messages)
+            )
             raise CapabilityEditError(
-                STATUS_NOT_EDITABLE,
-                f"{target.path.name} does not parse on disk: {'; '.join(exc.messages)}",
+                STATUS_NOT_EDITABLE, f"{target.path.name} does not parse on disk: {detail}"
             ) from exc
         if definition.capability_id != target.capability_id:
             raise CapabilityEditError(
