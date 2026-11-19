@@ -174,3 +174,17 @@ def test_non_string_top_level_keys_are_refused(key: str, kind: str) -> None:
 def test_explicitly_tagged_string_keys_pass() -> None:
     check_manifest_structure(BASE + "!!str mcp_servers: []\n")
     check_manifest_structure(BASE + "'1': x\n")
+
+
+@pytest.mark.parametrize("error", [RecursionError("deep TOKEN=x"), MemoryError(), TypeError("bug")])
+def test_unexpected_composer_errors_are_refused_by_class_only(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    import yaml
+
+    def compose(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(yaml, "compose", compose)
+    reason = _refused(BASE)
+    assert reason == f"the manifest cannot be parsed ({type(error).__name__})"

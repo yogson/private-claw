@@ -1225,7 +1225,9 @@ def test_huge_manifest_on_disk_is_not_editable(
 ) -> None:
     _manifest(config_dir).write_text(EDITABLE + "# " + "x" * (300 * 1024) + "\n")
     err = _error(service.read, "editable")
-    assert err.status in (STATUS_NOT_EDITABLE, STATUS_STALE)
+    assert err.status == STATUS_NOT_EDITABLE
+    # Refused on the raw size, before the file is parsed at all.
+    assert err.reason.startswith("editable.yaml is ") and "bytes allowed" in err.reason
 
 
 async def test_unexpected_exceptions_become_rejected_invalid_without_their_message(
