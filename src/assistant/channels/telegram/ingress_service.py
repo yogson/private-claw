@@ -34,6 +34,12 @@ logger = structlog.get_logger(__name__)
 _VOICE_MISSING_TRANSCRIPT = _BUILDER_VOICE_MISSING_TRANSCRIPT
 
 
+def _tag_update_id(event: NormalizedEvent, update_id: int | None) -> None:
+    """Record the Telegram ``update_id`` in event metadata (diagnostics only)."""
+    if update_id is not None:
+        event.metadata["update_id"] = update_id
+
+
 class TelegramIngress:
     """
     Converts raw Telegram update dicts into NormalizedEvent objects.
@@ -68,9 +74,9 @@ class TelegramIngress:
         to enrich voice events via the MTProto transcription service.
         """
         if "message" in update:
-            return self._normalize_message(update["message"])
+            return self._normalize_message(update["message"], update.get("update_id"))
         if "callback_query" in update:
-            return self._normalize_callback_query(update["callback_query"])
+            return self._normalize_callback_query(update["callback_query"], update.get("update_id"))
         logger.debug("telegram.ingress.unsupported_update", keys=list(update.keys()))
         return None
 
@@ -131,6 +137,10 @@ class TelegramIngress:
         if user_id is None:
             return None
 
+        # The polling loop tags each buffered message with its Telegram update_id.
+        update_ids = [m["update_id"] for m in messages if m.get("update_id") is not None]
+        update_id = update_ids[0] if update_ids else None
+
         pre_trace_id = _get_trace_id() or str(uuid.uuid4())
 
         try:
@@ -141,6 +151,7 @@ class TelegramIngress:
                     user_id=user_id,
                     reason="not_in_allowlist",
                     trace_id=pre_trace_id,
+                    update_id=update_id,
                 )
             raise
 
@@ -154,6 +165,7 @@ class TelegramIngress:
                         count=exc.count,
                         limit=exc.limit,
                         trace_id=pre_trace_id,
+                        update_id=update_id,
                     )
                 raise
 
@@ -167,15 +179,21 @@ class TelegramIngress:
             messages, user_id, session_id, event_id, trace_id, created_at
         )
 
+        _tag_update_id(event, update_id)
+        if update_ids:
+            event.metadata["update_ids"] = update_ids
         if self._audit_logger is not None:
             self._audit_logger.log_ingress_authorized(
                 user_id=user_id,
                 event_type=event.event_type.value,
                 trace_id=event.trace_id,
+                update_id=update_id,
             )
         return event
 
-    def _normalize_message(self, message: dict[str, Any]) -> NormalizedEvent | None:
+    def _normalize_message(
+        self, message: dict[str, Any], update_id: int | None = None
+    ) -> NormalizedEvent | None:
         user_id = extract_user_id(message)
         if user_id is None:
             return None
@@ -190,6 +208,7 @@ class TelegramIngress:
                     user_id=user_id,
                     reason="not_in_allowlist",
                     trace_id=pre_trace_id,
+                    update_id=update_id,
                 )
             raise
 
@@ -203,6 +222,7 @@ class TelegramIngress:
                         count=exc.count,
                         limit=exc.limit,
                         trace_id=pre_trace_id,
+                        update_id=update_id,
                     )
                 raise
 
@@ -225,15 +245,19 @@ class TelegramIngress:
         else:
             event = build_text_event(message, user_id, session_id, event_id, trace_id, created_at)
 
+        _tag_update_id(event, update_id)
         if self._audit_logger is not None:
             self._audit_logger.log_ingress_authorized(
                 user_id=user_id,
                 event_type=event.event_type.value,
                 trace_id=event.trace_id,
+                update_id=update_id,
             )
         return event
 
-    def _normalize_callback_query(self, cq: dict[str, Any]) -> NormalizedEvent | None:
+    def _normalize_callback_query(
+        self, cq: dict[str, Any], update_id: int | None = None
+    ) -> NormalizedEvent | None:
         from_user = cq.get("from") or {}
         user_id_raw = from_user.get("id")
         if user_id_raw is None:
@@ -250,6 +274,7 @@ class TelegramIngress:
                     user_id=user_id,
                     reason="not_in_allowlist",
                     trace_id=pre_trace_id,
+                    update_id=update_id,
                 )
             raise
 
@@ -263,16 +288,19 @@ class TelegramIngress:
                         count=exc.count,
                         limit=exc.limit,
                         trace_id=pre_trace_id,
+                        update_id=update_id,
                     )
                 raise
 
         event_id = str(uuid.uuid4())
         trace_id = _get_trace_id() or event_id
         event = build_callback_query_event(cq, user_id, event_id, trace_id)
+        _tag_update_id(event, update_id)
         if self._audit_logger is not None:
             self._audit_logger.log_ingress_authorized(
                 user_id=user_id,
                 event_type=event.event_type.value,
                 trace_id=event.trace_id,
+                update_id=update_id,
             )
         return event

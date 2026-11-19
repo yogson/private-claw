@@ -286,3 +286,38 @@ async def test_run_polling_logs_conflict_and_keeps_backing_off(
     backoffs = [e["backoff_seconds"] for e in conflicts]
     assert backoffs == sorted(backoffs) and backoffs[0] < backoffs[-1]
     assert not [e for e in logs if e["event"] == "telegram.polling.get_updates_error"]
+
+
+@pytest.mark.asyncio
+async def test_process_update_logs_update_id_for_message_and_callback() -> None:
+    """The ingress audit log event and event metadata carry the Telegram update_id."""
+    adapter = TelegramAdapter(_make_config())
+    callback = Update.model_validate(
+        {
+            "update_id": 502,
+            "callback_query": {
+                "id": "cq1",
+                "from": {"id": 123456, "is_bot": False, "first_name": "Test"},
+                "chat_instance": "ci",
+                "data": "x:y",
+                "message": {
+                    "message_id": 7,
+                    "date": 1700000000,
+                    "chat": {"id": 123456, "type": "private"},
+                },
+            },
+        }
+    )
+    seen: list[NormalizedEvent] = []
+
+    async def handler(event: NormalizedEvent) -> None:
+        seen.append(event)
+        return None
+
+    with capture_logs() as logs:
+        await _process_update(adapter, _make_text_update(update_id=501), handler)
+        await _process_update(adapter, callback, handler)
+
+    audit = [e for e in logs if e["event"] == "telegram.audit.ingress.authorized"]
+    assert [e["update_id"] for e in audit] == [501, 502]
+    assert [e.metadata["update_id"] for e in seen] == [501, 502]

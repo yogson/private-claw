@@ -19,29 +19,43 @@ class ChannelAuditLogger:
     retry telemetry.
     """
 
-    def log_ingress_authorized(self, user_id: int, event_type: str, trace_id: str) -> None:
+    def log_ingress_authorized(
+        self, user_id: int, event_type: str, trace_id: str, update_id: int | None = None
+    ) -> None:
         logger.info(
             "telegram.audit.ingress.authorized",
             user_id=user_id,
             event_type=event_type,
             trace_id=trace_id,
+            update_id=update_id,
         )
 
-    def log_ingress_blocked(self, user_id: int, reason: str, trace_id: str) -> None:
+    def log_ingress_blocked(
+        self, user_id: int, reason: str, trace_id: str, update_id: int | None = None
+    ) -> None:
         logger.warning(
             "telegram.audit.ingress.blocked",
             user_id=user_id,
             reason=reason,
             trace_id=trace_id,
+            update_id=update_id,
         )
 
-    def log_ingress_throttled(self, user_id: int, count: int, limit: int, trace_id: str) -> None:
+    def log_ingress_throttled(
+        self,
+        user_id: int,
+        count: int,
+        limit: int,
+        trace_id: str,
+        update_id: int | None = None,
+    ) -> None:
         logger.warning(
             "telegram.audit.ingress.throttled",
             user_id=user_id,
             count=count,
             limit=limit,
             trace_id=trace_id,
+            update_id=update_id,
         )
 
     def log_egress_attempt(

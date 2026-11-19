@@ -87,3 +87,14 @@ class TestChannelAuditLogger:
             mock_logger.warning.call_count == 5
         )  # blocked, throttled, retry_after, network_error, api_error
         assert mock_logger.error.call_count == 1
+
+
+def test_ingress_events_include_update_id() -> None:
+    mock_logger = MagicMock()
+    with patch("assistant.channels.telegram.reliability.audit.logger", mock_logger):
+        audit = ChannelAuditLogger()
+        audit.log_ingress_authorized(user_id=1, event_type="text", trace_id="x", update_id=11)
+        audit.log_ingress_blocked(user_id=2, reason="blocked", trace_id="x", update_id=12)
+        audit.log_ingress_throttled(user_id=3, count=5, limit=5, trace_id="x", update_id=13)
+    assert mock_logger.info.call_args.kwargs["update_id"] == 11
+    assert [c.kwargs["update_id"] for c in mock_logger.warning.call_args_list] == [12, 13]

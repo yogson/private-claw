@@ -50,7 +50,7 @@ class TestIngressThrottleIntegration:
         event = ingress.normalize(_text_update())
         assert event is not None
         audit.log_ingress_authorized.assert_called_once_with(
-            user_id=100, event_type="user_text_message", trace_id=event.trace_id
+            user_id=100, event_type="user_text_message", trace_id=event.trace_id, update_id=None
         )
 
     def test_throttled_event_raises_and_emits_throttle_audit(self) -> None:
@@ -68,7 +68,7 @@ class TestIngressThrottleIntegration:
         event = ingress.normalize(_callback_update())
         assert event is not None
         audit.log_ingress_authorized.assert_called_once_with(
-            user_id=100, event_type="user_callback_query", trace_id=event.trace_id
+            user_id=100, event_type="user_callback_query", trace_id=event.trace_id, update_id=None
         )
 
     def test_callback_throttled_raises_and_emits_throttle_audit(self) -> None:
@@ -130,3 +130,59 @@ class TestIngressThrottleIntegration:
             ingress.normalize(_text_update(message_id=2))
         call_kwargs = audit.log_ingress_throttled.call_args.kwargs
         assert call_kwargs["trace_id"] != ""
+
+
+class TestUpdateIdLogging:
+    """The Telegram update_id is logged in audit events and kept in event metadata."""
+
+    def _make_ingress(self, max_per_window: int = 5) -> tuple[TelegramIngress, MagicMock]:
+        audit = MagicMock(spec=ChannelAuditLogger)
+        ingress = TelegramIngress(
+            AllowlistGuard([100]),
+            throttle_guard=ChannelThrottleGuard(max_per_window=max_per_window),
+            audit_logger=audit,
+        )
+        return ingress, audit
+
+    def test_message_update_id_in_audit_and_metadata(self) -> None:
+        ingress, audit = self._make_ingress()
+        event = ingress.normalize({"update_id": 9001, **_text_update()})
+        assert event is not None
+        assert event.metadata["update_id"] == 9001
+        assert audit.log_ingress_authorized.call_args.kwargs["update_id"] == 9001
+
+    def test_callback_update_id_in_audit_and_metadata(self) -> None:
+        ingress, audit = self._make_ingress()
+        event = ingress.normalize({"update_id": 9002, **_callback_update()})
+        assert event is not None
+        assert event.metadata["update_id"] == 9002
+        assert audit.log_ingress_authorized.call_args.kwargs["update_id"] == 9002
+
+    def test_blocked_and_throttled_include_update_id(self) -> None:
+        ingress, audit = self._make_ingress(max_per_window=1)
+        with pytest.raises(UnauthorizedUserError):
+            ingress.normalize({"update_id": 9003, **_text_update(user_id=999)})
+        assert audit.log_ingress_blocked.call_args.kwargs["update_id"] == 9003
+        ingress.normalize({"update_id": 9004, **_text_update(message_id=1)})
+        with pytest.raises(ThrottledError):
+            ingress.normalize({"update_id": 9005, **_text_update(message_id=2)})
+        assert audit.log_ingress_throttled.call_args.kwargs["update_id"] == 9005
+
+    def test_media_group_uses_first_update_id_and_keeps_all(self) -> None:
+        ingress, audit = self._make_ingress()
+        base = _text_update()["message"]
+        messages = [
+            {**base, "message_id": 1, "media_group_id": "g", "update_id": 70},
+            {**base, "message_id": 2, "media_group_id": "g", "update_id": 71},
+        ]
+        event = ingress.normalize_media_group(messages)
+        assert event is not None
+        assert event.metadata["update_id"] == 70
+        assert event.metadata["update_ids"] == [70, 71]
+        assert audit.log_ingress_authorized.call_args.kwargs["update_id"] == 70
+
+    def test_missing_update_id_leaves_metadata_untouched(self) -> None:
+        ingress, _ = self._make_ingress()
+        event = ingress.normalize(_text_update())
+        assert event is not None
+        assert "update_id" not in event.metadata
