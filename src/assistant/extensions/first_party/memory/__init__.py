@@ -12,7 +12,7 @@ from assistant.extensions.first_party.memory.capability import (
     normalize_candidate_for_upsert,
 )
 from assistant.extensions.first_party.memory.confirmation import (
-    MEMORY_BODY_MAX_CHARS,
+    MEMORY_BODY_MAX_UTF16,
     MEMORY_UPDATE_KIND,
     MemoryUpdateHandler,
     build_memory_update_draft,
@@ -20,7 +20,7 @@ from assistant.extensions.first_party.memory.confirmation import (
 )
 
 __all__ = [
-    "MEMORY_BODY_MAX_CHARS",
+    "MEMORY_BODY_MAX_UTF16",
     "MEMORY_UPDATE_KIND",
     "MemoryUpdateHandler",
     "MemoryProposalToolCall",

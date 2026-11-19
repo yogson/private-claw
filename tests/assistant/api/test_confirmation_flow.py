@@ -622,14 +622,14 @@ async def test_delegation_feedback_text_precedes_confirmation() -> None:
 async def test_max_size_memory_proposal_is_one_message_and_status_fits_edit() -> None:
     from assistant.channels.telegram.formatter import format_markdown_for_telegram
     from assistant.extensions.first_party.memory import (
-        MEMORY_BODY_MAX_CHARS,
+        MEMORY_BODY_MAX_UTF16,
         build_memory_update_draft,
     )
     from assistant.memory.write.models import MemoryUpdateIntent
 
     adapter, handler = _adapter(), _Handler()
     service = _service(handler)
-    body = "Ж" * MEMORY_BODY_MAX_CHARS
+    body = "Ж" * MEMORY_BODY_MAX_UTF16
     intent = MemoryUpdateIntent.model_validate(
         {
             "intent_id": "i",

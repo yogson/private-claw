@@ -104,9 +104,9 @@ The system should avoid free-form natural language scraping of assistant prose f
 ### Apply Pipeline
 
 1. The tool validates and normalizes the proposal into a `MemoryUpdateIntent` (invalid -> `rejected_invalid`).
-   A body longer than `MEMORY_BODY_MAX_CHARS` (2500) is also `rejected_invalid`: the user must see the full text
-   they approve, so it is never shown truncated. In the summary, `reason` is capped at 300 chars and `memory_id`
-   at 200.
+   A body longer than `MEMORY_BODY_MAX_UTF16` (2500 UTF-16 code units, as Telegram counts; an emoji is 2) is
+   also `rejected_invalid`: the user must see the full text they approve, so it is never shown truncated. In the
+   summary, `reason` is capped at 300 chars and `memory_id` at 200.
 2. It registers a `memory_update` confirmation request (see "User Confirmations") and returns
    `pending_confirmation` (with `confirmation_id`, `deduplicated`, `note`) or `another_confirmation_pending`.
 3. The call and its result are persisted inline with the turn like any other tool call, so later turns see them.

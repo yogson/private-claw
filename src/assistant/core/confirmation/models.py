@@ -66,7 +66,8 @@ ATTACHMENT_TITLE_MAX_UTF16 = 120
 ATTACHMENT_PART_MAX_UTF16 = 3700
 
 
-def _utf16_len(text: str) -> int:
+def utf16_len(text: str) -> int:
+    """Length of ``text`` in UTF-16 code units (what Telegram counts)."""
     return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
 
@@ -85,7 +86,7 @@ class ConfirmationAttachment(BaseModel):
     @field_validator("title")
     @classmethod
     def _title_fits(cls, v: str) -> str:
-        if not v.strip() or "\n" in v or _utf16_len(v) > ATTACHMENT_TITLE_MAX_UTF16:
+        if not v.strip() or "\n" in v or utf16_len(v) > ATTACHMENT_TITLE_MAX_UTF16:
             raise ValueError(
                 f"title must be one non-empty line of at most {ATTACHMENT_TITLE_MAX_UTF16} "
                 "UTF-16 units"
@@ -96,7 +97,7 @@ class ConfirmationAttachment(BaseModel):
     @classmethod
     def _parts_fit(cls, v: list[str]) -> list[str]:
         for part in v:
-            if not part.strip() or _utf16_len(part) > ATTACHMENT_PART_MAX_UTF16:
+            if not part.strip() or utf16_len(part) > ATTACHMENT_PART_MAX_UTF16:
                 raise ValueError(
                     f"every part must be non-empty and at most {ATTACHMENT_PART_MAX_UTF16} "
                     "UTF-16 units (split the content, never truncate it)"
