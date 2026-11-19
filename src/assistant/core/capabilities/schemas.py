@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from assistant.core.config.schemas import CommandAllowlistEntry
+from assistant.core.config.schemas import CommandAllowlistEntry, SubagentPermissionModeSetting
 
 # Manifests are strict (unknown keys are validation errors, so a typo such as
 # ``nested_capabilites:`` fails loudly instead of being dropped) and immutable: the
@@ -58,6 +58,7 @@ class CapabilityToolOverride(BaseModel):
     delegation_default_max_turns: int | None = None
     delegation_default_timeout_seconds: int | None = None
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    delegation_default_permission_mode: SubagentPermissionModeSetting | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

@@ -7,9 +7,35 @@ Each schema corresponds to one config/*.yaml file.
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+
+# Claude Code permission modes a delegated sub-agent may run in (CLI config
+# values; the CLI's "manual" is an alias of "default").  See
+# assistant.subagents.permission_modes for how they are resolved per run.
+SubagentPermissionMode = Literal[
+    "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"
+]
+
+
+def normalize_permission_mode_alias(value: object) -> object:
+    """Strip a permission-mode string and map the CLI alias "manual" to "default".
+
+    Shared by config validation and the per-request resolver so both accept the
+    same spellings.  Anything else is returned as-is for the caller to validate
+    (mode names are case-sensitive, as in the CLI).
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    return "default" if stripped.lower() == "manual" else stripped
+
+
+# Config field type: same values as SubagentPermissionMode, plus the "manual" alias.
+SubagentPermissionModeSetting = Annotated[
+    SubagentPermissionMode, BeforeValidator(normalize_permission_mode_alias)
+]
 
 
 class RuntimeMode(StrEnum):
@@ -152,6 +178,10 @@ class ToolDefaultParams(BaseModel):
     delegation_default_max_turns: int | None = Field(default=None, ge=1)
     delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    # Claude Code permission mode for sub-agents unless the call sets its own;
+    # unset means "auto".  It is also the ceiling: a per-request mode may only be
+    # as restrictive or more.  "bypassPermissions" only when set explicitly.
+    delegation_default_permission_mode: SubagentPermissionModeSetting | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod
@@ -391,7 +421,9 @@ class AgentNodeConfig(BaseModel):
     # Claude Code permission mode for ingress jobs. "auto" lets the auto-mode
     # classifier approve safe actions and block risky ones; anything it would
     # escalate to a human is denied, since ingress runs are unattended.
-    permission_mode: Literal["auto", "acceptEdits", "default", "plan", "bypassPermissions"] = "auto"
+    # Capped by the delegation ceiling (delegate_subagent_task's
+    # delegation_default_permission_mode), like any per-request mode.
+    permission_mode: SubagentPermissionModeSetting = "auto"
     repositories: dict[str, AgentNodeRepositoryConfig] = Field(default_factory=dict)
     webhook_timeout_seconds: float = Field(default=10.0, ge=1)
     # The webhook is abandoned this long after the job's effective deadline.
