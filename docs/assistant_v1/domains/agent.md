@@ -111,6 +111,8 @@ The system should avoid free-form natural language scraping of assistant prose f
    `pending_confirmation` (with `confirmation_id`, `deduplicated`, `note`) or `another_confirmation_pending`.
 3. The call and its result are persisted inline with the turn like any other tool call, so later turns see them.
 4. Nothing is written until the user presses Approve; the write then goes through `MemoryUpdateHandler`.
+   The kind's code (draft, body limit, handler) lives with the memory extension
+   (`assistant.extensions.first_party.memory.confirmation`); `core.confirmation` stays kind-agnostic.
 
 Idempotency rule:
 - The writer intent id is `confirmation:<confirmation_id>`; one confirmation is applied at most once.

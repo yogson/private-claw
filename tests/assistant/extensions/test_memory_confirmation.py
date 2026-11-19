@@ -5,14 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from assistant.core.confirmation import (
+from assistant.core.confirmation import ConfirmationRequest
+from assistant.core.confirmation.service import SUMMARY_MAX_CHARS
+from assistant.extensions.first_party.memory import (
     MEMORY_BODY_MAX_CHARS,
-    ConfirmationRequest,
     MemoryUpdateHandler,
     build_memory_update_draft,
     memory_body_length_error,
 )
-from assistant.core.confirmation.service import SUMMARY_MAX_CHARS
 from assistant.memory.write.models import MemoryUpdateIntent, WriteAudit, WriteStatus
 
 
@@ -120,3 +120,23 @@ def test_overlong_body_is_rejected_by_length_check() -> None:
     assert memory_body_length_error(_intent(body="x" * MEMORY_BODY_MAX_CHARS)) is None
     error = memory_body_length_error(_intent(body="x" * (MEMORY_BODY_MAX_CHARS + 1)))
     assert error is not None and str(MEMORY_BODY_MAX_CHARS + 1) in error
+
+
+def test_core_confirmation_has_no_memory_imports() -> None:
+    """The generic confirmation package stays kind-agnostic: memory code lives here."""
+    import ast
+    from pathlib import Path
+
+    import assistant.core.confirmation as core_confirmation
+
+    forbidden = ("assistant.memory", "assistant.extensions.first_party.memory")
+    offenders: list[str] = []
+    for path in Path(core_confirmation.__file__).parent.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(forbidden):
+                offenders.append(f"{path.name}: {node.module}")
+            elif isinstance(node, ast.Import):
+                offenders += [
+                    f"{path.name}: {a.name}" for a in node.names if a.name.startswith(forbidden)
+                ]
+    assert not offenders

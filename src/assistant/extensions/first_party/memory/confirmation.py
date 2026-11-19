@@ -1,8 +1,9 @@
 """
-Component ID: CMP_CORE_CONFIRMATION_SERVICE
+Component ID: CMP_TOOL_RUNTIME_REGISTRY
 
 Memory-update confirmation kind: draft building (user-facing summary, dedupe key)
-and the handler that applies an approved intent through the memory writer.
+and the handler that applies an approved intent through the memory writer. Registered
+with the generic ConfirmationService (core.confirmation) at startup.
 """
 
 import asyncio

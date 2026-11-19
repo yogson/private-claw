@@ -14,7 +14,10 @@ import structlog
 from pydantic_ai import RunContext
 
 from assistant.agent.tools.deps import TurnDeps
-from assistant.core.confirmation import build_memory_update_draft, memory_body_length_error
+from assistant.extensions.first_party.memory import (
+    build_memory_update_draft,
+    memory_body_length_error,
+)
 from assistant.extensions.first_party.memory import memory_propose_update as validate_proposal
 
 logger = structlog.get_logger(__name__)

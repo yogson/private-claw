@@ -6,12 +6,12 @@ from unittest.mock import MagicMock
 from assistant.agent.tools.deps import TurnDeps
 from assistant.agent.tools.memory_propose_update import memory_propose_update
 from assistant.core.confirmation import (
-    MEMORY_BODY_MAX_CHARS,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
     ConfirmationRequestResult,
     ConfirmationService,
 )
+from assistant.extensions.first_party.memory import MEMORY_BODY_MAX_CHARS
 
 SESSION = "tg:1"
 

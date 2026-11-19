@@ -1,8 +1,8 @@
 """
 Component ID: CMP_CORE_CONFIRMATION_SERVICE
 
-Generic user-confirmation mechanism (memory updates first; other kinds plug in
-through ConfirmationHandlerRegistry).
+Generic user-confirmation mechanism; kinds plug in through ConfirmationHandlerRegistry
+(e.g. ``memory_update`` in assistant.extensions.first_party.memory.confirmation).
 """
 
 from assistant.core.confirmation.capability_edit import (
@@ -23,13 +23,6 @@ from assistant.core.confirmation.history import (
     is_confirmation_record,
     neutralize_confirmation_marker,
     unresolved_pending_ids,
-)
-from assistant.core.confirmation.memory_update import (
-    MEMORY_BODY_MAX_CHARS,
-    MEMORY_UPDATE_KIND,
-    MemoryUpdateHandler,
-    build_memory_update_draft,
-    memory_body_length_error,
 )
 from assistant.core.confirmation.models import (
     ATTACHMENT_PART_MAX_UTF16,
@@ -57,8 +50,6 @@ __all__ = [
     "CONFIRMATION_RESOLVED_MARKER",
     "CONFIRMATION_TOOL_NAMES",
     "DEFAULT_CONFIRMATION_TTL_SECONDS",
-    "MEMORY_BODY_MAX_CHARS",
-    "MEMORY_UPDATE_KIND",
     "NOT_DELIVERED_OUTCOME_STATUS",
     "CapabilityEditHandler",
     "ConfirmationAttachment",
@@ -74,13 +65,10 @@ __all__ = [
     "ConfirmationService",
     "ConfirmationStatus",
     "ConfirmationUiRef",
-    "MemoryUpdateHandler",
     "SessionConfirmationRecorder",
     "build_capability_edit_draft",
-    "build_memory_update_draft",
     "format_resolution_text",
     "is_confirmation_record",
-    "memory_body_length_error",
     "neutralize_confirmation_marker",
     "unresolved_pending_ids",
 ]
