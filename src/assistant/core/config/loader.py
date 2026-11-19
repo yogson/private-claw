@@ -5,6 +5,7 @@ Config domain loader: reads YAML files, applies env overrides with provenance
 tracking, validates all domains, and returns RuntimeConfig.
 """
 
+import copy
 import os
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,33 @@ class ConfigLoader:
         errors: list[str] = []
         obj, _ = self._load_domain(filename, schema_cls, env_prefix, errors)
         return obj
+
+    def read_domain_file(self, domain_name: str) -> dict[str, Any] | None:
+        """Return the raw YAML mapping of a domain file, without env overrides.
+
+        Returns None if the domain is unknown, the file is missing, or it does not parse.
+        """
+        spec = _DOMAIN_MAP.get(domain_name)
+        if spec is None:
+            return None
+        errors: list[str] = []
+        return self._read_yaml(spec[0], errors)
+
+    def apply_domain_env_overrides(self, domain_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Return ``data`` merged with the current env overrides for ``domain_name``.
+
+        Applies the same overrides as loading (``ASSISTANT_<DOMAIN>_*`` and, for app,
+        ``ASSISTANT_LOGFIRE_TOKEN``). ``data`` is not modified.
+        """
+        spec = _DOMAIN_MAP.get(domain_name)
+        if spec is None:
+            return dict(data)
+        _, schema_cls, env_prefix = spec
+        # Deep copy: nested overrides (``__``) are set in place on nested dicts.
+        merged, _ = apply_env_overrides(copy.deepcopy(data), env_prefix)
+        if schema_cls is AppConfig and _APP_LOGFIRE_TOKEN_ENV_VAR in os.environ:
+            merged["logfire_token"] = os.environ[_APP_LOGFIRE_TOKEN_ENV_VAR]
+        return merged
 
     def effective_config(self) -> dict[str, Any]:
         """Return effective config with secret redaction and per-field provenance.
