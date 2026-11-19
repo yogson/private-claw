@@ -9,6 +9,10 @@ literally in the text, and duplicate keys silently resolve to the last value. Th
 checks here therefore run on ``yaml.compose`` output, where scalar keys are already
 unescaped:
 
+- at most ``MAX_MANIFEST_BYTES`` of UTF-8 and at most ``MAX_NESTING_DEPTH`` nested
+  collections, checked on the event stream before anything is composed (the composer,
+  the constructor and the summary recurse per level; ~1000 levels used to raise
+  ``RecursionError`` out of the tools);
 - exactly one YAML document whose root is a mapping;
 - no merge keys (``<<``) and no aliases anywhere in the document;
 - every mapping key is a scalar, every top-level key a string, and no mapping has two
@@ -34,6 +38,10 @@ _MERGE_TAG = "tag:yaml.org,2002:merge"
 _BOOL_TAG = "tag:yaml.org,2002:bool"
 _STR_TAG = "tag:yaml.org,2002:str"
 _TRUE_SPELLINGS = frozenset({"true", "True", "TRUE"})
+# Explicit bounds for agent-edited manifests (real manifests are a few KiB and nest
+# fewer than 10 levels).
+MAX_MANIFEST_BYTES = 256 * 1024
+MAX_NESTING_DEPTH = 32
 
 
 class ManifestStructureError(Exception):
@@ -56,6 +64,7 @@ def normalise_key(key: str) -> str:
 
 def check_manifest_structure(text: str) -> ManifestStructure:
     """Validate ``text`` structurally; raise :class:`ManifestStructureError` if refused."""
+    check_manifest_bounds(text)
     root = _compose_single(text)
     if not isinstance(root, MappingNode):
         raise ManifestStructureError("the manifest must be a YAML mapping")
@@ -81,12 +90,51 @@ def check_manifest_structure(text: str) -> ManifestStructure:
     )
 
 
+def check_manifest_bounds(text: str) -> None:
+    """Refuse texts larger than ``MAX_MANIFEST_BYTES`` or nested deeper than
+    ``MAX_NESTING_DEPTH`` collections.
+
+    The depth is counted on PyYAML's event stream, which is produced without recursion,
+    so a deeply nested text is refused before the recursive composer sees it.
+    """
+    size = len(text.encode("utf-8", "surrogatepass"))
+    if size > MAX_MANIFEST_BYTES:
+        raise ManifestStructureError(
+            f"the manifest is {size} bytes, more than the {MAX_MANIFEST_BYTES} bytes "
+            "allowed for agent edits"
+        )
+    depth = 0
+    try:
+        for event in yaml.parse(text, Loader=yaml.SafeLoader):
+            if isinstance(event, yaml.CollectionStartEvent):
+                depth += 1
+                if depth > MAX_NESTING_DEPTH:
+                    raise ManifestStructureError(
+                        f"the manifest nests collections deeper than {MAX_NESTING_DEPTH} levels"
+                    )
+            elif isinstance(event, yaml.CollectionEndEvent):
+                depth -= 1
+    except yaml.YAMLError as exc:
+        raise ManifestStructureError(f"YAML parse error: {describe_yaml_error(exc)}") from exc
+    except ManifestStructureError:
+        raise
+    except Exception as exc:  # RecursionError, MemoryError, parser bugs
+        raise ManifestStructureError(_unparsable(exc)) from exc
+
+
 def _compose_single(text: str) -> Node | None:
     try:
         node: Node | None = yaml.compose(text, Loader=yaml.SafeLoader)
         return node
     except yaml.YAMLError as exc:
         raise ManifestStructureError(f"YAML parse error: {describe_yaml_error(exc)}") from exc
+    except Exception as exc:  # RecursionError, MemoryError, parser bugs
+        raise ManifestStructureError(_unparsable(exc)) from exc
+
+
+def _unparsable(exc: Exception) -> str:
+    # Only the class: the message of an unexpected parser error may quote the text.
+    return f"the manifest cannot be parsed ({type(exc).__name__})"
 
 
 def describe_yaml_error(exc: yaml.YAMLError) -> str:
@@ -104,8 +152,12 @@ def describe_yaml_error(exc: yaml.YAMLError) -> str:
     return text
 
 
-def _walk(node: Node, seen: set[int]) -> None:
+def _walk(node: Node, seen: set[int], depth: int = 1) -> None:
     """Reject aliases, merge keys, non-scalar keys and duplicate keys at every level."""
+    if depth > MAX_NESTING_DEPTH + 1:  # already bounded by check_manifest_bounds
+        raise ManifestStructureError(
+            f"the manifest nests collections deeper than {MAX_NESTING_DEPTH} levels"
+        )
     # The composer resolves an alias to the anchored node itself, so a node reached
     # twice is an alias.
     if id(node) in seen:
@@ -113,7 +165,7 @@ def _walk(node: Node, seen: set[int]) -> None:
     seen.add(id(node))
     if isinstance(node, SequenceNode):
         for item in node.value:
-            _walk(item, seen)
+            _walk(item, seen, depth + 1)
     elif isinstance(node, MappingNode):
         keys: dict[str, str] = {}
         for key_node, value_node in node.value:
@@ -125,14 +177,14 @@ def _walk(node: Node, seen: set[int]) -> None:
                 )
             if not isinstance(key_node, ScalarNode):
                 raise ManifestStructureError("mapping keys must be plain scalars")
-            _walk(key_node, seen)
+            _walk(key_node, seen, depth + 1)
             normalised = normalise_key(key_node.value)
             if normalised in keys:
                 raise ManifestStructureError(
                     f"duplicate key {key_node.value!r} (collides with {keys[normalised]!r})"
                 )
             keys[normalised] = key_node.value
-            _walk(value_node, seen)
+            _walk(value_node, seen, depth + 1)
 
 
 def _top_level(root: MappingNode) -> dict[str, Node]:

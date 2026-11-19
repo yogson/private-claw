@@ -65,6 +65,8 @@ def capability_read(ctx: RunContext[TurnDeps], capability_id: str) -> dict[str, 
         view = service.read(capability_id)
     except CapabilityEditError as exc:
         return _error(service, exc)
+    except Exception as exc:
+        return _unexpected("capability_read", exc)
     return {
         "status": "ok",
         "capability_id": view.capability_id,
@@ -114,6 +116,8 @@ async def capability_propose_edit(
         )
     except CapabilityEditError as exc:
         return _error(service, exc)
+    except Exception as exc:
+        return _unexpected("capability_propose_edit", exc)
     return await _request_confirmation(ctx, ctx.deps.confirmation_requester, proposal)
 
 
@@ -136,6 +140,8 @@ def capability_history(
         entries = service.history(capability_id, min(max(limit, 1), _HISTORY_MAX_LIMIT))
     except CapabilityEditError as exc:
         return _error(service, exc)
+    except Exception as exc:
+        return _unexpected("capability_history", exc)
     return {
         "status": "ok",
         "capability_id": capability_id,
@@ -174,6 +180,8 @@ async def capability_propose_rollback(
         )
     except CapabilityEditError as exc:
         return _error(service, exc)
+    except Exception as exc:
+        return _unexpected("capability_propose_rollback", exc)
     return await _request_confirmation(ctx, ctx.deps.confirmation_requester, proposal)
 
 
@@ -223,6 +231,23 @@ def _error(service: CapabilityEditService, exc: CapabilityEditError) -> dict[str
     if exc.status == "not_editable":
         result["editable_capabilities"] = service.editable_ids()
     return _result(result)
+
+
+def _unexpected(tool: str, exc: Exception) -> dict[str, Any]:
+    """A failure the service did not turn into a refusal; never fails the turn.
+
+    Only the exception class is reported: its message could quote manifest content.
+    """
+    logger.warning(
+        "capability_edit.tool_unexpected_error", tool=tool, error_type=type(exc).__name__
+    )
+    return _result(
+        {
+            "status": "rejected_invalid",
+            "reason": f"the request failed unexpectedly ({type(exc).__name__}); nothing was "
+            "proposed or written",
+        }
+    )
 
 
 def _result(result: dict[str, Any]) -> dict[str, Any]:

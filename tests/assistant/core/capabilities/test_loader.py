@@ -327,3 +327,10 @@ def test_plain_json_mcp_server_values_are_accepted(value: str) -> None:
     definition = parse_capability_manifest("c.yaml", raw.encode())
     assert definition.claude_code_settings is not None
     json.dumps(definition.claude_code_settings.mcp_servers, allow_nan=False)
+
+
+@pytest.mark.parametrize("depth", [500, 1000, 5000])
+def test_deeply_nested_manifest_is_a_parse_error_not_a_crash(depth: int) -> None:
+    raw = "capability_id: c\nprompt: " + "[" * depth + "]" * depth + "\n"
+    with pytest.raises(ManifestParseError, match="RecursionError"):
+        parse_capability_manifest("c.yaml", raw.encode())

@@ -283,3 +283,35 @@ def test_tracked_capability_admin_manifest_binds_the_edit_tools() -> None:
         "capability_propose_rollback",
     }
     assert admin.self_edit is False
+
+
+async def test_unexpected_service_errors_never_escape_the_tools(
+    edit_service: CapabilityEditService,
+    confirmations: ConfirmationService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reviewer S6: RecursionError used to fail the whole turn.
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RecursionError("depth exceeded near TOKEN=ghp_secret")
+
+    ctx = _ctx(edit_service, confirmations)
+    for name in ("read", "history", "propose_edit", "propose_rollback"):
+        monkeypatch.setattr(edit_service, name, boom)
+    results = [
+        capability_read(ctx, "editable"),
+        capability_history(ctx, "editable"),
+        await capability_propose_edit(ctx, "editable", "a", "b", "r", "x"),
+        await capability_propose_rollback(ctx, "editable", "h", "r", "x"),
+    ]
+    for result in results:
+        assert result["status"] == "rejected_invalid"
+        assert "RecursionError" in result["reason"] and "ghp_secret" not in result["reason"]
+
+
+@pytest.mark.parametrize("depth", [100, 500, 1000, 5000])
+async def test_deeply_nested_proposal_is_rejected_by_the_tool(
+    edit_service: CapabilityEditService, confirmations: ConfirmationService, depth: int
+) -> None:
+    ctx = _ctx(edit_service, confirmations)
+    result = await _propose(ctx, new="PROMPT-NEW\nx: " + "[" * depth + "]" * depth)
+    assert result["status"] == "rejected_invalid"

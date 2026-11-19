@@ -1111,3 +1111,111 @@ def test_history_outside_a_git_work_tree_does_not_warn(
 def test_repo_gitignore_covers_the_history_dir() -> None:
     gitignore = Path(__file__).resolve().parents[4] / ".gitignore"
     assert f"{HISTORY_DIR_NAME}/" in gitignore.read_text().splitlines()
+
+
+# ---------------------------------------------------------------------------
+# S6: deep nesting, huge inputs and unexpected exceptions never escape
+# ---------------------------------------------------------------------------
+
+
+def _deep(style: str, depth: int) -> str:
+    if style == "flow_list":
+        return "x: " + "[" * depth + "]" * depth + "\n"
+    if style == "flow_map":
+        return "x: " + "{a: " * depth + "1" + "}" * depth + "\n"
+    lines = ["x:"] + [f"{'  ' * (i + 1)}a:" for i in range(depth)]
+    return "\n".join(lines) + " 1\n"
+
+
+_STYLES = ["flow_list", "flow_map", "block_map"]
+_DEPTHS = [100, 500, 1000, 5000]
+
+
+@pytest.mark.parametrize("depth", _DEPTHS)
+@pytest.mark.parametrize("style", _STYLES)
+def test_deeply_nested_edit_is_rejected_invalid(
+    service: CapabilityEditService, style: str, depth: int
+) -> None:
+    err = _error(_propose, service, "tools:\n", _deep(style, depth) + "tools:\n")
+    assert err.status == STATUS_REJECTED_INVALID
+    # Deep block nesting also exceeds the size bound (indentation grows quadratically).
+    assert "deeper than 32 levels" in err.reason or "bytes allowed" in err.reason
+
+
+@pytest.mark.parametrize("depth", _DEPTHS)
+async def test_deeply_nested_rollback_and_apply_are_rejected_invalid(
+    service: CapabilityEditService, config_dir: Path, depth: int
+) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    history_id = service.history("editable")[0].history_id
+    entry = config_dir / HISTORY_DIR_NAME / "editable"
+    content = EDITABLE + _deep("flow_list", depth)
+    (entry / f"{history_id}.yaml").write_text(content)
+    sidecar = json.loads((entry / f"{history_id}.json").read_text())
+    sidecar["sha256"] = _sha(content)
+    (entry / f"{history_id}.json").write_text(json.dumps(sidecar))
+    base = service.read("editable").base_sha256
+    err = _error(service.propose_rollback, "editable", history_id, "undo", base)
+    assert err.status == STATUS_REJECTED_INVALID and "deeper than" in err.reason
+
+    before = _manifest(config_dir).read_text()
+    proposal = _propose(service, "Be brief.", "Be short.")
+    new_string = "Be short.\n" + _deep("block_map", depth)
+    payload = {
+        **proposal.payload,
+        "new_string": new_string,
+        "new_sha256": _sha(before.replace("Be brief.", new_string)),
+    }
+    outcome = await service.apply(payload, confirmation_id="c2", session_id="s", user_id=None)
+    assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
+    assert "deeper than" in outcome.detail or "bytes allowed" in outcome.detail
+    assert _manifest(config_dir).read_text() == before
+
+
+@pytest.mark.parametrize("depth", _DEPTHS)
+def test_deeply_nested_manifest_on_disk_is_not_editable(
+    service: CapabilityEditService, config_dir: Path, depth: int
+) -> None:
+    _manifest(config_dir).write_text(EDITABLE + _deep("flow_map", depth))
+    err = _error(service.read, "editable")
+    assert err.status in (STATUS_NOT_EDITABLE, STATUS_STALE)
+    assert "editable" not in service.editable_ids()
+
+
+def test_huge_edit_is_rejected_invalid(service: CapabilityEditService) -> None:
+    from assistant.core.capabilities.manifest_structure import MAX_MANIFEST_BYTES
+
+    huge = "Be concise. " + "x" * (MAX_MANIFEST_BYTES + 1)
+    err = _error(_propose, service, "Be concise.", huge)
+    assert err.status == STATUS_REJECTED_INVALID
+    assert f"more than the {MAX_MANIFEST_BYTES} bytes" in err.reason
+
+
+def test_huge_manifest_on_disk_is_not_editable(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    _manifest(config_dir).write_text(EDITABLE + "# " + "x" * (300 * 1024) + "\n")
+    err = _error(service.read, "editable")
+    assert err.status in (STATUS_NOT_EDITABLE, STATUS_STALE)
+
+
+async def test_unexpected_exceptions_become_rejected_invalid_without_their_message(
+    service: CapabilityEditService, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    history_id = service.history("editable")[0].history_id
+    base = service.read("editable").base_sha256
+    proposal = _propose(service, "Be brief.", "Be brief and kind.")
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RecursionError(f"maximum recursion depth exceeded near {_SECRET}")
+
+    monkeypatch.setattr(CapabilityEditService, "_validate_result", boom)
+    with capture_logs() as logs:
+        edit = _error(_propose, service, "Be brief.", "Be short.")
+        rollback = _error(service.propose_rollback, "editable", history_id, "undo", base)
+        outcome = await _apply(service, proposal, "c2")
+    for reason in (edit.reason, rollback.reason, outcome.detail):
+        assert "RecursionError" in reason and _SECRET not in reason
+    assert edit.status == rollback.status == outcome.status == STATUS_REJECTED_INVALID
+    assert _SECRET not in repr(logs)

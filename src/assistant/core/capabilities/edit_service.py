@@ -57,6 +57,7 @@ from assistant.core.capabilities.edit_summary import (
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
 from assistant.core.capabilities.manifest_structure import (
+    MAX_MANIFEST_BYTES,
     ManifestStructureError,
     check_manifest_structure,
     describe_yaml_error,
@@ -241,7 +242,7 @@ class CapabilityEditService:
                 continue
             try:
                 self._read_current(self._resolve(capability_id))
-            except CapabilityEditError:
+            except Exception:  # noqa: BLE001 - not editable, whatever the reason
                 continue
             ids.append(capability_id)
         return ids
@@ -291,7 +292,23 @@ class CapabilityEditService:
         reason: str,
         base_sha256: str,
     ) -> EditProposal:
-        """Validate an exact-match edit against the file on disk; nothing is written."""
+        """Validate an exact-match edit against the file on disk; nothing is written.
+
+        Every refusal, including an unexpected exception, is a :class:`CapabilityEditError`.
+        """
+        return _refuse_unexpected(
+            "propose_edit",
+            lambda: self._propose_edit(capability_id, old_string, new_string, reason, base_sha256),
+        )
+
+    def _propose_edit(
+        self,
+        capability_id: str,
+        old_string: str,
+        new_string: str,
+        reason: str,
+        base_sha256: str,
+    ) -> EditProposal:
         reason = _check_reason(reason)
         target = self._resolve(capability_id)
         current = self._read_current(target)
@@ -326,7 +343,18 @@ class CapabilityEditService:
     def propose_rollback(
         self, capability_id: str, history_id: str, reason: str, base_sha256: str
     ) -> EditProposal:
-        """Validate restoring a history version; nothing is written."""
+        """Validate restoring a history version; nothing is written.
+
+        Every refusal, including an unexpected exception, is a :class:`CapabilityEditError`.
+        """
+        return _refuse_unexpected(
+            "propose_rollback",
+            lambda: self._propose_rollback(capability_id, history_id, reason, base_sha256),
+        )
+
+    def _propose_rollback(
+        self, capability_id: str, history_id: str, reason: str, base_sha256: str
+    ) -> EditProposal:
         reason = _check_reason(reason)
         target = self._resolve(capability_id)
         current = self._read_current(target)
@@ -384,7 +412,7 @@ class CapabilityEditService:
         capability_id = str(payload.get("capability_id", ""))
         async with self._lock_for(capability_id):
             outcome = await asyncio.to_thread(
-                self._apply_sync, payload, confirmation_id, session_id, user_id
+                self._apply_guarded, payload, confirmation_id, session_id, user_id
             )
         log = logger.info if outcome.ok else logger.warning
         event = "capability_edit.failed"
@@ -410,6 +438,28 @@ class CapabilityEditService:
             history_id=outcome.history_id,
         )
         return outcome
+
+    def _apply_guarded(
+        self,
+        payload: dict[str, Any],
+        confirmation_id: str,
+        session_id: str,
+        user_id: str | None,
+    ) -> EditOutcome:
+        """:meth:`_apply_sync`; an unexpected exception becomes a failed outcome."""
+        try:
+            return self._apply_sync(payload, confirmation_id, session_id, user_id)
+        except Exception as exc:
+            # Only the class: the message could quote manifest content.
+            logger.warning(
+                "capability_edit.unexpected_error", op="apply", error_type=type(exc).__name__
+            )
+            return EditOutcome(
+                False,
+                STATUS_REJECTED_INVALID,
+                f"the edit could not be applied (unexpected {type(exc).__name__}); check the "
+                "manifest and capability_history before retrying",
+            )
 
     def _apply_sync(
         self,
@@ -460,6 +510,16 @@ class CapabilityEditService:
             self._validate_result(target, current, new_text)
         except CapabilityEditError as exc:
             return EditOutcome(False, exc.status, exc.reason)
+        except Exception as exc:
+            logger.warning(
+                "capability_edit.unexpected_error", op="apply", error_type=type(exc).__name__
+            )
+            return EditOutcome(
+                False,
+                STATUS_REJECTED_INVALID,
+                f"the approved change could not be validated (unexpected "
+                f"{type(exc).__name__}); nothing was written.",
+            )
         new_bytes = new_text.encode("utf-8")
         if _sha256(new_bytes) != new_sha:
             return EditOutcome(
@@ -604,6 +664,12 @@ class CapabilityEditService:
             raise CapabilityEditError(
                 STATUS_NOT_EDITABLE, f"cannot read {target.path.name}: {exc.strerror or exc}"
             ) from exc
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise CapabilityEditError(
+                STATUS_NOT_EDITABLE,
+                f"{target.path.name} is {len(raw)} bytes, more than the {MAX_MANIFEST_BYTES} "
+                "bytes allowed for agent edits",
+            )
         try:
             definition = _parse(target.path.name, raw)
         except ManifestParseError as exc:
@@ -793,6 +859,26 @@ def _parse(file_name: str, raw: bytes) -> CapabilityDefinition:
         )
         raise ManifestParseError(
             [f"[{file_name}] unexpected validation error ({type(exc).__name__})"]
+        ) from exc
+
+
+def _refuse_unexpected[T](op: str, fn: Callable[[], T]) -> T:
+    """``fn()``; any exception other than a refusal becomes a ``rejected_invalid`` one.
+
+    Agent-controlled text reaches the YAML parser, the schema and the summary; whatever
+    they raise (RecursionError, MemoryError, a library bug) must not escape the tool.
+    """
+    try:
+        return fn()
+    except CapabilityEditError:
+        raise
+    except Exception as exc:
+        # Only the class: the message could quote manifest content.
+        logger.warning("capability_edit.unexpected_error", op=op, error_type=type(exc).__name__)
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            f"the proposal could not be validated (unexpected {type(exc).__name__}); "
+            "nothing was proposed",
         ) from exc
 
 
