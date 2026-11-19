@@ -140,3 +140,13 @@ def test_core_confirmation_has_no_memory_imports() -> None:
                     f"{path.name}: {a.name}" for a in node.names if a.name.startswith(forbidden)
                 ]
     assert not offenders
+
+
+def test_defensive_summary_truncation_counts_utf16_units() -> None:
+    # 1300 emoji are 1300 chars but 2600 UTF-16 units: over the limit, so the note appears.
+    summary = build_memory_update_draft(_intent(body="😀" * 1300)).summary_for_user
+    assert "2500 of 2600 UTF-16 units shown" in summary
+    assert "😀" * 1250 in summary and "😀" * 1251 not in summary
+    # A cut that would split a surrogate pair drops the half instead of emitting it.
+    split = build_memory_update_draft(_intent(body="a" + "😀" * 1300)).summary_for_user
+    assert "a" + "😀" * 1249 + "\n… [truncated: 2500 of 2601" in split
