@@ -172,7 +172,7 @@ This document is normative for boundary governance across the `docs/assistant_v1
   - `CAPABILITY_CATALOG.md` and `domains/capabilities.md` can diverge on what is catalog vs runtime policy.
 - Rule:
   - `CAPABILITY_CATALOG.md` owns capability IDs and catalog record shape.
-  - `domains/capabilities.md` owns dynamic activation flow, manifest schema, and runtime policy enforcement.
+  - `domains/capabilities.md` owns capability activation (static model; dynamic activation is not planned), manifest schema, and runtime policy enforcement.
 
 ### 4) API/Admin boundary blur
 

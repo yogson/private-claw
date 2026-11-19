@@ -92,5 +92,5 @@ Store internal components:
 - API/Admin remain transport and operator surfaces; no domain business logic.
 - Memory guides routing but does not replace deterministic capability execution for high-risk actions.
 - Sub-agent runtime state and user-facing task memory remain separate model families.
-- Capability exposure to the model is shortlist-based per turn; no full catalog injection by default.
+- Capability exposure to the model follows the static active capability set (config enabled set + per-session `/capabilities` override). Per-turn shortlist-based exposure was considered and is not planned (see #55).
 

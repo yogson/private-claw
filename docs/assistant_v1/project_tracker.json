@@ -621,9 +621,9 @@
           "name": "Dynamic Capability Shortlist and Descriptor Injection [CMP_CORE_AGENT_ORCHESTRATOR]",
           "description": "Implement dynamic top-N capability shortlist selection and descriptor injection with policy pre-filtering.",
           "scope_path": "src/assistant/core/tooling/",
-          "status": "not_started",
+          "status": "cancelled",
           "completed_date": null,
-          "notes": "",
+          "notes": "Not planned: owner cancelled dynamic capability loading (#55 closed as not planned, PR #60 closed; branch feat/dynamic-capability-loading kept for reference). Capability activation stays static (config enabled set + per-session /capabilities override).",
           "files_delivered": []
         },
         {

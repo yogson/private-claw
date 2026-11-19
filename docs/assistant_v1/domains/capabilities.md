@@ -143,7 +143,7 @@ Skill manifest schema requirements:
 - `skill_id`: stable identifier.
 - `entrypoint`: `<python_module>:<callable_name>`.
 - `required_capabilities`: list of capability IDs required for execution.
-- `capabilities`: optional additional capabilities requested dynamically.
+- `capabilities`: optional additional capabilities requested dynamically (not planned; dynamic activation is not implemented, see "Dynamic Activation Model (Not planned)").
 - `dependency_resolution`: all `required_capabilities` must be registered and enabled at load time; unresolved dependencies block skill activation.
 - Discovery pattern: load manifests from `plugins/skills/*/manifest.yaml`; duplicate `skill_id` values are startup errors.
 
@@ -284,16 +284,26 @@ Derived state follows revisions:
 Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
 `mcp_servers.yaml` and the other config domains.
 
-## Dynamic Activation Model (Normative)
+## Dynamic Activation Model (Not planned)
 
-The system must separate **runtime registry availability** from **model-visible tool context**.
+> **Status: not implemented, not planned.** The owner decided not to pursue dynamic capability
+> activation/loading for now (see #55, closed as not planned, and closed PR #60; the branch
+> `feat/dynamic-capability-loading` is kept for reference). The current model is **static**: the
+> active capabilities are the config-enabled set plus the per-session `/capabilities` override,
+> resolved by `resolve_active_capabilities` over the CapabilityCatalog snapshot (#53 / PR #56).
+>
+> Everything below in this section, including the "Catalog Query Contract" and "Tool Context
+> Injection Rules", is a **historical design sketch only**. It is not a requirement and does not
+> describe current behavior.
+
+In the sketched design, the system would separate **runtime registry availability** from **model-visible tool context**.
 
 - Runtime registry may discover and validate all manifests at startup.
-- The model must not receive all tool definitions by default.
-- Per turn, only shortlisted capability descriptors are injected into model context.
-- Capability execution must originate from provider-native tool calls; plain text payloads must not be treated as tool execution requests.
+- The model would not receive all tool definitions by default.
+- Per turn, only shortlisted capability descriptors would be injected into model context.
+- Capability execution would originate from provider-native tool calls; plain text payloads would not be treated as tool execution requests.
 
-This is the required activation flow:
+This is the sketched activation flow:
 
 1. Build candidate set from intent signals:
    - user request text/entities,
@@ -309,14 +319,14 @@ This is the required activation flow:
    - ask targeted clarification, or
    - return actionable refusal/guidance for capability registration.
 
-For MCP-backed capabilities, steps 2-4 must additionally enforce:
+For MCP-backed capabilities, steps 2-4 would additionally enforce:
 - server connectivity and health checks,
 - tool-level allowlisting from MCP mapping config,
 - risk-class confirmation gates before descriptor injection.
 
-## Catalog Query Contract
+## Catalog Query Contract (Not planned)
 
-`CMP_TOOL_RUNTIME_REGISTRY` must provide deterministic catalog-query operations:
+`CMP_TOOL_RUNTIME_REGISTRY` would provide deterministic catalog-query operations:
 
 - `list_capabilities(filters)`:
   - filters by domain, side_effecting/read_only, and policy eligibility.
@@ -325,13 +335,13 @@ For MCP-backed capabilities, steps 2-4 must additionally enforce:
 - `get_tool_descriptors(capability_ids)`:
   - returns compact LLM-facing descriptors for context injection.
 
-Response records must include:
+Response records would include:
 - `capability_id`,
 - `score`,
 - `selection_reason`,
 - `policy_state` (`allowed`, `denied`, `requires_confirmation`).
 
-## Tool Context Injection Rules
+## Tool Context Injection Rules (Not planned)
 
 - Keep descriptor payload compact and deterministic.
 - Include only fields needed for safe invocation: name, arguments, constraints, confirmation requirement.

@@ -149,7 +149,7 @@ Parallel constraints:
   2. Implement dedicated memory operations capability and orchestrator wiring for memory proposal/apply flows (`CMP_TOOL_RUNTIME_REGISTRY`, `CMP_CORE_AGENT_ORCHESTRATOR`, `CMP_MEMORY_FILESYSTEM_STORE`).
   3. Implement remaining first-party capability set: web research, shell policy wrappers, macOS bridges, and `gh` integration (`CMP_TOOL_RUNTIME_REGISTRY`).
   4. Implement MCP bridge integration from server registry (`config/mcp_servers.yaml` + `plugins/mcp/*/tool_map.yaml`) with mapped-tool allowlisting and risk-class policy gates; reuse existing first-party tool mapping runtime (`CMP_TOOL_RUNTIME_REGISTRY`).
-  5. Implement dynamic capability shortlist selection and descriptor injection model (top-N, policy pre-filtered) (`CMP_TOOL_RUNTIME_REGISTRY`, `CMP_CORE_AGENT_ORCHESTRATOR`).
+  5. ~~Implement dynamic capability shortlist selection and descriptor injection model (top-N, policy pre-filtered) (`CMP_TOOL_RUNTIME_REGISTRY`, `CMP_CORE_AGENT_ORCHESTRATOR`).~~ **Not planned** (owner decision; see #55, closed as not planned). Capability activation stays static: config enabled set + per-session `/capabilities` override.
   6. Implement sub-agent coordinator with schema validation, model allowlist, capability subset checks, budget/concurrency/TTL/heartbeat controls (`CMP_AGENT_SUBAGENT_COORDINATOR`).
   7. Implement parent-child trace and audit correlation for capability and sub-agent paths (`CMP_OBSERVABILITY_LOGGING`, `CMP_AGENT_SUBAGENT_COORDINATOR`).
 - Dependencies:
@@ -165,7 +165,7 @@ Parallel constraints:
 - Success Criteria:
   - Capabilities/skills load deterministically and invalid manifests are rejected.
   - Memory operations run through dedicated capability contracts with auditable proposal/apply outcomes.
-  - Per-turn tool context is shortlist-based, not full-catalog injection.
+  - ~~Per-turn tool context is shortlist-based, not full-catalog injection.~~ Not planned (see #55); tool context follows the static active capability set.
   - Mapped MCP tools remain deny-by-default until explicitly allowlisted and pass policy/confirmation gates.
   - Sub-agent requests enforce model/capability/budget/concurrency constraints and remain auditable.
 

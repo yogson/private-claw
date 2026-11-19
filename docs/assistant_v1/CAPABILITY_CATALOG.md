@@ -18,12 +18,12 @@ Naming convention:
 
 Catalog usage model:
 - Startup: load and validate full catalog/manifests.
-- Turn-time: expose only shortlisted capability descriptors to the model.
-- Do not provide all capability/tool definitions in model context by default.
+- Turn-time: expose the active capability set (config enabled set + per-session `/capabilities` override) to the model.
+- Dynamic shortlist-based exposure of descriptors is not planned (see #55 and `domains/capabilities.md`, "Dynamic Activation Model (Not planned)").
 
 ## Catalog Record Contract
 
-Each catalog entry should be backed by a descriptor record used for dynamic activation:
+Each catalog entry should be backed by a descriptor record used for capability resolution (dynamic activation is not planned, see #55):
 
 - `capability_id`
 - `domain`
@@ -137,5 +137,5 @@ These are catalog-level policy invariants. Runtime enforcement behavior is defin
 - Side-effecting capabilities require audit logging and bounded timeouts.
 - MCP-backed capabilities must pass both capability policy and MCP server/tool allowlist checks.
 - High-risk capabilities (`shell`, mutating `gh`, write-capable `fs`) require stricter budget and approval rules.
-- Candidate capability ranking must happen before descriptor injection; keep per-turn shortlist small (recommended top 1-3).
+- Candidate ranking and per-turn shortlist injection (historical design, top 1-3) are not planned; see #55.
 
