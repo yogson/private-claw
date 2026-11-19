@@ -159,8 +159,11 @@ async def run_polling(
                 if media_group_id is not None and message_payload is not None:
                     # Buffer this message; the flush callback will fire once no
                     # new messages for the same group arrive within the window.
+                    # Tag with update_id so the flushed group can log which updates it merged.
                     buf_task: asyncio.Task[None] = asyncio.create_task(
-                        media_group_buffer.add(media_group_id, message_payload)
+                        media_group_buffer.add(
+                            media_group_id, {**message_payload, "update_id": update.update_id}
+                        )
                     )
                     _background_tasks.add(buf_task)
                     buf_task.add_done_callback(_background_tasks.discard)
