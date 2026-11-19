@@ -182,6 +182,21 @@ class CapabilityEditService:
         self._retention = retention
         self._clock = clock
         self._locks: dict[str, asyncio.Lock] = {}
+        self._warn_if_in_git_work_tree()
+
+    def _warn_if_in_git_work_tree(self) -> None:
+        """Backups copy manifests verbatim, including inline MCP ``env`` secrets."""
+        git_root = find_git_work_tree(self._history_dir)
+        if git_root is not None:
+            logger.warning(
+                "capability_edit.history_in_git_work_tree",
+                history_dir=str(self._history_dir),
+                git_work_tree=str(git_root),
+                hint=(
+                    "capability history backups may contain secrets from MCP env in the "
+                    "manifests; keep .capability_history/ gitignored and never commit it"
+                ),
+            )
 
     @property
     def history_dir(self) -> Path:
@@ -733,6 +748,18 @@ def _summary(**kwargs: Any) -> str:
             f"the change has {exc.sensitive_changes} security-sensitive field changes, too "
             "many to show the user in one confirmation; split it into smaller edits",
         ) from exc
+
+
+def find_git_work_tree(path: Path) -> Path | None:
+    """Closest ancestor of ``path`` (or itself) that contains a ``.git`` entry."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
 
 
 def _check_reason(reason: str) -> str:

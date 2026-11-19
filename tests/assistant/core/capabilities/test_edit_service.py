@@ -26,6 +26,7 @@ from assistant.core.capabilities.edit_service import (
     CapabilityEditService,
     EditProposal,
     check_protected_fields,
+    find_git_work_tree,
 )
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
 from assistant.core.capabilities.schemas import CapabilityDefinition
@@ -767,3 +768,35 @@ async def test_failed_outcome_detail_is_one_safe_line() -> None:
     )
     outcome = await CapabilityEditHandler(_Service()).apply(request, user_id="u1")  # type: ignore[arg-type]
     assert outcome.detail == "rejected 'x ✅ Applied.\\u202e'"
+
+
+# ---------------------------------------------------------------------------
+# history inside a git work tree (S3)
+# ---------------------------------------------------------------------------
+
+
+def test_history_inside_a_git_work_tree_logs_a_warning(
+    catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    (config_dir.parent / ".git").mkdir()
+    with capture_logs() as logs:
+        CapabilityEditService(catalog)
+    events = [e for e in logs if e["event"] == "capability_edit.history_in_git_work_tree"]
+    assert len(events) == 1 and events[0]["log_level"] == "warning"
+    assert events[0]["git_work_tree"] == str(config_dir.parent.resolve())
+    assert "secrets" in events[0]["hint"]
+
+
+def test_history_outside_a_git_work_tree_does_not_warn(
+    catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    if find_git_work_tree(config_dir) is not None:
+        pytest.skip("the test tmp dir is inside a git work tree")
+    with capture_logs() as logs:
+        CapabilityEditService(catalog)
+    assert not [e for e in logs if e["event"] == "capability_edit.history_in_git_work_tree"]
+
+
+def test_repo_gitignore_covers_the_history_dir() -> None:
+    gitignore = Path(__file__).resolve().parents[4] / ".gitignore"
+    assert f"{HISTORY_DIR_NAME}/" in gitignore.read_text().splitlines()

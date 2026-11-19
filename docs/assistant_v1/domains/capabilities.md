@@ -418,8 +418,13 @@ logs the revision bump with `reason=capability_edit:<confirmation_id>`.
 
 History and rollback:
 - The history directory is a hidden sibling of `capabilities/` in the active config dir, so
-  it travels with the config (gitignored with `config.local/`) and the catalog never loads
-  it as manifests.
+  it travels with the config and the catalog never loads it as manifests. `.capability_history/`
+  is in `.gitignore` (this matters when the active config dir is the tracked repo default
+  `config/`). Backups are verbatim copies of the manifests, so they contain whatever the
+  manifests contain, including inline `claude_code_settings.mcp_servers.*.env` secrets
+  (backup files are created with mode `0600`). When the history dir is inside a git work
+  tree, `CapabilityEditService` logs `capability_edit.history_in_git_work_tree` (warning) at
+  startup: keep the directory ignored and never commit it.
 - Each entry is the content **before** an applied edit or rollback, so a rollback can itself
   be rolled back. `capability_propose_rollback` validates the entry (well-formed id, sidecar
   hash matches the file) and the restored content (same checks as an edit, including
