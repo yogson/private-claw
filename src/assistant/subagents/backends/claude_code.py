@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from assistant.core.capabilities.subagent_mcp import SubagentMcpResolver, resolve_run_mcp
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 
@@ -53,6 +54,13 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
         # JSON.  The CLI ignores the "mcpServers" key in settings.json, so that file
         # cannot be used to deliver MCP servers to sub-agents.
         self._mcp_servers = mcp_servers or {}
+        # Resolves the servers of runs that name their capabilities
+        # (backend_params["mcp_capabilities"]); see core/capabilities/subagent_mcp.py.
+        self._mcp_resolver: SubagentMcpResolver | None = None
+
+    def set_mcp_resolver(self, resolver: SubagentMcpResolver | None) -> None:
+        """Set how runs that name their capabilities get their MCP servers."""
+        self._mcp_resolver = resolver
 
     def set_mcp_servers(self, mcp_servers: dict[str, dict[str, Any]]) -> None:
         """Replace the MCP servers handed to sub-agent runs started from now on.
@@ -220,8 +228,25 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
             "stream-json",
             "--verbose",
         ]
-        if self._mcp_servers:
-            cmd += ["--mcp-config", json.dumps({"mcpServers": self._mcp_servers})]
+        run_mcp = resolve_run_mcp(request.backend_params, self._mcp_servers, self._mcp_resolver)
+        servers = dict(run_mcp.servers)
+        disallowed: list[str] = []
+        for server_id, tool_filter in run_mcp.tool_filters.items():
+            if tool_filter.include is not None:
+                # The CLI has no per-server tool allowlist; without the streaming
+                # backend's hook the restriction cannot be enforced, so drop the server.
+                servers.pop(server_id, None)
+                logger.warning(
+                    "claude_code.mcp_server_dropped",
+                    server_id=server_id,
+                    reason="include_tools needs the claude_code_streaming backend",
+                )
+                continue
+            disallowed += [f"mcp__{server_id}__{tool}" for tool in sorted(tool_filter.deny)]
+        if servers:
+            cmd += ["--mcp-config", json.dumps({"mcpServers": servers})]
+        if disallowed:
+            cmd += ["--disallowedTools", ",".join(disallowed)]
         effort = str(request.backend_params.get("effort", "")).strip()
         if effort:
             cmd += ["--effort", effort]

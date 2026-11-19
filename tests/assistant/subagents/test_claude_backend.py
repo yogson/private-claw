@@ -532,3 +532,43 @@ def test_build_command_omits_mcp_config_when_no_servers() -> None:
     adapter = ClaudeCodeBackendAdapter(binary="claude")
     request = DelegationRun(task_id="t1", objective="Build UI", model_id="claude-sonnet-4-5")
     assert "--mcp-config" not in adapter._build_command(request, "prompt")
+
+
+def test_cli_named_capabilities_use_resolved_servers_and_disallowed_tools() -> None:
+    from assistant.core.capabilities.subagent_mcp import McpToolFilter, SubagentMcp
+
+    adapter = ClaudeCodeBackendAdapter(mcp_servers={"global": {"type": "sse", "url": "g"}})
+    adapter.set_mcp_resolver(
+        lambda ids: SubagentMcp(
+            servers={
+                "og": {"type": "http", "url": "https://og"},
+                "fin": {"type": "stdio", "command": "/bin/fin", "args": []},
+            },
+            tool_filters={
+                "og": McpToolFilter(deny=frozenset({"delete_graph"})),
+                "fin": McpToolFilter(include=frozenset({"rate"})),
+            },
+        )
+    )
+    request = DelegationRun(
+        task_id="t",
+        objective="x",
+        model_id="m",
+        backend_params={"mcp_capabilities": ["c"]},
+    )
+    cmd = adapter._build_command(request, "x")
+    config = json.loads(cmd[cmd.index("--mcp-config") + 1])
+    # A server with an include list cannot be restricted on the CLI, so it is dropped.
+    assert config == {"mcpServers": {"og": {"type": "http", "url": "https://og"}}}
+    assert cmd[cmd.index("--disallowedTools") + 1] == "mcp__og__delete_graph"
+
+
+def test_cli_empty_named_capabilities_mean_no_mcp_config() -> None:
+    from assistant.core.capabilities.subagent_mcp import SubagentMcp
+
+    adapter = ClaudeCodeBackendAdapter(mcp_servers={"global": {"type": "sse", "url": "g"}})
+    adapter.set_mcp_resolver(lambda ids: SubagentMcp())
+    request = DelegationRun(
+        task_id="t", objective="x", model_id="m", backend_params={"mcp_capabilities": []}
+    )
+    assert "--mcp-config" not in adapter._build_command(request, "x")

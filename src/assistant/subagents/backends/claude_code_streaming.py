@@ -31,6 +31,7 @@ os.environ.setdefault(
     str(DELEGATION_RELAY_TIMEOUT_S * 1000 + 10_000),
 )
 
+from assistant.core.capabilities.subagent_mcp import SubagentMcpResolver, resolve_run_mcp
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 
@@ -41,6 +42,7 @@ logger = structlog.get_logger(__name__)
 try:
     from claude_agent_sdk import (
         ClaudeAgentOptions,
+        HookMatcher,
         PermissionResultAllow,
         PermissionResultDeny,
         ResultMessage,
@@ -124,6 +126,9 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         # --mcp-config.  Sub-agents run with --setting-sources "" (SDK default),
         # so servers registered in ~/.claude.json or settings.json never reach them.
         self._mcp_servers = mcp_servers or {}
+        # Resolves the servers of runs that name their capabilities
+        # (backend_params["mcp_capabilities"]); see core/capabilities/subagent_mcp.py.
+        self._mcp_resolver: SubagentMcpResolver | None = None
         # The SDK prefers its bundled CLI over PATH, and the bundled copy lags
         # behind: old CLIs send thinking={type:"enabled", budget_tokens}, which
         # newer models (e.g. claude-opus-5-5) reject with a 400.  Use the
@@ -138,6 +143,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         the active capabilities; runs already in flight keep the servers they started with.
         """
         self._mcp_servers = dict(mcp_servers)
+
+    def set_mcp_resolver(self, resolver: SubagentMcpResolver | None) -> None:
+        """Set how runs that name their capabilities get their MCP servers."""
+        self._mcp_resolver = resolver
 
     @property
     def backend_id(self) -> str:
@@ -384,10 +393,30 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             else []
         )
 
+        run_mcp = resolve_run_mcp(params, self._mcp_servers, self._mcp_resolver)
+        pre_tool_use: list[Any] = []
+        if run_mcp.tool_filters:
+
+            async def _mcp_tool_filter(
+                input_data: Any, tool_use_id: str | None, context: Any
+            ) -> dict[str, Any]:
+                reason = run_mcp.denial_reason(str(input_data.get("tool_name", "")))
+                if reason is None:
+                    return {}
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }
+
+            pre_tool_use.append(HookMatcher(matcher=None, hooks=[cast(Any, _mcp_tool_filter)]))
+
         return ClaudeAgentOptions(
             model=request.model_id,
             cli_path=self._cli_path,
-            mcp_servers=cast(Any, dict(self._mcp_servers)),
+            mcp_servers=cast(Any, run_mcp.servers),
             max_turns=request.max_turns,
             cwd=cwd,
             effort=cast(Any, effort),
@@ -400,5 +429,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             # Even if the SDK patch (Fix 1) is lost on reinstall, bool(hooks)
             # remains truthy so wait_for_result_and_end_input() won't close
             # stdin early. The empty matcher list is harmless.
-            hooks={"PreToolUse": []},
+            # The MCP tool filter (if any) enforces capability tool restrictions in
+            # every permission mode, bypassPermissions included.
+            hooks={"PreToolUse": pre_tool_use},
         )

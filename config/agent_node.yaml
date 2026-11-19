@@ -27,6 +27,10 @@ permission_mode: auto
 # Optional capabilities: ids from capabilities/*.yaml whose prompts (nested ones
 # included) are prepended to every job on that repository, before the caller's
 # prompt. Many-to-many: list several per repo, reuse one across repos.
+# A job also gets exactly the MCP servers of those capabilities: their
+# claude_code_settings.mcp_servers plus their mcp_servers ids from
+# mcp_servers.yaml (include_tools is enforced; exclude_tools and confirm_tools are
+# blocked). A job without a repository gets no MCP servers.
 # "capability: <id>" is shorthand for a single entry.
 repositories:
   owner/repo:
