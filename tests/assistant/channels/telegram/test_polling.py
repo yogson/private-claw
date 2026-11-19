@@ -7,9 +7,10 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
-from aiogram.methods import SendMessage
+from aiogram.exceptions import TelegramAPIError, TelegramConflictError, TelegramNetworkError
+from aiogram.methods import GetUpdates, SendMessage
 from aiogram.types import Update
+from structlog.testing import capture_logs
 
 from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.models import (
@@ -241,3 +242,47 @@ async def test_dispatch_leaves_confirmation_callback_ack_to_handler() -> None:
 
     adapter.acknowledge_callback.assert_not_awaited()
     handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_polling_logs_conflict_and_keeps_backing_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 409 (another process polling the same token) is logged as an error and retried."""
+    monkeypatch.setattr("assistant.channels.telegram.polling._BACKOFF_MIN_SECONDS", 0.01)
+    config = _make_config()
+    adapter = TelegramAdapter(config)
+    stop = asyncio.Event()
+    conflict = TelegramConflictError(
+        GetUpdates(), "Conflict: terminated by other getUpdates request"
+    )
+    calls = 0
+
+    async def _get_updates(**_: object) -> list[Update]:
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise conflict
+        stop.set()
+        return []
+
+    with patch("assistant.channels.telegram.polling.Bot") as mock_bot_cls:
+        mock_bot = MagicMock()
+        mock_bot.get_updates = AsyncMock(side_effect=_get_updates)
+        mock_bot.delete_webhook = AsyncMock()
+        mock_bot.set_my_commands = AsyncMock()
+        mock_bot.set_chat_menu_button = AsyncMock()
+        mock_bot.session.close = AsyncMock()
+        mock_bot_cls.return_value = mock_bot
+
+        with capture_logs() as logs:
+            await run_polling(adapter, config, AsyncMock(), stop_event=stop)
+
+    assert calls == 4
+    conflicts = [e for e in logs if e["event"] == "telegram.polling.conflict"]
+    assert len(conflicts) == 3
+    assert all(e["log_level"] == "error" for e in conflicts)
+    assert "another process is polling this bot token" in conflicts[0]["hint"]
+    backoffs = [e["backoff_seconds"] for e in conflicts]
+    assert backoffs == sorted(backoffs) and backoffs[0] < backoffs[-1]
+    assert not [e for e in logs if e["event"] == "telegram.polling.get_updates_error"]
