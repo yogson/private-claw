@@ -362,9 +362,21 @@ leaf with the concrete values: `path: before → after`, `path: + value`, `path:
 Lists of entries are matched by their identity field (`tool_id`, `id`, `command_pattern`,
 `name`), so e.g. `tool_overrides.shell_execute_allowlisted.command_allowlist[git].allowed_args_pattern: "^status$" → ".*"`;
 lists of strings show each item added (`+`) or removed (`−`); a pure reorder says
-`order changed`. Values longer than 120 chars are cut with `(+N chars hidden)`. Values under
-`claude_code_settings.mcp_servers.*.env` / `headers` and secret-looking keys are shown as
-`<hidden>` (key names stay visible).
+`order changed`. Values on ⚠ lines are never cut: a changed string longer than 120 chars
+is shown as a diff excerpt with up to 20 unchanged chars of context on each side and the
+removed / added segments in full, e.g.
+`allowed_args_pattern: edited (134 → 137 chars): …"aaaaaaaaaaaaaaaaaa)$"[+"|.*"]`. A ⚠
+value, differing segment or key longer than 400 chars cannot be shown in full, so the
+proposal is refused (`rejected_invalid`, "propose a smaller edit"). Only non-sensitive
+values are cut with `(+N chars hidden)`. Inside `claude_code_settings.mcp_servers.<server>`,
+every value at or below an `env` / `headers` key or a secret-looking key (token, secret,
+password, api key, auth, credential, cookie, private key) is shown as `<hidden>` whatever
+its type, also when the agent changes its type (`env: {...}` → `"x"`) or replaces an
+enclosing value: dicts keep their key names, `KEY=value` list items keep `KEY`, and a change
+that touches only hidden values says `(secret value changed)`. Secrets elsewhere (e.g. a
+`?token=` in an MCP `url` or in `args`) are shown, so keep them in `env` / `headers`.
+YAML parse errors on the edit path report the problem and line / column only, never the
+source excerpt PyYAML embeds (it may quote a secret).
 
 Every manifest-derived string in the summary (values, list items, keys such as
 `tool_overrides` / `mcp_servers` names, the file name), the reason and the prompt excerpt
