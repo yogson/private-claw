@@ -185,9 +185,17 @@ async def test_resolution_recorded_during_compaction_survives(tmp_path: Path) ->
     assert await compaction is True
 
     stored = await store.read_session(SESSION)
-    assert any(r.record_type.value == "compaction_summary" for r in stored)
     sequences = [r.sequence for r in stored]
-    assert sequences == sorted(sequences) and len(set(sequences)) == len(sequences)
+    assert len(set(sequences)) == len(sequences)
+    # Carried-over record comes after the new summary and the kept turn (t3), in order.
+    turn_id = f"confirmation-{request.confirmation_id}"
+    event_ids = [r.event_id for r in stored]
+    summary_at = next(
+        i for i, r in enumerate(stored) if r.record_type.value == "compaction_summary"
+    )
+    kept_at = max(i for i, r in enumerate(stored) if r.turn_id == "t3")
+    assert event_ids[-2:] == [turn_id, f"terminal-{turn_id}"]
+    assert summary_at < kept_at < len(stored) - 2
     messages = records_to_messages(await store.replay_for_turn(SESSION, 50))
     resolution = [m.content for m in messages if m.content.startswith(CONFIRMATION_RESOLVED_MARKER)]
     assert len(resolution) == 1
