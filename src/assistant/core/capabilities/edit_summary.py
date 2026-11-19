@@ -38,14 +38,23 @@ list items keep ``KEY`` when it is an upper-case variable name (split at the fir
 
 Every top-level field except ``prompt`` is security-sensitive (tools, overrides, MCP
 servers, nested capabilities, Claude Code settings, and any field added later): its lines
-are marked ``⚠`` and listed first. ``prompt`` shows size statistics and ASCII-escaped
-excerpts of the added and the removed text; non-sensitive lines are dropped with an
-explicit ``(+N more changes not shown)`` line when space runs out. "No manifest fields
-change" appears only when the canonical forms of the parsed manifests are identical.
+are marked ``⚠`` and listed first. A ``prompt`` change is shown in FULL, but not in the
+summary: :func:`summarize_change` renders it as a unified line diff
+(:mod:`assistant.core.capabilities.prompt_diff`) split into message-sized parts that the
+channel delivers before the buttons; the summary only has a short, never-dropped
+``prompt: changed (+A/−R lines, see N attached parts)`` line. A prompt change that needs
+more than ``max_prompt_parts`` parts is refused (:class:`PromptChangeTooLargeError`),
+never cut. Other non-sensitive lines (none today) are dropped with an explicit
+``(+N more changes not shown)`` line when space runs out. "No manifest fields change"
+appears only when the canonical forms of the parsed manifests are identical.
+
+The reason is agent-written free text on one line (:func:`reason_text`): besides the
+:func:`inline` escaping, non-ASCII symbols (``⚠``, ``✅``, ``❌``, ``→``, ``•``, emoji)
+are escaped and ``[[`` is broken up, so nothing on the Reason line can look like a
+summary line, a status line or the ``[[CONFIRMATION_RESOLVED]]`` history marker.
 """
 
 import datetime as dt
-import difflib
 import json
 import math
 import re
@@ -53,7 +62,9 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
+from assistant.core.capabilities.prompt_diff import prompt_diff, split_parts
 from assistant.core.capabilities.schemas import CapabilityDefinition
+from assistant.core.capabilities.text_safety import escape_char, escape_unsafe, utf16_len
 
 SENSITIVE_WARNING = (
     "⚠ Security-sensitive changes (tools / overrides / MCP / permissions): every ⚠ line "
@@ -65,7 +76,12 @@ MASKED = "<hidden>"
 SECRET_CHANGED_NOTE = " (secret value changed)"
 UNRESTRICTED_NOTE = " [note: an empty delegation allowlist means NO restriction]"
 REASON_MAX_CHARS = 300
-EXCERPT_MAX_CHARS = 300
+# Body of one prompt-change part (UTF-16 units). The channel adds a header of at most
+# ~300 units (title + "part i/N (confirmation …)"), and a part must fit one Telegram
+# message (4096); ConfirmationAttachment enforces the same bound.
+PROMPT_PART_MAX_UNITS = 3700
+DEFAULT_MAX_PROMPT_PARTS = 8
+PROMPT_TITLE_MAX_CHARS = 40  # of the capability id: the title stays within 120 UTF-16 units
 # Non-sensitive values (anything but ``prompt``, which has its own lines) are cut here.
 PLAIN_VALUE_MAX_CHARS = 120
 _NON_SENSITIVE_FIELDS = frozenset({"prompt"})
@@ -82,23 +98,6 @@ _EMPTY_IS_UNRESTRICTED = frozenset({"delegation_allowed_backends", "delegation_m
 _ENV_KEY_RE = re.compile(r"[A-Z_][A-Z0-9_]{0,79}")
 # Keys / identities shown without quotes; anything else is shown as its canonical form.
 _PLAIN_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
-# Control, format (bidi controls, zero-width), surrogate, private-use, unassigned, and
-# line / paragraph separators.
-_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
-# Characters that render blank but are letters, marks or symbols, so the categories above
-# miss them: Hangul fillers, Braille blank, and the Default_Ignorable_Code_Point marks
-# (combining grapheme joiner, Khmer / Mongolian invisibles, variation selectors, tags).
-_INVISIBLE_RANGES = (
-    (0x034F, 0x034F),
-    (0x115F, 0x1160),
-    (0x17B4, 0x17B5),
-    (0x180B, 0x180F),
-    (0x2800, 0x2800),
-    (0x3164, 0x3164),
-    (0xFE00, 0xFE0F),
-    (0xFFA0, 0xFFA0),
-    (0xE0000, 0xE0FFF),
-)
 SENSITIVE_PREFIX = "  ⚠ "
 _PLAIN_PREFIX = "  • "
 
@@ -114,6 +113,24 @@ class SummaryTooLargeError(Exception):
         self.sensitive_changes = sensitive_changes
         self.needed_units = needed_units
         self.max_units = max_units
+
+
+class PromptChangeTooLargeError(Exception):
+    """The full prompt change needs more parts than one confirmation may carry."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class ChangeSummary:
+    """Approver-facing rendering of a change: the summary text and, when the prompt
+    changes, the full prompt diff as message-sized parts (in delivery order)."""
+
+    text: str
+    prompt_parts: tuple[str, ...] = ()
+    prompt_title: str = ""
 
 
 class _AbsentType:
@@ -271,11 +288,38 @@ def capability_change_summary(
     headline: str = "Capability edit",
     max_units: int = 3500,
 ) -> str:
-    """Render the approver-facing summary of ``before`` → ``after``.
+    """The summary text of :func:`capability_change` (without the prompt parts)."""
+    return capability_change(
+        capability_id=capability_id,
+        file_name=file_name,
+        reason=reason,
+        before=before,
+        after=after,
+        headline=headline,
+        max_units=max_units,
+    ).text
 
-    Raises :class:`SummaryTooLargeError` when the ⚠ lines alone exceed ``max_units``.
+
+def capability_change(
+    *,
+    capability_id: str,
+    file_name: str,
+    reason: str,
+    before: CapabilityDefinition,
+    after: CapabilityDefinition,
+    headline: str = "Capability edit",
+    max_units: int = 3500,
+    max_prompt_parts: int = DEFAULT_MAX_PROMPT_PARTS,
+    prompt_part_units: int = PROMPT_PART_MAX_UNITS,
+) -> ChangeSummary:
+    """Render the approver-facing summary of ``before`` → ``after`` and the full prompt
+    change parts.
+
+    Raises :class:`SummaryTooLargeError` when the ⚠ lines alone exceed ``max_units``, and
+    :class:`PromptChangeTooLargeError` when the prompt change does not fit
+    ``max_prompt_parts`` parts.
     """
-    return summarize_dumps(
+    return summarize_change(
         capability_id=capability_id,
         file_name=file_name,
         reason=reason,
@@ -283,6 +327,8 @@ def capability_change_summary(
         new=dump_manifest(after),
         headline=headline,
         max_units=max_units,
+        max_prompt_parts=max_prompt_parts,
+        prompt_part_units=prompt_part_units,
     )
 
 
@@ -301,31 +347,62 @@ def summarize_dumps(
     headline: str = "Capability edit",
     max_units: int = 3500,
 ) -> str:
-    """:func:`capability_change_summary` on two manifest dumps."""
+    """The summary text of :func:`summarize_change` on two manifest dumps."""
+    return summarize_change(
+        capability_id=capability_id,
+        file_name=file_name,
+        reason=reason,
+        old=old,
+        new=new,
+        headline=headline,
+        max_units=max_units,
+    ).text
+
+
+def summarize_change(
+    *,
+    capability_id: str,
+    file_name: str,
+    reason: str,
+    old: dict[str, Any],
+    new: dict[str, Any],
+    headline: str = "Capability edit",
+    max_units: int = 3500,
+    max_prompt_parts: int = DEFAULT_MAX_PROMPT_PARTS,
+    prompt_part_units: int = PROMPT_PART_MAX_UNITS,
+) -> ChangeSummary:
+    """:func:`capability_change` on two manifest dumps."""
     head = [f"{headline}: {inline(capability_id)} ({inline(file_name)})"]
     if reason.strip():
-        head.append(f"Reason: {clip(inline(reason), REASON_MAX_CHARS)}")
+        head.append(f"Reason: {reason_text(reason)}")
     changes = diff_manifests(old, new)
     if not changes:
-        return fit_utf16("\n".join([*head, NO_CHANGES_TEXT]), max_units)
+        return ChangeSummary(fit_utf16("\n".join([*head, NO_CHANGES_TEXT]), max_units))
 
     sensitive = [render_change(c) for c in changes if c.sensitive]
+    required = list(sensitive)
     plain: list[str] = []
+    prompt_parts: tuple[str, ...] = ()
     for change in changes:
         if change.sensitive:
             continue
-        if (
-            change.keys == ("prompt",)
-            and isinstance(change.old, str)
-            and isinstance(change.new, str)
-        ):
-            plain.extend(_prompt_lines(change.old, change.new))
-        else:
+        texts = _prompt_texts(change)
+        if texts is None:
             plain.append(render_change(change))
+            continue
+        line, prompt_parts = _prompt_change(*texts, max_prompt_parts, prompt_part_units)
+        required.append(line)  # never dropped: the parts are useless without it
     if sensitive:
         head.append(SENSITIVE_WARNING)
     head.append("Changed fields:")
-    return _fit_lines(head, sensitive, plain, max_units)
+    text = _fit_lines(head, required, plain, max_units, sensitive_changes=len(sensitive))
+    title = prompt_title(capability_id) if prompt_parts else ""
+    return ChangeSummary(text, prompt_parts, title)
+
+
+def prompt_title(capability_id: str) -> str:
+    """Title of the prompt-change parts (the channel adds ``part i/N`` and the id)."""
+    return f"Prompt change for {clip(inline(capability_id), PROMPT_TITLE_MAX_CHARS)}"
 
 
 def diff_manifests(old: dict[str, Any], new: dict[str, Any]) -> list[_Change]:
@@ -467,33 +544,34 @@ def _plain_line(change: _Change) -> str:
     return f"{_PLAIN_PREFIX}{change.path}: {fmt(change.old)} → {fmt(change.new)}"
 
 
-def _prompt_lines(old: str, new: str) -> list[str]:
-    added: list[str] = []
-    removed: list[str] = []
-    for line in difflib.ndiff(old.splitlines(), new.splitlines()):
-        if line.startswith("+ "):
-            added.append(line[2:])
-        elif line.startswith("- "):
-            removed.append(line[2:])
-    result = [
-        f"{_PLAIN_PREFIX}prompt: {len(old)} → {len(new)} chars "
-        f"(+{len(added)} / −{len(removed)} lines)"
-    ]
-    for label, lines in (("added", added), ("removed", removed)):
-        text = " ".join(" ".join(lines).split())
-        if text:
-            result.append(_excerpt(label, text))
-    return result
+def _prompt_texts(change: _Change) -> tuple[str, str] | None:
+    """``(old, new)`` prompt texts of a ``prompt`` change (absent = ``""``), or None."""
+    if change.keys != ("prompt",):
+        return None
+    old = "" if change.old is _ABSENT else change.old
+    new = "" if change.new is _ABSENT else change.new
+    if not isinstance(old, str) or not isinstance(new, str):
+        return None
+    return old, new
 
 
-def _excerpt(label: str, text: str) -> str:
-    """ASCII-escaped excerpt of the added / removed prompt text with an explicit count."""
-    if len(text) <= EXCERPT_MAX_CHARS:
-        return f"    {label} text: {_json_str(text)}"
-    return (
-        f"    {label} text (first {EXCERPT_MAX_CHARS} of {len(text)} chars): "
-        f"{_json_str(text[:EXCERPT_MAX_CHARS])}…"
+def _prompt_change(
+    old: str, new: str, max_parts: int, part_units: int
+) -> tuple[str, tuple[str, ...]]:
+    """The summary line of a prompt change and the full diff as parts."""
+    diff = prompt_diff(old, new)
+    parts = split_parts(diff.lines, part_units)
+    if len(parts) > max_parts:
+        raise PromptChangeTooLargeError(
+            f"the prompt change needs {len(parts)} messages to show every added and "
+            f"removed line in full, more than the {max_parts} allowed per confirmation"
+        )
+    n = len(parts)
+    line = (
+        f"{_PLAIN_PREFIX}prompt: changed ({len(old)} → {len(new)} chars, "
+        f"+{diff.added}/−{diff.removed} lines, see {n} attached part{'' if n == 1 else 's'})"
     )
+    return line, tuple(parts)
 
 
 def clip(text: str, limit: int) -> str:
@@ -508,51 +586,66 @@ def inline(text: str) -> str:
     remaining control / format (bidi, zero-width) and blank-rendering characters are
     escaped as ``\\uXXXX``. Used for the reason and status lines, not for manifest values
     (those are always ASCII, see :func:`canonical`)."""
-    return "".join(
-        (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}") if _unsafe(c) else c
-        for c in " ".join(text.split())
+    return escape_unsafe(" ".join(text.split()))
+
+
+# Non-ASCII symbols the summary and status lines use as markers (⚠ ✅ ❌ → ⌛ 🛠 🧠 ...)
+# are So / Sm; the bullet of plain lines is Po.
+_MARKER_CATEGORIES = frozenset({"So", "Sm", "Sk"})
+_MARKER_CHARS = frozenset({"•", "‣", "◦", "·"})
+
+
+def reason_text(reason: str) -> str:
+    """The agent-written reason as one line that cannot imitate a summary line.
+
+    :func:`inline`, then every non-ASCII symbol (``⚠``, ``✅``, ``❌``, ``→``, emoji,
+    bullets) is escaped as ``\\uXXXX`` and ``[[`` becomes ``[ [`` (so the
+    ``[[CONFIRMATION_RESOLVED]]`` history marker cannot appear), then the line is clipped.
+    """
+    text = "".join(
+        escape_char(c)
+        if not c.isascii() and (unicodedata.category(c) in _MARKER_CATEGORIES or c in _MARKER_CHARS)
+        else c
+        for c in inline(reason)
     )
+    while "[[" in text:
+        text = text.replace("[[", "[ [")
+    return clip(text, REASON_MAX_CHARS)
 
 
-def _unsafe(char: str) -> bool:
-    """Control / format / separator chars, spaces other than U+0020, and blank-rendering
-    letters or marks (a lookalike blank could hide or fake part of a line)."""
-    category = unicodedata.category(char)
-    if category in _UNSAFE_CATEGORIES or (category == "Zs" and char != " "):
-        return True
-    code = ord(char)
-    return any(low <= code <= high for low, high in _INVISIBLE_RANGES)
-
-
-def _fit_lines(head: list[str], sensitive: list[str], plain: list[str], max_units: int) -> str:
-    text = "\n".join([*head, *sensitive, *plain])
+def _fit_lines(
+    head: list[str],
+    required: list[str],
+    plain: list[str],
+    max_units: int,
+    *,
+    sensitive_changes: int,
+) -> str:
+    """``head`` + ``required`` (⚠ lines and the prompt line: never cut or dropped) +
+    as many ``plain`` lines as fit, with a count of the dropped ones."""
+    text = "\n".join([*head, *required, *plain])
     if utf16_len(text) <= max_units:
         return text
-    needed = utf16_len("\n".join([*head, *sensitive]))
+    needed = utf16_len("\n".join([*head, *required]))
     if needed > max_units:
-        # ⚠ lines are never cut or dropped: the proposal must be split instead.
-        raise SummaryTooLargeError(len(sensitive), needed, max_units)
-    lines = [*head, *sensitive]
+        # Required lines are never cut or dropped: the proposal must be split instead.
+        raise SummaryTooLargeError(sensitive_changes, needed, max_units)
+    lines = [*head, *required]
     for index, line in enumerate(plain):
         note = _more_note(len(plain) - index - 1)
         if utf16_len("\n".join([*lines, line, note])) > max_units:
             break
         lines.append(line)
-    hidden = len(plain) - (len(lines) - len(head) - len(sensitive))
+    hidden = len(plain) - (len(lines) - len(head) - len(required))
     lines.append(_more_note(hidden))
     text = "\n".join(lines)
     if utf16_len(text) > max_units:
-        raise SummaryTooLargeError(len(sensitive), utf16_len(text), max_units)
+        raise SummaryTooLargeError(sensitive_changes, utf16_len(text), max_units)
     return text
 
 
 def _more_note(hidden: int) -> str:
     return f"(+{hidden} more change{'' if hidden == 1 else 's'} not shown)"
-
-
-def utf16_len(text: str) -> int:
-    """Length of ``text`` in UTF-16 code units (how Telegram measures messages)."""
-    return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
 
 _TRUNCATED_NOTE = "\n… [summary truncated]"

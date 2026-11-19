@@ -343,3 +343,14 @@ async def test_resolution_record_never_quotes_another_manifests_yaml(
     assert "[other.yaml] YAML parse error: ScannerError" in record
     assert "ghpLEAKEDSECRET" not in record and "TOKEN" not in record
     assert "ghpLEAKEDSECRET" not in repr(logs)
+
+
+async def test_prompt_proposal_carries_the_full_prompt_change_as_an_attachment(
+    edit_service: CapabilityEditService, confirmations: ConfirmationService
+) -> None:
+    result = await _propose(_ctx(edit_service, confirmations), new="PROMPT-NEW\n  second line")
+    pending = confirmations.pending_for_session(SESSION)
+    assert pending is not None and pending.confirmation_id == result["confirmation_id"]
+    (attachment,) = pending.attachments
+    assert attachment.parts == ["@@ -1,2 +1,3 @@\n- PROMPT-OLD\n+ PROMPT-NEW\n+ second line\n  "]
+    assert "PROMPT-NEW" not in pending.summary_for_user

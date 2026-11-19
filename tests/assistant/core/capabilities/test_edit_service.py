@@ -216,7 +216,11 @@ def test_valid_proposal_writes_nothing_and_carries_a_summary(
     )
     assert payload["base_revision"] == 1
     assert "editable (editable.yaml)" in proposal.summary
-    assert "prompt:" in proposal.summary and "friendly" in proposal.summary
+    assert "• prompt: changed (" in proposal.summary and "friendly" not in proposal.summary
+    assert proposal.prompt_title == "Prompt change for editable"
+    assert proposal.prompt_parts == (
+        "@@ -1,3 +1,3 @@\n- Be concise.\n+ Be concise and friendly.\n  Answer in English.\n  ",
+    )
 
 
 def test_dedupe_key_is_stable_for_the_same_proposal(service: CapabilityEditService) -> None:
@@ -670,7 +674,7 @@ def test_unexpected_summary_error_is_rejected(
     def broken(**_: Any) -> str:
         raise TypeError("bug")
 
-    monkeypatch.setattr(module, "capability_change_summary", broken)
+    monkeypatch.setattr(module, "capability_change", broken)
     err = _error(_propose, service)
     assert err.status == STATUS_REJECTED_INVALID and "TypeError" in err.reason
 
@@ -1266,6 +1270,47 @@ async def test_unexpected_exception_after_validation_is_a_failed_outcome(
     assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
     assert "RuntimeError" in outcome.detail and _SECRET not in outcome.detail
     assert _manifest(config_dir).read_text() == EDITABLE
+
+
+# ---------------------------------------------------------------------------
+# S9: full prompt parts; part cap
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_change_needing_more_parts_than_allowed_is_rejected_invalid(
+    catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    long_old = "\n".join(f"  Rule {i}: answer briefly." for i in range(300))
+    _manifest(config_dir).write_text(EDITABLE.replace("  Be concise.", long_old))
+    catalog.reload("test")
+    service = CapabilityEditService(catalog, max_prompt_parts=2)
+    base = service.read("editable").base_sha256
+    long_new = long_old.replace("briefly", "in detail")
+    err = _error(service.propose_edit, "editable", long_old, long_new, "r", base)
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "more than the 2 allowed" in err.reason and "smaller prompt edit" in err.reason
+    proposal = CapabilityEditService(catalog, max_prompt_parts=8).propose_edit(
+        "editable", long_old, long_new, "r", base
+    )
+    assert 2 < len(proposal.prompt_parts) <= 8
+    assert f"see {len(proposal.prompt_parts)} attached parts" in proposal.summary
+
+
+def test_rollback_proposal_carries_the_prompt_parts(
+    service: CapabilityEditService,
+) -> None:
+    asyncio.run(_apply(service, _propose(service), "c1"))
+    history_id = service.history("editable")[0].history_id
+    base = service.read("editable").base_sha256
+    proposal = service.propose_rollback("editable", history_id, "undo", base)
+    assert proposal.prompt_parts == (
+        "@@ -1,3 +1,3 @@\n- Be concise and friendly.\n+ Be concise.\n  Answer in English.\n  ",
+    )
+
+
+def test_max_prompt_parts_must_be_positive(catalog: CapabilityCatalog) -> None:
+    with pytest.raises(ValueError, match="max_prompt_parts"):
+        CapabilityEditService(catalog, max_prompt_parts=0)
 
 
 # ---------------------------------------------------------------------------

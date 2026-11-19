@@ -402,15 +402,56 @@ Telegram: only the key names are visible** (e.g. `GITHUB_READ_ONLY: "1" → "0"`
 `NODE_OPTIONS` / `LD_PRELOAD` value shows as `<hidden>`). Reject any env / header change you
 did not ask for, or make it by hand. Secrets elsewhere (e.g. a `?token=` in an MCP `url` or in
 `args`) are shown, so keep them in `env` / `headers`.
+The secret-key match is a deliberate over-approximation: `auth` matches anywhere in a key,
+so a whole `oauth: {client_secret: …, scope: all}` block is masked, `scope` included. It is
+not narrowed to whole tokens (`auth`, `authorization`, `x-auth-token`, `*_auth*`). Under a
+narrowed rule, the children of `oauth`, `oauth2` or `googleOAuth` would be shown unless their
+own names look secret, and real secrets are often stored under such children with neutral
+names (`oauth.key`, `oauth.access`, `oauth.bearer`). The cost is that a non-secret value
+below such a key cannot be verified in Telegram. Reject what you cannot verify, or make the
+change by hand.
 
-`prompt` is the only non-sensitive field: it shows the size change, the added / removed line
-counts and ASCII-escaped excerpts of both the added and the removed text, each saying how
-much was cut (`added text (first 300 of N chars)`). The reason keeps readable non-ASCII text
-but has whitespace collapsed and control, format (bidi, zero-width), separator and
-blank-rendering characters escaped as `\uXXXX`, so it cannot forge extra summary lines; the
-failure detail of an applied confirmation (the "Failed:" status line) is sanitised the same
-way. The summary is capped in UTF-16 code units (the unit Telegram counts) at
-`SUMMARY_MAX_CHARS`: non-⚠ lines that do not fit are dropped with an explicit
+`prompt` is the only non-sensitive field, and it is shown **in full, outside the summary**.
+The summary has one short line that is never dropped:
+`• prompt: changed (32 → 439 chars, +1/−0 lines, see 1 attached part)`. The full change is a
+unified-style line diff (`core/capabilities/prompt_diff.py`): `@@ -a,b +c,d @@` hunk headers,
+then every removed line (`- `), every added line (`+ `) and up to 3 context lines (two spaces)
+around each change. An added prompt (`""` before) or a removed one is shown whole. Lines are
+split at `\n` only. Control, format (bidi, zero-width), separator, non-U+0020 space and
+blank-rendering characters (including `\r`, tabs and U+2028) are escaped as `\uXXXX` by the
+same character set as the reason. Other non-ASCII text is kept as is: prompts are often
+Russian, and `\uXXXX` for every Cyrillic letter would make them unreadable. Homoglyphs are
+therefore not exposed in this view. That is fine for free text the model reads, unlike the ⚠
+identifiers, where a lookalike could redirect a tool or a server. Backslashes are not escaped, so a
+literal `\u202e` typed into a prompt looks the same as an escaped U+202E. Both are visible,
+and neither can hide text. A content line always
+starts with `- `, `+ ` or two spaces, so prompt text cannot forge a hunk header.
+
+The diff is split into parts of at most 3700 UTF-16 units (`PROMPT_PART_MAX_UNITS`). A line
+that fits one part is never split. A longer line fills the rest of the current part and
+continues in the next ones, each continuation piece starting with `+…` / `-…` / ` …`. The
+parts travel with the confirmation as a `ConfirmationAttachment` (`domains/agent.md`, "User
+Confirmations"). Telegram sends them as separate plain-text messages before the buttons, each
+headed `Prompt change for <capability_id> — part i/N (confirmation <first 8 hex of the id>)`
+(`domains/telegram.md`). Nothing is ever cut. A prompt change that needs more than
+`app.capability_edit_max_prompt_parts` parts (default 8, up to 50) is `rejected_invalid`, and
+the agent is asked for a smaller prompt edit. So is a prompt side with more than 5000 lines
+(`MAX_PROMPT_LINES`). The diff uses `difflib.SequenceMatcher` (default autojunk) on the lines
+between the common prefix and suffix. It is near-linear: 3000 modified lines take about
+0.2 s. `difflib.ndiff`, whose similarity search took minutes on a few hundred modified lines,
+is not used. When a line repeats very often (autojunk), the diff may show more lines than a
+minimal one, never fewer.
+
+The reason keeps readable non-ASCII text but has whitespace collapsed and control, format
+(bidi, zero-width), separator and blank-rendering characters escaped as `\uXXXX`, so it cannot
+forge extra summary lines. Non-ASCII symbols (`⚠`, `✅`, `❌`, `→`, `•`, `⌛`, emoji; Unicode
+categories So / Sm / Sk) are escaped as well. `[[` becomes `[ [`, so the
+`[[CONFIRMATION_RESOLVED]]` marker cannot appear. Nothing on the Reason line can look like a
+summary line, a status line or the history marker. The failure detail of an applied
+confirmation (the "Failed:" status line) is sanitised like the reason minus the symbol rule.
+The summary is capped in UTF-16 code units (the unit Telegram counts) at `SUMMARY_MAX_CHARS`.
+The ⚠ lines and the prompt line are never dropped: if they do not fit, the proposal is
+refused. Other non-⚠ lines (there are none today) would be dropped with an explicit
 `(+N more changes not shown)` line. `No manifest fields change` appears only when the
 canonical forms of the parsed manifests are identical.
 

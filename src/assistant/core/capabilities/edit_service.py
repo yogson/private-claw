@@ -50,8 +50,11 @@ import structlog
 
 from assistant.core.capabilities.atomic_file import atomic_write_bytes
 from assistant.core.capabilities.edit_summary import (
+    DEFAULT_MAX_PROMPT_PARTS,
+    ChangeSummary,
+    PromptChangeTooLargeError,
     SummaryTooLargeError,
-    capability_change_summary,
+    capability_change,
 )
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
@@ -60,6 +63,7 @@ from assistant.core.capabilities.manifest_structure import (
     ManifestStructureError,
     check_manifest_structure,
 )
+from assistant.core.capabilities.prompt_diff import PromptDiffTooLargeError
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 
@@ -131,6 +135,10 @@ class EditProposal:
     payload: dict[str, Any]
     summary: str
     dedupe_key: str
+    # Full prompt diff (in delivery order), shown to the user before the buttons; empty
+    # when the prompt does not change.
+    prompt_parts: tuple[str, ...] = ()
+    prompt_title: str = ""
 
 
 @dataclass(frozen=True)
@@ -179,9 +187,13 @@ class CapabilityEditService:
         retention: int = DEFAULT_HISTORY_RETENTION,
         clock: Callable[[], datetime] = _utc_now,
         known_tool_ids: Collection[str] | None = None,
+        max_prompt_parts: int = DEFAULT_MAX_PROMPT_PARTS,
     ) -> None:
         if retention < 1:
             raise ValueError("retention must be at least 1")
+        if max_prompt_parts < 1:
+            raise ValueError("max_prompt_parts must be at least 1")
+        self._max_prompt_parts = max_prompt_parts
         self._catalog = catalog
         self._known_tool_ids = frozenset(known_tool_ids) if known_tool_ids is not None else None
         self._config_dir = catalog.current().capabilities_dir.parent
@@ -331,11 +343,14 @@ class CapabilityEditService:
             reason=reason,
             before=current.definition,
             after=after,
+            max_prompt_parts=self._max_prompt_parts,
         )
         return EditProposal(
             payload=payload,
-            summary=summary,
+            summary=summary.text,
             dedupe_key=_dedupe_key(capability_id, current.sha256, OP_EDIT, old_string, new_string),
+            prompt_parts=summary.prompt_parts,
+            prompt_title=summary.prompt_title,
         )
 
     def propose_rollback(
@@ -383,11 +398,14 @@ class CapabilityEditService:
             before=current.definition,
             after=after,
             headline=f"Capability rollback to {history_id} ({new_sha[:8]})",
+            max_prompt_parts=self._max_prompt_parts,
         )
         return EditProposal(
             payload=payload,
-            summary=summary,
+            summary=summary.text,
             dedupe_key=_dedupe_key(capability_id, current.sha256, OP_ROLLBACK, history_id),
+            prompt_parts=summary.prompt_parts,
+            prompt_title=summary.prompt_title,
         )
 
     # ------------------------------------------------------------------
@@ -875,10 +893,18 @@ def _refuse_unexpected[T](op: str, fn: Callable[[], T]) -> T:
         ) from exc
 
 
-def _summary(**kwargs: Any) -> str:
-    """Approver summary; a change whose ⚠ lines do not all fit is refused, never cut."""
+def _summary(**kwargs: Any) -> ChangeSummary:
+    """Approver summary and full prompt parts; a change whose ⚠ lines or prompt diff do
+    not fit is refused, never cut."""
     try:
-        return capability_change_summary(**kwargs)
+        return capability_change(**kwargs)
+    except (PromptChangeTooLargeError, PromptDiffTooLargeError) as exc:
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            f"{exc}. The user must see every added and removed prompt line before "
+            "approving and nothing is ever cut from them, so propose a smaller prompt edit "
+            "(change fewer lines at a time) or ask the user to make the change by hand",
+        ) from exc
     except SummaryTooLargeError as exc:
         raise CapabilityEditError(
             STATUS_REJECTED_INVALID,

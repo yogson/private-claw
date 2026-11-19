@@ -108,6 +108,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         capability_edit_service = CapabilityEditService(
             capability_catalog,
             retention=runtime_config.app.capability_history_retention,
+            max_prompt_parts=runtime_config.app.capability_edit_max_prompt_parts,
             known_tool_ids=[t.tool_id for t in runtime_config.tools.tools],
         )
         confirmations = ConfirmationService(

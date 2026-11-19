@@ -147,3 +147,31 @@ async def test_same_proposal_is_deduplicated(
     again = await confirmations.request(SESSION, build_capability_edit_draft(proposal))
     assert not again.created and again.request is not None
     assert again.request.confirmation_id == first.confirmation_id
+
+
+# --- S9: the full prompt change travels as an attachment --------------------------
+
+
+async def test_prompt_edit_draft_carries_the_full_prompt_parts(
+    edit_service: CapabilityEditService, confirmations: ConfirmationService, recorder: _Recorder
+) -> None:
+    base = edit_service.read("editable").base_sha256
+    proposal = edit_service.propose_edit("editable", "Old prompt.", '"New\\nprompt."', "r", base)
+    draft = build_capability_edit_draft(proposal)
+    (attachment,) = draft.attachments
+    assert attachment.title == "Prompt change for editable"
+    assert attachment.parts == ["@@ -1,1 +1,2 @@\n- Old prompt.\n+ New\n+ prompt."]
+    request = (await confirmations.request(SESSION, draft)).request
+    assert request is not None and request.attachments == draft.attachments
+    await confirmations.resolve(request.confirmation_id, ConfirmationDecision.REJECT)
+    # The history record keeps the summary only (the parts were shown to the user).
+    record = format_resolution_text(recorder.records[0])
+    assert "see 1 attached part" in record and "+ New" not in record
+
+
+def test_non_prompt_edit_draft_has_no_attachments(edit_service: CapabilityEditService) -> None:
+    base = edit_service.read("editable").base_sha256
+    proposal = edit_service.propose_edit(
+        "editable", "prompt: Old prompt.", "prompt: Old prompt.\nmcp_servers: [x]", "r", base
+    )
+    assert build_capability_edit_draft(proposal).attachments == []

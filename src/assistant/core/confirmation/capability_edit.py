@@ -12,6 +12,7 @@ confirmation mechanism.
 from assistant.core.capabilities.edit_service import CapabilityEditService, EditProposal
 from assistant.core.capabilities.edit_summary import inline
 from assistant.core.confirmation.models import (
+    ConfirmationAttachment,
     ConfirmationDraft,
     ConfirmationOutcome,
     ConfirmationRequest,
@@ -23,7 +24,16 @@ CAPABILITY_EDIT_KIND = "capability_edit"
 def build_capability_edit_draft(
     proposal: EditProposal, origin_tool_call_id: str = "", origin_tool_name: str = ""
 ) -> ConfirmationDraft:
-    """Wrap a validated proposal (edit or rollback) as a ``capability_edit`` draft."""
+    """Wrap a validated proposal (edit or rollback) as a ``capability_edit`` draft.
+
+    A prompt change travels as one attachment (the full diff, already split into parts),
+    which the channel delivers before the buttons.
+    """
+    attachments = (
+        [ConfirmationAttachment(title=proposal.prompt_title, parts=list(proposal.prompt_parts))]
+        if proposal.prompt_parts
+        else []
+    )
     return ConfirmationDraft(
         kind=CAPABILITY_EDIT_KIND,
         payload=proposal.payload,
@@ -31,6 +41,7 @@ def build_capability_edit_draft(
         dedupe_key=proposal.dedupe_key,
         origin_tool_call_id=origin_tool_call_id,
         origin_tool_name=origin_tool_name,
+        attachments=attachments,
     )
 
 
