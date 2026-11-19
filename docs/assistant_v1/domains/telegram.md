@@ -71,7 +71,9 @@ Lifecycle and policy are owned by the Agent domain (`domains/agent.md`, "User Co
 the Telegram transport only.
 
 - One message per new confirmation, sent after the turn's own response: kind title, `summary_for_user`
-  (for memory: action, memory type, body or target `memory_id`), and Approve / Reject inline buttons.
+  (for memory: action, memory type, body or target `memory_id`; for `capability_edit`: the field-level change
+  summary), and Approve / Reject inline buttons. The prompt is sent as plain text (`ChannelResponse.plain_text`),
+  like the edit after the press: no markdown conversion, so the user sees exactly the text they approve.
 - Size: the prompt is cut to 4096 − 300 UTF-16 units with an explicit `… [truncated]` mark, so it is always one
   message. The final edit truncates the base text so `base + status` fits in 4096 and the status line is never lost.
 - Callback payload: `cf:{confirmation_id}:{a|r}:{sig}`; `sig` is HMAC-SHA256 (truncated) over

@@ -36,7 +36,7 @@ Define the manifest-driven capability and skill ecosystem for v1, including disc
 | Model ID | File Pattern | Required Fields | Purpose |
 |---|---|---|---|
 | `CMP_DATA_MODEL_TOOL_DEFINITION` | `config/tools.yaml` | `tool_id`, `entrypoint`, `enabled`, `default_params` | Tool registration and global defaults |
-| `CMP_DATA_MODEL_CAPABILITY_DEFINITION` | `config/capabilities/*.yaml` | `capability_id`, `prompt`, `tools` | Capability = prompt + toolset + per-tool overrides |
+| `CMP_DATA_MODEL_CAPABILITY_DEFINITION` | `config/capabilities/*.yaml` | `capability_id`, `prompt`, `tools` | Capability = prompt + toolset + per-tool overrides; optional `self_edit` opt-in for agent-proposed edits |
 | `CMP_DATA_MODEL_CAPABILITY_POLICY` | `config/capabilities.yaml` | `enabled_capabilities`, `denied_capabilities` | Operator policy: which capability manifests are active |
 | `CMP_DATA_MODEL_SKILL_MANIFEST` | `plugins/skills/*/manifest.yaml` | `skill_id`, `version`, `entrypoint`, `required_capabilities`, `capabilities` | Skill registration and dependencies |
 | `CMP_DATA_MODEL_MCP_SERVER_REGISTRY` | `config/mcp_servers.yaml` | `server_id`, `transport`, `enabled`, `connection` | External MCP server registration and connection policy |
@@ -284,6 +284,125 @@ Derived state follows revisions:
 Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
 `mcp_servers.yaml` and the other config domains.
 
+## Agent-Driven Manifest Editing (`self_edit`, [#54](https://github.com/yogson/private-claw/issues/54))
+
+The agent can propose edits to capability manifests. Nothing is ever written without an
+explicit user approval through the generic confirmation mechanism (kind `capability_edit`,
+see `domains/agent.md` "User Confirmations").
+
+Opt-in and scope:
+- `self_edit: bool = false` in `CapabilityDefinition`. Only manifests a human marked
+  `self_edit: true` are readable/editable by the agent, and only if the file (after
+  following symlinks) lives inside the active config dir (e.g. `config.local/`). A symlink
+  that resolves elsewhere is `not_editable`; a symlink inside the config dir is written at
+  its target, so the link survives.
+- The agent may change any field **except** `capability_id` (a rename is create + delete,
+  both out of scope) and `self_edit` (only a human sets or clears it). Creating, deleting or
+  renaming capabilities is not supported. `tools.yaml`, `capabilities.yaml` and the other
+  config domains are never edited.
+- There is no content filtering: the approver checks the content. The service only
+  validates structure.
+
+Components:
+- `core/capabilities/edit_service.py` — `CapabilityEditService`: read, propose (validation),
+  apply, history, rollback. All domain logic lives here.
+- `core/capabilities/edit_summary.py` — the approver-facing summary.
+- `core/confirmation/capability_edit.py` — `build_capability_edit_draft` and
+  `CapabilityEditHandler` (registered in `ConfirmationHandlerRegistry` in `api/lifespan.py`).
+- `agent/tools/capability_edit.py` — thin tools, bound by the `capability_admin` capability
+  (`config/capabilities/capability_admin.yaml`, not enabled by default):
+
+| Tool | Result |
+|---|---|
+| `capability_read(capability_id)` | `{status: ok, capability_id, file, self_edit, raw_yaml, base_sha256, revision}` |
+| `capability_propose_edit(capability_id, old_string, new_string, reason, base_sha256)` | `pending_confirmation {confirmation_id, deduplicated, note}` / `another_confirmation_pending` / `rejected_invalid` / `not_editable` / `stale` / `unavailable` (with `reason`) |
+| `capability_history(capability_id, limit=10)` | `{status: ok, entries: [{history_id, created_at, sha256, reason, confirmation_id, op}]}` |
+| `capability_propose_rollback(capability_id, history_id, reason, base_sha256)` | same shape as `capability_propose_edit` |
+
+`not_editable` results also list `editable_capabilities`. Both propose tools are in
+`CONFIRMATION_TOOL_NAMES`.
+
+Proposal validation (no write):
+1. Resolve `capability_id` → file through the catalog snapshot (see opt-in rules above).
+   The file on disk must parse with `self_edit: true`, else `not_editable`.
+2. sha256 of the raw bytes ≠ `base_sha256` → `stale` ("call capability_read again").
+3. Exact match on the **raw text**: `old_string` non-empty, different from `new_string`,
+   exactly one occurrence, else `rejected_invalid`. The replacement keeps comments and
+   formatting outside the edited span byte-identical (no YAML round-trip, no new dependency).
+4. The result must parse and validate against the strict schema (`extra="forbid"`), pass
+   the catalog's cross-file checks on a candidate snapshot (`validate_candidate`: nested
+   references, tool bindings of the default policy), keep `capability_id`, and keep
+   `self_edit: true`.
+5. `self_edit` guard (`rejected_invalid`): `new_string` must not contain `self_edit`,
+   `old_string` must not overlap a line containing it, the lines containing `self_edit`
+   must be byte-identical before and after, and the parsed result must still say
+   `self_edit: true` (this also catches escaped duplicate keys such as `"self\x5fedit"`).
+6. The draft payload is `{op: edit, capability_id, file, base_sha256, new_sha256,
+   old_string, new_string, reason, base_revision}`; rollbacks carry `op: rollback` and
+   `target_history_id` instead of the strings. `dedupe_key` = sha256 of
+   `(capability_id, base_sha256, op, old_string, new_string | history_id)`.
+
+Summary (`summary_for_user`, a summary, not a diff): headline with id and file name,
+the reason (clipped to 300 chars), a `⚠ Grants new tools / MCP servers / permissions`
+line when the change adds tools, MCP servers, nested capabilities, Claude Code `allow`
+permissions or MCP servers, command allowlist / readonly entries, or removes `deny`
+entries, then one line per changed field. List-valued, permission-relevant fields show
+the exact items added (`+`) and removed (`−`); `prompt` shows the size change, the added /
+removed line counts and a ≤300-char excerpt of the added text. The warning is placed before
+the field list so a cut never hides it, and the summary is capped in UTF-16 code units
+(the unit Telegram counts) at `SUMMARY_MAX_CHARS`.
+
+Apply (`CapabilityEditHandler.apply` on Approve; per-capability `asyncio.Lock`, file I/O in
+`asyncio.to_thread`):
+1. Re-resolve the file (must be the same path), re-read it. sha256 ≠ `base_sha256` →
+   `failed`/`stale` ("changed between proposal and approval … nothing was written").
+2. `self_edit` revoked by a human in the meantime → `failed`/`not_editable`.
+3. Re-run the replacement (or read the history entry) and the full validation; the result
+   must hash to the approved `new_sha256`.
+4. Back up the current bytes to `<config_dir>/.capability_history/<capability_id>/<history_id>.yaml`
+   (`history_id = <UTC YYYYmmddTHHMMSSffffff>Z__<sha8>`) plus a `.json` sidecar
+   `{history_id, created_at, op, capability_id, file, sha256, new_sha256, reason,
+   confirmation_id, session_id, user_id, base_revision, target_history_id}`, both written
+   atomically. A failed backup aborts with `backup_failed`.
+5. Atomic write of the new content (`core/capabilities/atomic_file.py`: temp file in the
+   target's directory, fsync, `os.replace`, file mode kept, best-effort directory fsync).
+   A failed write leaves the original intact and removes the backup (`write_failed`).
+6. `catalog.reload("capability_edit:<confirmation_id>")`. If the catalog does not serve the
+   new content (e.g. another manifest broke meanwhile and the reload was rejected as a
+   whole), the previous bytes are restored and the outcome is `failed`/`reload_rejected`.
+   Otherwise the outcome is `applied` with `revision N → M` and the backup's history id.
+7. History is pruned to the newest `app.capability_history_retention` versions per
+   capability (default 50) after a successful apply.
+
+The handler never reports `applied` unless the write happened and the catalog serves it;
+the `[[CONFIRMATION_RESOLVED]]` record carries the real status and detail. Reject / expire
+write nothing. Audit: `capability_edit.proposed` (tool), `capability_edit.applied`,
+`capability_edit.rolled_back`, `capability_edit.failed`, `capability_edit.restored`,
+`capability_edit.history_pruned`, with `confirmation_id`, `session_id`, `user_id`,
+`capability_id`, `op`, `base_sha256`/`new_sha256` and the revisions; `capabilities.reloaded`
+logs the revision bump with `reason=capability_edit:<confirmation_id>`.
+
+History and rollback:
+- The history directory is a hidden sibling of `capabilities/` in the active config dir, so
+  it travels with the config (gitignored with `config.local/`) and the catalog never loads
+  it as manifests.
+- Each entry is the content **before** an applied edit or rollback, so a rollback can itself
+  be rolled back. `capability_propose_rollback` validates the entry (well-formed id, sidecar
+  hash matches the file) and the restored content (same checks as an edit, including
+  `self_edit: true`) and goes through the same confirmation and apply steps.
+- A human can always roll back by copying a history file over the manifest; live reload
+  picks it up.
+
+Known limitation (out of scope by owner decision): sub-agents with direct filesystem
+access (Claude Code tasks with `permission_mode` `bypassPermissions`) can write
+`<config_dir>/capabilities/*.yaml` directly. With live reload such a write takes effect on
+the next turn **without** a confirmation and without a history entry. External edits are
+not backed up by the catalog.
+
+Operator setup: add the four `capability_*` entries from `config/tools.yaml` to the active
+`tools.yaml`, enable `capability_admin` (policy or nesting), and mark the manifests the
+agent may edit with `self_edit: true`.
+
 ## Static Activation Model and Tool-Call Invariants (current, in force)
 
 Active capabilities are static, resolved by `resolve_active_capabilities` over the CapabilityCatalog
@@ -470,7 +589,7 @@ Memory-only representation is acceptable for low-risk context:
 
 - If a memory-stored procedure is reused or considered safety-critical, promote it to a capability before autonomous execution.
 - On first capture of a procedural workflow, require user confirmation to save as a capability.
-- When procedure semantics change, create a new capability version; do not silently mutate prior behavior.
+- When procedure semantics change, do not silently mutate prior behavior: either create a new capability version, or edit an opted-in (`self_edit: true`) manifest through the `capability_edit` flow, where every change is explicitly approved by the user and the previous version is kept in the capability history.
 - Memory should store mapping metadata, such as: `intent=deploy_to_prod`, `project=<id>`, `capability_id=<cap.deploy.prod.vN>`, and default input values.
 
 ### Execution Contract

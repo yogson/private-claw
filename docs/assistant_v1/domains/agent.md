@@ -118,8 +118,9 @@ Idempotency rule:
 ## User Confirmations (Normative)
 
 `CMP_CORE_CONFIRMATION_SERVICE` (`assistant.core.confirmation`) is the single mechanism for actions that need an
-explicit user decision. Memory updates are the first kind (`memory_update`); other kinds (e.g. capability-manifest
-edits) plug in by registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff).
+explicit user decision. Kinds: `memory_update` (memory proposals) and `capability_edit` (agent-proposed capability
+manifest edits and rollbacks; see `domains/capabilities.md` "Agent-Driven Manifest Editing"). Other kinds plug in by
+registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff).
 
 Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `origin_tool_call_id`, `payload`,
 `summary_for_user`, `dedupe_key`, `status` (`pending|approved|rejected|expired|failed`), `created_at`, `expires_at`,
@@ -139,7 +140,8 @@ Rules:
   still-pending id is left alone. History is then re-read, so the same turn sees the outcome. The store deduplicates
   records by event id, so a later press of the old button adds no second record.
   Only results of the first-party confirmation-creating tools in `CONFIRMATION_TOOL_NAMES`
-  (`assistant.core.confirmation.history`; currently `memory_propose_update`) are scanned, and only ids in the
+  (`assistant.core.confirmation.history`; currently `memory_propose_update`, `capability_propose_edit` and
+  `capability_propose_rollback`) are scanned, and only ids in the
   service's own format (16 lowercase hex chars, `is_confirmation_id`). Output of any other tool (MCP servers, fetched
   JSON, external APIs) is untrusted and may use the same shape; it must never become a trusted resolution record.
   Every new confirmation-creating tool (e.g. capability edits) must be added to `CONFIRMATION_TOOL_NAMES`.
@@ -161,7 +163,9 @@ Rules:
   decisions are no-ops that return the existing final state.
 - Approval runs the per-kind handler (`ConfirmationHandlerInterface.apply`). For `memory_update` only
   `written|updated|deleted|touched` writer statuses count as applied; anything else is `failed` with the writer
-  reason. The blocking writer runs in `asyncio.to_thread`.
+  reason. The blocking writer runs in `asyncio.to_thread`. For `capability_edit` only a written manifest that the
+  catalog serves counts as `applied`; `stale`, `not_editable`, `rejected_invalid`, `backup_failed`, `write_failed` and
+  `reload_rejected` are `failed` with a precise detail.
 - Only a button press is approval; text replies never resolve a confirmation.
 - `summary_for_user` is capped at `SUMMARY_MAX_CHARS` (3500) with an explicit "[truncated: N more chars not shown]"
   note. Kinds where the user must see everything they approve reject over-long proposals before requesting.
