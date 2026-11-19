@@ -1248,3 +1248,18 @@ async def test_unexpected_exceptions_become_rejected_invalid_without_their_messa
         assert "RecursionError" in reason and _SECRET not in reason
     assert edit.status == rollback.status == outcome.status == STATUS_REJECTED_INVALID
     assert _SECRET not in repr(logs)
+
+
+async def test_unexpected_exception_after_validation_is_a_failed_outcome(
+    service: CapabilityEditService, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal = _propose(service)
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"bug near {_SECRET}")
+
+    monkeypatch.setattr(CapabilityEditService, "_write_backup", boom)
+    outcome = await _apply(service, proposal)
+    assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
+    assert "RuntimeError" in outcome.detail and _SECRET not in outcome.detail
+    assert _manifest(config_dir).read_text() == EDITABLE
