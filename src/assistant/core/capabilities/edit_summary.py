@@ -25,7 +25,9 @@ invariants are property-tested:
    with the full value (every field of an added block, empty ones included). Lists of
    entries with a unique identity (``tool_id``, ``id``, ``command_pattern``, ``name``)
    are matched by it; each changed field of an entry is a leaf as above, and a change of
-   the entries' order (other than appending) shows both full identity sequences.
+   the entries' order (other than appending) shows both full identity sequences. Where
+   the value does not mean what it seems, a fixed note follows it: an empty delegation
+   allowlist (no restriction), and a removed tool override (inherited, not cleared).
 3. Nothing on a ⚠ line is ever cut. When the ⚠ lines do not all fit ``max_units``,
    :class:`SummaryTooLargeError` is raised and the proposal is refused.
 
@@ -75,6 +77,21 @@ ABSENT = "(absent)"
 MASKED = "<hidden>"
 SECRET_CHANGED_NOTE = " (secret value changed)"
 UNRESTRICTED_NOTE = " [note: an empty delegation allowlist means NO restriction]"
+# A removed tool override field is inherited, not cleared (agent.tools.registry merges
+# tools.yaml defaults with the overrides of every enabled capability).
+INHERITED_NOTE = (
+    " [note: a removed tool override is inherited, not cleared: another override of this "
+    "tool or tools.yaml applies"
+)
+# What a removed field means when nothing else sets it, where that is wider than expected.
+UNSET_MEANS = {
+    "delegation_default_permission_mode": "the built-in auto, the second-widest mode",
+    "delegation_allowed_backends": "NO restriction",
+    "delegation_model_allowlist": "NO restriction",
+    "delegation_per_task_token_cap": "no cap",
+    "delegation_per_session_token_cap": "no cap",
+    "delegation_global_token_cap": "no cap",
+}
 REASON_MAX_CHARS = 300
 # Body of one prompt-change part (UTF-16 units). The channel adds a header of at most
 # ~300 units (title + "part i/N (confirmation …)"), and a part must fit one Telegram
@@ -519,7 +536,41 @@ def render_change(change: _Change) -> str:
         line += SECRET_CHANGED_NOTE
     if _sets_unrestricted(change.keys, change.new):
         line += UNRESTRICTED_NOTE
+    if change.new is _ABSENT:
+        line += inherited_note(change.keys, change.old)
     return line
+
+
+def inherited_note(keys: tuple[str, ...], old: Any) -> str:
+    """The note for removing tool override fields (at ``keys``, removed value ``old``):
+    they fall back to other overrides or tools.yaml; ``""`` if ``keys`` is not one."""
+    fields = sorted(_override_fields(keys, old))
+    if not fields:
+        return ""
+    unset = "".join(
+        f"; {name} set nowhere: {UNSET_MEANS[name]}" for name in fields if name in UNSET_MEANS
+    )
+    return f"{INHERITED_NOTE}{unset}]"
+
+
+def _override_fields(keys: tuple[str, ...], old: Any) -> set[str]:
+    """Names of the CapabilityToolOverride fields removed at ``keys``."""
+    if keys[:1] == ("tool_overrides",):
+        depth = 2  # tool_overrides.<tool>.<field>
+    elif keys[:1] == ("tools",) and keys[2:3] == ("params_override",):
+        depth = 3  # tools[<tool>].params_override.<field>
+    else:
+        return set()
+    if len(keys) > depth + 1:
+        return set()  # inside a field (e.g. one allowlist entry): not a fallback
+    if len(keys) == depth + 1:
+        return {keys[depth]}
+    # A whole override removed (or every override, at ``tool_overrides``): the fields
+    # each removed override set.
+    overrides = [old]
+    for _ in range(depth - len(keys)):
+        overrides = [v for d in overrides if isinstance(d, dict) for v in d.values()]
+    return {str(k) for d in overrides if isinstance(d, dict) for k in d}
 
 
 def _render_value(value: Any) -> str:

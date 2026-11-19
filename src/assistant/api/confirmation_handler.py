@@ -7,7 +7,9 @@ Approve/Reject message per new confirmation, and resolve button presses.
 A confirmation with attachments (e.g. the full prompt diff of a ``capability_edit``) is
 delivered as: every attachment part, in order, then the button message, sent as a
 Telegram reply to part 1 (parts 2..N reply to part 1 too). The agent's own messages are
-sent before all of this and are never replies, so they cannot pose as a part of it. The
+sent before all of this and are never replies. They can imitate a part header (the agent
+knows the confirmation id), but they cannot change, remove or reorder the real parts,
+which the bot sends directly above the buttons. The
 buttons are sent only after every part was delivered; if any part or the button message
 fails, the confirmation is discarded (``failed``, session slot released) and no buttons
 are left behind for it.

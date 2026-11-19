@@ -80,7 +80,9 @@ the Telegram transport only.
   `allow_sending_without_reply=False`, so a deleted part 1 fails the send instead of dropping the binding).
   Parts 2..N reply to part 1 too. The button message adds `📎 Sent in full above: <title> (N parts). This message
   is a reply to part 1 (confirmation <id>); read every part before deciding.` The agent's own text is sent
-  before all of this and is never a reply, so it cannot pose as a part. The buttons are sent only after every
+  before all of this and is never a reply. It can imitate a part header (the agent knows the confirmation id
+  from the tool result), but it cannot change, remove or reorder the real parts: the bot sends them directly
+  above the buttons, and the button message replies to the real part 1. The buttons are sent only after every
   part was delivered with a message id. If a part fails (send error, no id reported, or a rendered part over
   4096 UTF-16 units, which core bounds make impossible), nothing more is sent for that confirmation. It is
   discarded as `not_delivered` (`failed`, session slot released), so no buttons exist for it. A failed button

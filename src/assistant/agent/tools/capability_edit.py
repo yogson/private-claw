@@ -190,9 +190,19 @@ async def _request_confirmation(
 ) -> dict[str, Any]:
     if requester is None:
         return {"status": "unavailable", "reason": "user confirmation is not available here"}
-    draft = build_capability_edit_draft(
-        proposal, origin_tool_call_id=ctx.tool_call_id or "", origin_tool_name=ctx.tool_name or ""
-    )
+    try:
+        # Validates the summary and the prompt-change parts (ConfirmationAttachment): an
+        # edge case there is a refusal, not a failed turn.
+        draft = build_capability_edit_draft(
+            proposal,
+            origin_tool_call_id=ctx.tool_call_id or "",
+            origin_tool_name=ctx.tool_name or "",
+        )
+    except Exception as exc:
+        return _unexpected(ctx.tool_name or "capability_propose", exc)
+    # The requester is not wrapped (as in memory_propose_update): its deliberate failure,
+    # a tool missing from CONFIRMATION_TOOL_NAMES (#59), is a programming error that
+    # must stay loud.
     outcome = await requester(draft)
     payload = proposal.payload
     if outcome.request is None:

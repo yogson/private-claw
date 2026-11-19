@@ -354,3 +354,107 @@ async def test_prompt_proposal_carries_the_full_prompt_change_as_an_attachment(
     (attachment,) = pending.attachments
     assert attachment.parts == ["@@ -1,2 +1,3 @@\n- PROMPT-OLD\n+ PROMPT-NEW\n+ second line\n  "]
     assert "PROMPT-NEW" not in pending.summary_for_user
+
+
+# --- B1 (fifth review of #64): an attachment edge case never fails the turn ---------
+
+_BLOCK_MANIFEST = "capability_id: editable\nself_edit: true\nprompt: |\n  intro\n  OLDLINE\n"
+
+
+@pytest.mark.parametrize("k", [3662, 3663, 3664, 3696, 3697, 3698])
+async def test_reviewer_lengths_become_a_pending_confirmation(
+    edit_service: CapabilityEditService,
+    confirmations: ConfirmationService,
+    config_dir: Path,
+    k: int,
+) -> None:
+    (config_dir / "capabilities" / "editable.yaml").write_text(_BLOCK_MANIFEST)
+    result = await _propose(_ctx(edit_service, confirmations), new="N" * k, old="OLDLINE")
+    assert result["status"] == "pending_confirmation"
+    pending = confirmations.pending_for_session(SESSION)
+    assert pending is not None
+    (attachment,) = pending.attachments
+    assert all(part.strip() for part in attachment.parts)
+    assert "N" * k in "".join(attachment.parts).replace("\n+…", "")
+
+
+@pytest.mark.parametrize("tool_name", ["capability_propose_edit", "capability_propose_rollback"])
+async def test_a_draft_that_fails_validation_is_rejected_invalid(
+    edit_service: CapabilityEditService,
+    confirmations: ConfirmationService,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+) -> None:
+    from assistant.agent.tools import capability_edit as tools_module
+    from assistant.core.confirmation import ConfirmationAttachment
+
+    def invalid_draft(*_args: Any, **_kwargs: Any) -> ConfirmationDraft:
+        ConfirmationAttachment(title="t", parts=["  "])  # raises ValidationError
+        raise AssertionError("unreachable")
+
+    ctx = _ctx(edit_service, confirmations, tool_name=tool_name)
+    read = capability_read(ctx, "editable")
+    proposal = edit_service.propose_edit(
+        "editable", "PROMPT-OLD", "PROMPT-NEW", "r", read["base_sha256"]
+    )
+    monkeypatch.setattr(edit_service, "propose_rollback", lambda *_a: proposal)
+    monkeypatch.setattr(tools_module, "build_capability_edit_draft", invalid_draft)
+    if tool_name == "capability_propose_edit":
+        result = await _propose(ctx)
+    else:
+        result = await capability_propose_rollback(ctx, "editable", "h", "r", read["base_sha256"])
+    assert result["status"] == "rejected_invalid"
+    assert "ValidationError" in result["reason"] and "nothing was proposed" in result["reason"]
+    assert confirmations.pending_for_session(SESSION) is None
+
+
+async def test_random_prompt_edits_never_raise_out_of_the_tool(tmp_path: Path) -> None:
+    import random
+
+    import yaml
+
+    rng = random.Random(645)
+    alphabet = "ab Пр 🧠"
+
+    def line() -> str:
+        roll = rng.random()
+        if roll < 0.35:
+            return ""
+        if roll < 0.6:
+            return "".join(rng.choices(alphabet, k=rng.randint(1, 8))).strip() or "x"
+        return "N" * rng.randint(3600, 3705) + rng.choice(["", "я", "🧠"])
+
+    statuses: set[str] = set()
+    for i in range(40):
+        caps = tmp_path / f"c{i}" / "capabilities"
+        caps.mkdir(parents=True)
+        old = "\n".join(line() for _ in range(rng.randint(1, 5))) + "\n"
+        new = "\n".join(line() for _ in range(rng.randint(1, 5))) + "\n" * rng.randint(1, 3)
+        raw = yaml.safe_dump(
+            {"capability_id": "editable", "self_edit": True, "prompt": old},
+            allow_unicode=True,
+            width=1 << 20,
+        )
+        (caps / "editable.yaml").write_text(raw)
+        service = CapabilityEditService(
+            CapabilityCatalog(caps.parent, min_refresh_interval=0), max_prompt_parts=50
+        )
+        confirmations = ConfirmationService(
+            ConfirmationHandlerRegistry([CapabilityEditHandler(service)])
+        )
+        ctx = _ctx(service, confirmations)
+        replacement = yaml.safe_dump(
+            {"capability_id": "editable", "self_edit": True, "prompt": new},
+            allow_unicode=True,
+            width=1 << 20,
+        )
+        read = capability_read(ctx, "editable")
+        result = await capability_propose_edit(
+            ctx, "editable", raw, replacement, "r", read["base_sha256"]
+        )
+        statuses.add(result["status"])
+        pending = confirmations.pending_for_session(SESSION)
+        if pending is not None:
+            assert all(p.strip() for a in pending.attachments for p in a.parts)
+    assert statuses <= {"pending_confirmation", "rejected_invalid"}
+    assert "pending_confirmation" in statuses

@@ -22,7 +22,10 @@ Rendering:
   expose homoglyphs: the prompt is free text the model reads, not an identifier that a
   lookalike could redirect;
 - a line longer than one part is split across parts; its continuation pieces start with
-  the same marker followed by ``…`` (``+…``, ``-…``, `` …``) instead of a space.
+  the same marker followed by ``…`` (``+…``, ``-…``, `` …``) instead of a space;
+- a part never starts with a blank context line (it could then be blank as a whole,
+  which a message cannot carry): it starts with an empty continuation (``+…``, `` …``,
+  ...) of the previous part's last line instead.
 
 Bounds: each side may have at most ``MAX_PROMPT_LINES`` lines (``PromptDiffTooLargeError``
 otherwise), and the diff is computed with ``difflib.SequenceMatcher`` (default autojunk)
@@ -153,30 +156,43 @@ def split_parts(lines: tuple[str, ...] | list[str], max_units: int) -> list[str]
     the next part instead); a longer line fills the rest of the current part and
     continues in the next ones, each continuation piece starting with its marker and
     ``…`` (never between the two halves of an astral character). Nothing is dropped.
+
+    No part after the first starts with a whitespace-only piece (an empty or all-space
+    context line): such a part could be entirely blank, which a message cannot carry
+    (``ConfirmationAttachment`` refuses it). The part starts with an empty continuation
+    of the previous part's last line instead (its marker and ``…``, nothing after), so
+    every part has visible text and joining the continuations back still gives
+    ``lines`` exactly. The first part starts with ``lines[0]`` (a hunk header in a diff).
     """
     if max_units < _MIN_SPLIT_ROOM:
         raise ValueError(f"max_units must be at least {_MIN_SPLIT_ROOM}")
     parts: list[str] = []
     current: list[str] = []
     used = 0
+    last = ""  # the last piece placed
+    pinned = False  # current holds only an empty continuation: it must not be flushed
     for line in lines:
         piece = line
         while True:
+            if not current and parts and not piece.strip():
+                marker = last[:1] + _CONTINUATION
+                current, used, pinned = [marker], utf16_len(marker), True
             sep = 1 if current else 0
             width = utf16_len(piece)
             if used + sep + width <= max_units:
                 current.append(piece)
                 used += sep + width
+                last, pinned = piece, False
                 break
             room = max_units - used - sep
-            if current and (width <= max_units or room < _MIN_SPLIT_ROOM):
+            if current and not pinned and (width <= max_units or room < _MIN_SPLIT_ROOM):
                 parts.append("\n".join(current))
                 current, used = [], 0
                 continue
             head, rest = _cut(piece, room)
             current.append(head)
             parts.append("\n".join(current))
-            current, used = [], 0
+            current, used, last, pinned = [], 0, head, False
             piece = piece[:1] + _CONTINUATION + rest
     if current:
         parts.append("\n".join(current))

@@ -5,6 +5,8 @@ parts respect Telegram's UTF-16 limit, and a change that needs more parts than a
 is refused. The diff is near-linear and bounded (no ``difflib.ndiff``).
 """
 
+import random
+import re
 import time
 
 import pytest
@@ -22,7 +24,11 @@ from assistant.core.capabilities.prompt_diff import (
     split_parts,
 )
 from assistant.core.capabilities.text_safety import utf16_len
-from assistant.core.confirmation import ATTACHMENT_PART_MAX_UTF16, ATTACHMENT_TITLE_MAX_UTF16
+from assistant.core.confirmation import (
+    ATTACHMENT_PART_MAX_UTF16,
+    ATTACHMENT_TITLE_MAX_UTF16,
+    ConfirmationAttachment,
+)
 
 
 def _change(old: str, new: str, **kw: object) -> tuple[str, tuple[str, ...]]:
@@ -222,3 +228,144 @@ def test_prompt_with_too_many_lines_is_refused() -> None:
     with pytest.raises(PromptDiffTooLargeError):
         prompt_diff("", "\n" * MAX_PROMPT_LINES)
     prompt_diff("", "\n" * (MAX_PROMPT_LINES - 1))
+
+
+# --- B1 (fifth review of #64): no part is ever blank --------------------------------
+
+_HUNK_RE = re.compile(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@")
+
+
+def _check_parts(
+    old: str, new: str, parts: tuple[str, ...] | list[str], units: int, text: str = ""
+) -> None:
+    """Every part is visible and fits; the hunks rebuild ``old`` and ``new`` exactly;
+    the ``+A/−R`` counts of the summary ``text`` (if given) match the parts."""
+    assert parts
+    for part in parts:
+        assert part.strip(), parts
+        assert utf16_len(part) <= units <= ATTACHMENT_PART_MAX_UTF16
+    ConfirmationAttachment(title="Prompt change for cap", parts=list(parts))
+    a, b = old.split("\n") if old else [], new.split("\n") if new else []
+    rebuilt: list[str] = []
+    pos = 0
+    hunks: list[tuple[tuple[int, ...], list[str]]] = []
+    for line in _content(parts):
+        match = _HUNK_RE.fullmatch(line)
+        if match:
+            hunks.append((tuple(int(x) for x in match.groups()), []))
+        else:
+            assert line[:1] in {" ", "-", "+"} and line[1:2] == " ", line
+            hunks[-1][1].append(line)
+    for (a1, alen, b1, blen), body in hunks:
+        i1, j1 = (a1 - 1 if alen else a1), (b1 - 1 if blen else b1)
+        assert [x[2:] for x in body if x[0] in " -"] == a[i1 : i1 + alen]
+        assert [x[2:] for x in body if x[0] in " +"] == b[j1 : j1 + blen]
+        rebuilt.extend(a[pos:i1])
+        rebuilt.extend(x[2:] for x in body if x[0] in " +")
+        pos = i1 + alen
+    rebuilt.extend(a[pos:])
+    assert rebuilt == b
+    if text:
+        content = _content(parts)
+        added = sum(x.startswith("+") for x in content)
+        removed = sum(x.startswith("-") for x in content)
+        assert f"+{added}/−{removed} lines, see {len(parts)} attached part" in text
+    else:
+        assert _content(parts) == list(prompt_diff(old, new).lines)  # nothing dropped
+
+
+@pytest.mark.parametrize("k", [3662, 3663, 3664, 3696, 3697, 3698])
+def test_reviewer_lengths_end_with_a_visible_part(k: int) -> None:
+    # `prompt: |` block scalars end with "\n": the diff ends with an empty context line
+    # ("  "), which used to be a part of its own and fail ConfirmationAttachment.
+    old, new = "intro\nOLDLINE\n", "intro\n" + "N" * k + "\n"
+    text, parts = _change(old, new)
+    assert parts[-1].endswith("\n  ")
+    _check_parts(old, new, parts, PROMPT_PART_MAX_UNITS)
+    _check_parts(old, new, parts, PROMPT_PART_MAX_UNITS, text)
+
+
+@pytest.mark.parametrize("k", range(3640, 3710))
+def test_lengths_around_the_part_boundary(k: int) -> None:
+    old, new = "intro\nOLDLINE\n", "intro\n" + "N" * k + "\n"
+    _check_parts(old, new, _change(old, new)[1], PROMPT_PART_MAX_UNITS)
+
+
+def test_trailing_blank_lines_after_a_long_changed_line() -> None:
+    old, new = "y\nA\n\n\n\n", "x" * 3666 + "\nA\n\n\n\n"
+    _, parts = _change(old, new)
+    _check_parts(old, new, parts, PROMPT_PART_MAX_UNITS)
+
+
+def test_a_part_that_would_start_blank_starts_with_an_empty_continuation() -> None:
+    lines = ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "  ", "  "]
+    assert split_parts(lines, 100) == ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "+…\n  \n  "]
+    # A blank piece wider than what is left after the marker is cut, never flushed
+    # alone (and the loop terminates).
+    lines = ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "  " + " " * 97]
+    parts = split_parts(lines, 100)
+    assert parts[2].startswith("+…\n   ") and parts[3].startswith(" …")
+    assert all(p.strip() and utf16_len(p) <= 100 for p in parts)
+    assert _content(parts) == lines
+    # A long all-space context line after a full part.
+    lines = ["@@ -1,1 +1,1 @@", "  " + " " * 300]
+    parts = split_parts(lines, 64)
+    assert all(p.strip() and utf16_len(p) <= 64 for p in parts)
+    assert _content(parts) == lines
+
+
+_ALPHABET = "abc XYZ Привет мир 🧠✅ 0123"
+
+
+def _text_of_units(rng: random.Random, units: int) -> str:
+    """Random text of ``units`` UTF-16 units (``units + 1`` if it ends in an emoji)."""
+    text = "".join(rng.choices(_ALPHABET, k=units))
+    while utf16_len(text) > units + 1:
+        text = text[: len(text) - (utf16_len(text) - units) // 2 - 1]
+    return text
+
+
+def _random_line(rng: random.Random, units: int) -> str:
+    roll = rng.random()
+    if roll < 0.3:
+        return ""
+    if roll < 0.35:
+        return " " * rng.randint(1, units + 5)
+    if roll < 0.6:
+        return _text_of_units(rng, rng.randint(1, 12))
+    if roll < 0.9:  # around one part (minus the 2-char marker and a separator)
+        return _text_of_units(rng, max(1, units + rng.randint(-45, 3)))
+    return _text_of_units(rng, rng.randint(units, 3 * units))
+
+
+def _random_prompts(rng: random.Random, units: int) -> tuple[str, str]:
+    old = [_random_line(rng, units) for _ in range(rng.randint(0, 10))]
+    new = list(old)
+    for _ in range(rng.randint(1, 4)):
+        op = rng.random()
+        if op < 0.4 and new:
+            new[rng.randrange(len(new))] = _random_line(rng, units)
+        elif op < 0.7:
+            new.insert(rng.randint(0, len(new)), _random_line(rng, units))
+        elif new:
+            del new[rng.randrange(len(new))]
+    if rng.random() < 0.5:
+        new.extend([""] * rng.randint(1, 4))
+    old_text, new_text = "\n".join(old), "\n".join(new)
+    if rng.random() < 0.5:  # block scalars end with "\n"
+        old_text, new_text = old_text + "\n", new_text + "\n"
+    return old_text, new_text
+
+
+def test_randomized_multi_part_diffs_are_visible_bounded_and_exact() -> None:
+    rng = random.Random(64_5)
+    checked = 0
+    for _ in range(2000):
+        units = rng.choice([64, 64, 65, 80, 100, 160, 300, PROMPT_PART_MAX_UNITS])
+        old, new = _random_prompts(rng, units)
+        if old == new:
+            continue
+        text, parts = _change(old, new, max_prompt_parts=10_000, prompt_part_units=units)
+        _check_parts(old, new, parts, units, text)
+        checked += len(parts) > 1
+    assert checked > 1000  # mostly multi-part diffs

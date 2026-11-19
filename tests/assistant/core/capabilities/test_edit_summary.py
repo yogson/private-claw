@@ -8,12 +8,14 @@ reviewer repros are at the top, the property tests at the bottom.
 import datetime as dt
 import math
 import random
+import re
 from typing import Any
 
 import pytest
 
 from assistant.core.capabilities.edit_summary import (
     ABSENT,
+    INHERITED_NOTE,
     NO_CHANGES_TEXT,
     SECRET_CHANGED_NOTE,
     SENSITIVE_PREFIX,
@@ -60,8 +62,8 @@ def _sensitive_lines(text: str) -> list[str]:
 def _split(line: str) -> tuple[str, str, str]:
     """``(path, before, after)`` of a ⚠ line; notes after the value are stripped."""
     body = line[len(SENSITIVE_PREFIX) :]
-    for note in (SECRET_CHANGED_NOTE, UNRESTRICTED_NOTE):
-        body = body.removesuffix(note)
+    body = re.sub(r"(?: \[note: [^\[\]]*\])+$", "", body)
+    body = body.removesuffix(SECRET_CHANGED_NOTE)
     head, before_after = body.split(": ", 1) if ": " in body else (body, "")
     # The arrow is non-ASCII, and every manifest-controlled character on the line is
     # ASCII, so it occurs exactly once and splits before from after unambiguously.
@@ -291,6 +293,83 @@ def test_emptying_an_allowlist_is_flagged() -> None:
         '⚠ tool_overrides.d.delegation_allowed_backends: ["claude_code"] → []' + UNRESTRICTED_NOTE
         in text
     )
+
+
+# --- S13 (fifth review of #64): a removed tool override is inherited, not cleared ------
+
+
+_PERMISSION_UNSET = (
+    "; delegation_default_permission_mode set nowhere: the built-in auto, the second-widest mode]"
+)
+
+
+def test_removed_permission_mode_says_it_falls_back_to_tools_yaml_and_auto() -> None:
+    before = _cap(
+        tool_overrides={"delegate_subagent_task": {"delegation_default_permission_mode": "plan"}},
+        tools=[
+            {
+                "tool_id": "delegate_subagent_task",
+                "params_override": {"delegation_default_permission_mode": "plan"},
+            }
+        ],
+    )
+    after = _cap(
+        tool_overrides={"delegate_subagent_task": {"delegation_default_ttl_seconds": 60}},
+        tools=[{"tool_id": "delegate_subagent_task", "params_override": {}}],
+    )
+    lines = _sensitive_lines(_summary(before, after))
+    path = "delegate_subagent_task.delegation_default_permission_mode"
+    for line in (
+        f'{SENSITIVE_PREFIX}tool_overrides.{path}: "plan" → {ABSENT}',
+        f"{SENSITIVE_PREFIX}tools[delegate_subagent_task].params_override."
+        f'delegation_default_permission_mode: "plan" → {ABSENT}',
+    ):
+        assert line + INHERITED_NOTE + _PERMISSION_UNSET in lines
+    assert "tools.yaml applies" in INHERITED_NOTE and "inherited, not cleared" in INHERITED_NOTE
+    assert "\u2192" not in INHERITED_NOTE and INHERITED_NOTE.isascii()
+
+
+_WHOLE_OVERRIDE_NOTE = (
+    INHERITED_NOTE + "; delegation_default_permission_mode set nowhere: the built-in auto, the "
+    "second-widest mode; delegation_model_allowlist set nowhere: NO restriction]"
+)
+
+
+def test_removing_a_whole_override_notes_the_fields_it_set() -> None:
+    override = {"delegation_default_permission_mode": "plan", "delegation_model_allowlist": ["m"]}
+    kept = {"other": {"default_timeout_seconds": 5}}
+    before = _cap(tool_overrides={"d": override, **kept})
+    (line,) = _sensitive_lines(_summary(before, _cap(tool_overrides=kept)))
+    assert line.startswith(f"{SENSITIVE_PREFIX}tool_overrides.d: ")
+    assert line.endswith(_WHOLE_OVERRIDE_NOTE), line
+    # The whole tool_overrides key removed (a raw dump: the schema always has the key).
+    old = {"capability_id": "cap", "tool_overrides": {"d": override}}
+    (line,) = _sensitive_lines(_dumps_summary(old, {"capability_id": "cap"}))
+    assert line.startswith(f"{SENSITIVE_PREFIX}tool_overrides: ")
+    assert line.endswith(_WHOLE_OVERRIDE_NOTE), line
+
+
+def test_removed_field_without_a_wider_default_gets_the_plain_inherited_note() -> None:
+    before = _cap(tool_overrides={"shell_execute": {"max_timeout_seconds": 5}})
+    after = _cap(tool_overrides={"shell_execute": {}})
+    (line,) = _sensitive_lines(_summary(before, after))
+    assert line.endswith(f"5 → {ABSENT}{INHERITED_NOTE}]")
+
+
+def test_removing_an_entry_or_a_non_override_field_has_no_inherited_note() -> None:
+    entries = [{"id": "ls", "command_pattern": "ls"}, {"id": "rm", "command_pattern": "rm"}]
+    before = _cap(
+        tool_overrides={"shell_execute": {"command_allowlist": entries}},
+        mcp_servers=["finance"],
+        nested_capabilities=["other"],
+    )
+    after = _cap(tool_overrides={"shell_execute": {"command_allowlist": entries[:1]}})
+    lines = _sensitive_lines(_summary(before, after))
+    assert len(lines) == 3 and not any("[note:" in line for line in lines), lines
+    # Changing (not removing) a field is not a fallback either.
+    before = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "plan"}})
+    after = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "auto"}})
+    assert "[note:" not in _summary(before, after)
 
 
 # --- sub-agent permission ceiling (master #47): a capability override can raise it ------

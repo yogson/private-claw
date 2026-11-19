@@ -385,7 +385,14 @@ is deliberately simple, and its invariants are property-tested
 - **Nothing is skipped.** A key or entry present on one side only is shown with its full
   value against `(absent)`, so every field of an added block is listed, `[]`, `{}` and `null`
   included. A line that sets `delegation_allowed_backends` or `delegation_model_allowlist`
-  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`.
+  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. Removing a
+  tool override field, or a whole override (`tool_overrides.<tool>`, `tool_overrides`,
+  `tools[<tool>].params_override`), does not clear it: the value from another override of
+  the tool, else tools.yaml, applies (`agent/tools/registry.py` merges them). Such a line
+  gets `[note: a removed tool override is inherited, not cleared: another override of this
+  tool or tools.yaml applies]`, plus what the field means when it is set nowhere if that is
+  wide: `delegation_default_permission_mode` → the built-in `auto` (the second-widest
+  mode), the delegation allowlists → NO restriction, the delegation token caps → no cap.
 - **Never cut.** If the ⚠ lines do not all fit the summary cap, the proposal is
   `rejected_invalid` and the agent is asked for smaller edits (or to let the user edit by
   hand); a ⚠ line is never truncated or dropped in favour of another.
@@ -429,11 +436,20 @@ starts with `- `, `+ ` or two spaces, so prompt text cannot forge a hunk header.
 
 The diff is split into parts of at most 3700 UTF-16 units (`PROMPT_PART_MAX_UNITS`). A line
 that fits one part is never split. A longer line fills the rest of the current part and
-continues in the next ones, each continuation piece starting with `+…` / `-…` / ` …`. The
+continues in the next ones, each continuation piece starting with `+…` / `-…` / ` …`. A
+part never starts with a blank context line (an empty prompt line renders as two spaces, and
+a part of only those would be an invisible message that `ConfirmationAttachment` refuses):
+such a part starts with an empty continuation of the previous part's last line (`+…`, ` …`,
+nothing after it) instead. No line is dropped. The
 parts travel with the confirmation as a `ConfirmationAttachment` (`domains/agent.md`, "User
 Confirmations"). Telegram sends them as separate plain-text messages before the buttons, each
 headed `Prompt change for <capability_id> — part i/N (confirmation <first 8 hex of the id>)`
-(`domains/telegram.md`). Nothing is ever cut. A prompt change that needs more than
+(`domains/telegram.md`). The bot sends the parts directly above the buttons, and the button
+message is a reply to the real part 1. The agent's own text comes before the parts. The tool
+result gives the agent the confirmation id, so its text can imitate a part header and appear
+above the real parts. It cannot change, remove or reorder the real parts. Read the parts
+directly above the buttons (the reply preview of the button message points to part 1).
+Nothing is ever cut. A prompt change that needs more than
 `app.capability_edit_max_prompt_parts` parts (default 8, up to 50) is `rejected_invalid`, and
 the agent is asked for a smaller prompt edit. So is a prompt side with more than 5000 lines
 (`MAX_PROMPT_LINES`). The diff uses `difflib.SequenceMatcher` (default autojunk) on the lines
