@@ -24,10 +24,17 @@ permission_mode: auto
 
 # repo_full_name -> local checkout the sub-agent works in. A request naming any
 # other repository is refused with 422.
+# Optional capabilities: ids from capabilities/*.yaml whose prompts (nested ones
+# included) are prepended to every job on that repository, before the caller's
+# prompt. Many-to-many: list several per repo, reuse one across repos.
+# "capability: <id>" is shorthand for a single entry.
 repositories:
   owner/repo:
     path: /absolute/path/to/local/checkout
-    capabilities: []
+    capability: some_capability
+  owner/other-repo:
+    path: /absolute/path/to/other/checkout
+    capabilities: [some_capability, another_capability]
 
 # Per-attempt webhook timeout, and how long after the job's effective deadline
 # an undelivered webhook is given up on.

@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import shutil
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,6 +44,8 @@ from assistant.agent_node.models import (
     RepoContext,
 )
 from assistant.agent_node.webhook import WebhookSender, encode_body
+from assistant.core.capabilities.resolver import expand_nested_capabilities
+from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import AgentNodeConfig, RuntimeConfig
 from assistant.store.interfaces import TaskStoreInterface
 from assistant.store.models import TaskRecord, TaskStatus
@@ -107,10 +109,16 @@ def _iso(value: datetime) -> str:
 
 
 def build_objective(
-    *, user_prompt: str, system_prompt: str | None, repo: RepoContext | None
+    *,
+    user_prompt: str,
+    system_prompt: str | None,
+    repo: RepoContext | None,
+    capability_prompts: Sequence[str] = (),
 ) -> str:
-    """Delegation objective: prompts plus, for a repo job, where and how to work."""
+    """Delegation objective: capability context, prompts and, for a repo job, the workspace."""
     parts: list[str] = []
+    if capability_prompts:
+        parts.append("--- Project context ---\n" + "\n\n".join(capability_prompts))
     if system_prompt:
         parts.append(system_prompt.strip())
     parts.append(user_prompt.strip())
@@ -123,7 +131,10 @@ def build_objective(
             f"Base branch: {repo.base_branch}\n"
             f"The worktree is already on the work branch {repo.branch}, created from "
             f"{repo.base_branch}. Commit your changes on this branch and do not switch "
-            "branches. Do not push and do not open a pull request."
+            "branches. Do not push and do not open a pull request.\n"
+            f"Paths to {repo.path} in the project context refer to the main checkout: "
+            "make every change in your worktree instead, and do not modify the main "
+            "checkout."
         )
     return "\n\n".join(parts)
 
@@ -142,8 +153,11 @@ class AgentNodeService:
         sender: WebhookSender,
         data_root: Path,
         idempotency_ttl_seconds: int = 86400,
+        capability_snapshot: Callable[[], CapabilitySnapshot] | None = None,
     ) -> None:
         self.config = config
+        # Read per job, so live capability reloads apply to the next job.
+        self._capability_snapshot = capability_snapshot
         self._runtime_config = runtime_config
         self._store = store
         self._task_store = task_store
@@ -155,6 +169,44 @@ class AgentNodeService:
         self._finalize_lock = asyncio.Lock()
         self._loop_task: asyncio.Task[None] | None = None
         self._expiring: dict[str, asyncio.Task[None]] = {}
+
+    def _capability_context(
+        self, capability_ids: list[str], *, job_id: str
+    ) -> list[tuple[str, str]]:
+        """(capability_id, prompt) pairs for a repo's capabilities, nested ones expanded.
+
+        Uses the live catalog snapshot. Ids without a manifest are skipped with a warning
+        rather than failing the job; capabilities with an empty prompt are left out.
+        """
+        if not capability_ids or self._capability_snapshot is None:
+            return []
+        definitions = self._capability_snapshot().definitions
+        context: list[tuple[str, str]] = []
+        for cap_id in expand_nested_capabilities(capability_ids, definitions):
+            definition = definitions.get(cap_id)
+            if definition is None:
+                logger.warning("agent_node.capability_missing", job_id=job_id, capability_id=cap_id)
+                continue
+            prompt = definition.prompt.strip()
+            if prompt:
+                context.append((cap_id, prompt))
+        return context
+
+    def unknown_capabilities(self) -> dict[str, list[str]]:
+        """repo_full_name -> configured capability ids that have no manifest right now."""
+        if self._capability_snapshot is None:
+            return {}
+        definitions = self._capability_snapshot().definitions
+        unknown: dict[str, list[str]] = {}
+        for name, repo_cfg in self.config.repositories.items():
+            missing = [
+                c
+                for c in expand_nested_capabilities(repo_cfg.capabilities, definitions)
+                if c not in definitions
+            ]
+            if missing:
+                unknown[name] = missing
+        return unknown
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -337,6 +389,9 @@ class AgentNodeService:
                     )
                 )
 
+            capability_context = self._capability_context(
+                repo_cfg.capabilities if repo_cfg is not None else [], job_id=job_id
+            )
             workdir = await self._prepare_workspace(job)
             if workdir is None:
                 # Not a refusal: the job exists and is reported failed (workspace_failed).
@@ -353,7 +408,10 @@ class AgentNodeService:
                     request={
                         "task_id": job_id,
                         "objective": build_objective(
-                            user_prompt=user_prompt, system_prompt=system_prompt, repo=repo
+                            user_prompt=user_prompt,
+                            system_prompt=system_prompt,
+                            repo=repo,
+                            capability_prompts=[prompt for _, prompt in capability_context],
                         ),
                         "model_id": self._effective_model(model),
                         "backend": self.config.backend,
@@ -369,6 +427,7 @@ class AgentNodeService:
                             "idempotency_key": idempotency_key,
                             "deadline": _iso(deadline),
                             "interactive": False,
+                            "capabilities": [cap_id for cap_id, _ in capability_context],
                         },
                     },
                 )

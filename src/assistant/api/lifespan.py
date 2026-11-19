@@ -290,7 +290,14 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 ),
                 data_root=Path(runtime_config.app.data_root),
                 idempotency_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
+                capability_snapshot=capability_catalog.current,
             )
+            for repo_name, missing in agent_node_service.unknown_capabilities().items():
+                logger.warning(
+                    "agent_node.repository_capabilities_missing",
+                    repo=repo_name,
+                    capability_ids=missing,
+                )
             app.state.agent_node = agent_node_service
             logger.info(
                 "agent_node.enabled",

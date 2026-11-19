@@ -7,7 +7,7 @@ Each schema corresponds to one config/*.yaml file.
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -338,7 +338,36 @@ class AgentNodeRepositoryConfig(BaseModel):
     """One repository the agent-node HTTP ingress may run jobs against."""
 
     path: str = Field(min_length=1, description="Absolute path of the local checkout")
+    # Capability ids whose prompts are added to the context of every job on this repo
+    # (nested capabilities included). Many-to-many: a capability may serve several repos.
+    # ``capability: <id>`` is accepted as shorthand for a single entry.
     capabilities: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_capability_shorthand(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "capability" not in data:
+            return data
+        data = dict(data)
+        single = data.pop("capability")
+        singles = single if isinstance(single, list) else [single]
+        listed = data.get("capabilities") or []
+        if not isinstance(listed, list):
+            listed = [listed]
+        merged: list[Any] = []
+        for item in [*singles, *listed]:
+            if item is not None and item not in merged:
+                merged.append(item)
+        data["capabilities"] = merged
+        return data
+
+    @field_validator("capabilities")
+    @classmethod
+    def _capability_ids_not_blank(cls, v: list[str]) -> list[str]:
+        cleaned = [c.strip() for c in v]
+        if any(not c for c in cleaned):
+            raise ValueError("capability ids must not be blank")
+        return list(dict.fromkeys(cleaned))
 
     @field_validator("path")
     @classmethod
