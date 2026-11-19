@@ -138,15 +138,18 @@ def _unparsable(exc: Exception) -> str:
 
 
 def describe_yaml_error(exc: yaml.YAMLError) -> str:
-    """A YAML error without the source excerpt PyYAML embeds in ``str(exc)``.
+    """A YAML error as its class and location only, e.g. ``ParserError (line 7, column 31)``.
 
-    The excerpt quotes the offending manifest line, which may hold an MCP ``env`` secret;
-    these messages go to the agent and to the logs.
+    ``str(exc)`` quotes the offending source line, and even the problem / context texts
+    interpolate pieces of the document (tags, anchors, characters). The line may hold an
+    MCP ``env`` secret, possibly of a manifest the agent may not read, and these messages
+    reach the agent, the session history and the logs; the location is enough to find
+    the problem in the file.
     """
-    if not isinstance(exc, yaml.MarkedYAMLError):
-        return type(exc).__name__
-    text = "; ".join(part for part in (exc.context, exc.problem) if part) or "invalid YAML"
-    mark = exc.problem_mark or exc.context_mark
+    text = type(exc).__name__
+    mark = None
+    if isinstance(exc, yaml.MarkedYAMLError):
+        mark = exc.problem_mark or exc.context_mark
     if mark is not None:
         text += f" (line {mark.line + 1}, column {mark.column + 1})"
     return text

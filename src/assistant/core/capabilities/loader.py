@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from assistant.core.capabilities.manifest_structure import describe_yaml_error
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.loader import resolve_config_dir
 
@@ -64,7 +65,11 @@ def parse_capability_manifest(file_name: str, raw: bytes) -> CapabilityDefinitio
     try:
         data = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
-        raise ManifestParseError([f"[{file_name}] YAML parse error: {exc}"]) from exc
+        # Never str(exc): PyYAML quotes the offending line, which may hold a secret, and
+        # these messages reach the catalog errors, the logs and edit outcomes.
+        raise ManifestParseError(
+            [f"[{file_name}] YAML parse error: {describe_yaml_error(exc)}"]
+        ) from exc
     except Exception as exc:  # RecursionError on deep nesting, MemoryError, parser bugs
         raise ManifestParseError(
             [f"[{file_name}] YAML parse error: cannot be parsed ({type(exc).__name__})"]

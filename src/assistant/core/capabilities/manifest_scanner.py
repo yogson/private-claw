@@ -181,5 +181,6 @@ class ManifestScanner:
         except ManifestParseError as exc:
             return _ParsedFile(state, None, tuple(exc.messages), racy=racy)
         except Exception as exc:  # parser bug: never let it escape into a turn
-            message = f"[{path.name}] unexpected parse error: {exc}"
+            # Only the class: the message of a parser bug may quote the manifest.
+            message = f"[{path.name}] unexpected parse error ({type(exc).__name__})"
             return _ParsedFile(state, None, (message,), racy=racy)

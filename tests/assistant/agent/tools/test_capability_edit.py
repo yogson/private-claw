@@ -315,3 +315,31 @@ async def test_deeply_nested_proposal_is_rejected_by_the_tool(
     ctx = _ctx(edit_service, confirmations)
     result = await _propose(ctx, new="PROMPT-NEW\nx: " + "[" * depth + "]" * depth)
     assert result["status"] == "rejected_invalid"
+
+
+async def test_resolution_record_never_quotes_another_manifests_yaml(
+    edit_service: CapabilityEditService,
+    confirmations: ConfirmationService,
+    config_dir: Path,
+) -> None:
+    # Reviewer repro S8, end to end: the [[CONFIRMATION_RESOLVED]] record is replayed to
+    # the model, so it must not carry PyYAML's excerpt of a manifest the agent cannot read.
+    from structlog.testing import capture_logs
+
+    from assistant.core.confirmation.history import format_resolution_text
+
+    proposed = await _propose(_ctx(edit_service, confirmations))
+    (config_dir / "capabilities" / "other.yaml").write_text(
+        "capability_id: other\nclaude_code_settings:\n  mcp_servers:\n    gh:\n"
+        "      command: x\n      env:\n        TOKEN: ghpLEAKEDSECRET: [\n"
+    )
+    with capture_logs() as logs:
+        resolved = await confirmations.resolve(
+            proposed["confirmation_id"], ConfirmationDecision.APPROVE
+        )
+    assert resolved.request is not None and resolved.request.result is not None
+    assert resolved.request.result.status == "reload_rejected"
+    record = format_resolution_text(resolved.request)
+    assert "[other.yaml] YAML parse error: ScannerError" in record
+    assert "ghpLEAKEDSECRET" not in record and "TOKEN" not in record
+    assert "ghpLEAKEDSECRET" not in repr(logs)

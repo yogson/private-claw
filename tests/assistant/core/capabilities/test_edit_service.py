@@ -827,6 +827,35 @@ async def test_reload_rejection_restores_the_previous_content(
     assert _history_files(config_dir) == []
 
 
+async def test_reload_rejection_does_not_quote_another_manifests_secret(
+    service: CapabilityEditService, catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    # Reviewer repro S8: the detail quoted PyYAML's excerpt of a non-opt-in manifest.
+    from assistant.core.confirmation import CapabilityEditHandler
+    from assistant.core.confirmation.models import ConfirmationRequest
+
+    secret = "ghpLEAKEDSECRET"
+    proposal = _propose(service)
+    other = (
+        "capability_id: other\nclaude_code_settings:\n  mcp_servers:\n    gh:\n"
+        f"      command: x\n      env:\n        TOKEN: {secret}: [\n"
+    )
+    (config_dir / "capabilities" / "other.yaml").write_text(other)
+    request = ConfirmationRequest.model_construct(
+        confirmation_id="c1", session_id="s", payload=proposal.payload
+    )
+
+    with capture_logs() as logs:
+        outcome = await CapabilityEditHandler(service).apply(request, user_id=None)
+
+    assert not outcome.ok and outcome.status == STATUS_RELOAD_REJECTED
+    assert "[other.yaml] YAML parse error: ScannerError (line 7, column" in outcome.detail
+    assert secret not in outcome.detail and "TOKEN" not in outcome.detail
+    assert secret not in repr(logs)
+    assert all(secret not in e.message for e in catalog.current().errors)
+    assert _manifest(config_dir).read_text() == EDITABLE
+
+
 async def test_concurrent_approvals_on_the_same_base_are_serialized(
     service: CapabilityEditService, config_dir: Path
 ) -> None:
