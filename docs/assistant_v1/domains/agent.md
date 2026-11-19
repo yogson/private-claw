@@ -193,11 +193,12 @@ Capability loading has two phases:
   - Reject invalid or duplicate manifests as startup errors.
 
 - Turn phase:
-  - Resolve the active capability set once per turn with `resolve_active_capabilities` over the
-    CapabilityCatalog snapshot (config `enabled_capabilities`, or the per-session `/capabilities`
-    override when set, expanded through `nested_capabilities`, minus `denied_capabilities`). The
-    system prompt and tool definitions are built from this full active set; there is no
-    orchestrator-side intent-based candidate selection (not planned, see
+  - Take one CapabilityCatalog snapshot per turn; several consumers call
+    `resolve_active_capabilities` against that snapshot (a cached adapter may skip the call
+    entirely) to resolve the active capability set (config `enabled_capabilities`, or the
+    per-session `/capabilities` override when set, expanded through `nested_capabilities`, minus
+    `denied_capabilities`). The system prompt and tool definitions are built from this full active
+    set; there is no orchestrator-side intent-based candidate selection (not planned, see
     [#55](https://github.com/yogson/private-claw/issues/55)).
   - The model chooses among the tools of the active set via provider-native tool calls.
   - Check capability policy allow/deny gates at invocation; tool entrypoints run only when the model

@@ -302,6 +302,11 @@ These rules are normative and enforced today:
   last-known-good stays in use).
 - Capability execution originates only from provider-native tool calls; plain text or JSON payloads
   in model output are never treated as tool execution requests.
+- Tool definitions passed to the model stay compact and contain only what is needed for safe
+  invocation; never pass raw implementation internals or unrestricted shell command text to the
+  model.
+- For MCP-backed tools, never pass raw MCP transport credentials or command/env internals to the
+  model.
 
 ## Dynamic Activation Model (Not planned)
 
@@ -310,10 +315,11 @@ These rules are normative and enforced today:
 > `feat/dynamic-capability-loading` is kept for reference). The current model is **static**, as
 > described in the section above.
 >
-> Everything below in this section, including the "Catalog Query Contract", "Tool Context
-> Injection Rules" and "Example: Reminder Request", is a **historical design sketch only**. It is
-> not a requirement and does not describe current behavior. (The tool-call invariants above are not
-> part of the sketch and remain in force.)
+> This section and the sub-sections below whose headings carry "(Not planned)" ("Catalog Query
+> Contract", "Tool Context Injection Rules" and "Example: Reminder Request") are a **historical
+> design sketch only**. They are not a requirement and do not describe current behavior. (The
+> tool-call and safety invariants in the static-activation section above are not part of the
+> sketch and remain in force.)
 
 In the sketched design, the system would separate **runtime registry availability** from **model-visible tool context**.
 
@@ -362,13 +368,11 @@ Response records would include:
 
 - Keep descriptor payload compact and deterministic.
 - Include only fields needed for safe invocation: name, arguments, constraints, confirmation requirement.
-- Do not inject raw implementation internals or unrestricted shell command text.
 - Include safety-critical notes verbatim when `requires_confirmation=true`.
 - Maintain audit metadata of which descriptors were injected for each turn.
 
 For MCP descriptors:
-- include `mcp_server` and `mcp_tool` metadata for traceability,
-- never inject raw MCP transport credentials or command/env internals.
+- include `mcp_server` and `mcp_tool` metadata for traceability.
 
 ## Example: Reminder Request (Not planned)
 
