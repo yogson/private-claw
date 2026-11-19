@@ -1244,7 +1244,7 @@ async def test_task_metadata_is_merged_without_overriding_core_keys(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_concurrency_and_budget_rejections_are_retryable(tmp_path: Path) -> None:
+async def test_load_refusals_are_retryable_but_task_cap_is_not(tmp_path: Path) -> None:
     store = StoreFacade(data_root=tmp_path)
     await store.initialize()
     coordinator = DelegationCoordinator(
@@ -1267,15 +1267,38 @@ async def test_concurrency_and_budget_rejections_are_retryable(tmp_path: Path) -
     )
     assert limited["accepted"] is False
     assert limited["retryable"] is True
-    over_budget = await coordinator.enqueue_from_tool(
+    per_task = await coordinator.enqueue_from_tool(
         session_id="s",
         turn_id="t",
         trace_id="t",
         user_id=None,
         request={"objective": "x", "tool_params": {"delegation_per_task_token_cap": 1}},
     )
-    assert over_budget["accepted"] is False
-    assert over_budget["retryable"] is True
+    assert per_task["accepted"] is False
+    assert per_task["retryable"] is False  # no amount of waiting makes it fit
+    window = await coordinator.enqueue_from_tool(
+        session_id="s",
+        turn_id="t",
+        trace_id="t",
+        user_id=None,
+        request={"objective": "x", "tool_params": {"delegation_per_session_token_cap": 1}},
+    )
+    assert window["accepted"] is False
+    assert window["retryable"] is True
+    skipped = await coordinator.enqueue_from_tool(
+        session_id="s",
+        turn_id="t",
+        trace_id="t",
+        user_id=None,
+        request={
+            "objective": "x",
+            "tool_params": {
+                "delegation_max_concurrent_tasks": 1,
+                "delegation_skip_concurrency_limit": True,
+            },
+        },
+    )
+    assert skipped["accepted"] is True  # queues behind the worker slots instead
     bad_model = await coordinator.enqueue_from_tool(
         session_id="s",
         turn_id="t",

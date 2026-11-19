@@ -60,9 +60,10 @@ def require_bearer(
     """Bearer token only. Judged on the raw header so non-ASCII tricks cannot pass."""
     raw_header = request.headers.get("Authorization", "")
     expected = service.config.auth_token
-    if credentials is not None and raw_header.isascii() and expected:
+    # The service only exists with a token that passed auth_token_problem() (ASCII).
+    if credentials is not None and raw_header.isascii() and expected and expected.isascii():
         token = raw_header.partition(" ")[2].strip(" \t")
-        if secrets.compare_digest(token.encode("ascii"), expected.encode("ascii", "replace")):
+        if secrets.compare_digest(token.encode("ascii"), expected.encode("ascii")):
             return
     logger.warning(
         "agent_node.auth_rejected",

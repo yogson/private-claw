@@ -39,6 +39,7 @@ _TERMINAL_TASK_STATUSES = (
     TaskStatus.CANCELLED,
     TaskStatus.EXPIRED,
 )
+_TASK_BUDGET_REASON = "task token budget exceeded"
 _DEFAULT_LOG_TAIL_LINES = 200
 _MAX_LOG_TAIL_LINES = 2000
 
@@ -186,7 +187,11 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 "rejected_policy",
                 "model_id is not in delegation_model_allowlist",
             )
-        if await self._reaches_concurrency_limit(tool_params):
+        # Callers that queue behind the worker slots (HTTP ingress) opt out of the limit.
+        skip_limit = isinstance(tool_params, dict) and bool(
+            tool_params.get("delegation_skip_concurrency_limit")
+        )
+        if not skip_limit and await self._reaches_concurrency_limit(tool_params):
             return self._rejected(
                 "rejected_policy",
                 "max concurrent delegation tasks reached",
@@ -198,7 +203,12 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             tool_params=tool_params,
         )
         if budget_reason is not None:
-            return self._rejected("rejected_policy", budget_reason, retryable=True)
+            # Window budgets free up as usage ages out; a per-task cap never will.
+            return self._rejected(
+                "rejected_policy",
+                budget_reason,
+                retryable=budget_reason != _TASK_BUDGET_REASON,
+            )
 
         ttl_seconds = self._resolve_ttl_seconds(tool_params)
         now = datetime.now(UTC)
@@ -668,7 +678,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
 
         per_task_cap = self._coerce_int(tool_params.get("delegation_per_task_token_cap"))
         if per_task_cap and projected_tokens > per_task_cap:
-            return "task token budget exceeded", projected_tokens
+            return _TASK_BUDGET_REASON, projected_tokens
 
         budget_window = (
             self._coerce_int(tool_params.get("delegation_budget_window_seconds"))

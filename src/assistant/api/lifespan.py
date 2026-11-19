@@ -258,11 +258,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     agent_node_service: AgentNodeService | None = None
     agent_node_cfg = runtime_config.agent_node
     if agent_node_cfg is not None and agent_node_cfg.enabled:
-        if not agent_node_cfg.auth_token.strip():
-            logger.warning(
-                "agent_node.disabled",
-                reason="auth_token is empty (set ASSISTANT_AGENT_NODE_AUTH_TOKEN)",
-            )
+        token_problem = agent_node_cfg.auth_token_problem()
+        if token_problem is not None:
+            logger.warning("agent_node.disabled", reason=token_problem)
         else:
             if store is None:
                 store = StoreFacade(

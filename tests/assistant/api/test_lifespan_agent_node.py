@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi import FastAPI
+from structlog.testing import capture_logs
 
 from assistant.agent_node.service import AgentNodeService
 from assistant.api.lifespan import _lifespan
@@ -45,12 +47,22 @@ async def test_absent_agent_node_config_leaves_the_ingress_off(tmp_path: Path) -
             assert app.state.delegation_coordinator is None
 
 
-async def test_enabled_without_token_stays_off_and_does_not_abort_startup(tmp_path: Path) -> None:
+@pytest.mark.parametrize("token", ["", "   ", " padded", "padded\n", "tökén"])
+async def test_unusable_token_keeps_ingress_off_and_does_not_abort_startup(
+    tmp_path: Path, token: str
+) -> None:
     app = FastAPI()
-    cfg = AgentNodeConfig(enabled=True, auth_token="")
-    with _patched(_config(tmp_path, cfg)):
+    cfg = AgentNodeConfig(enabled=True, auth_token=token)
+    assert cfg.auth_token_problem() is not None
+    with _patched(_config(tmp_path, cfg)), capture_logs() as logs:
         async with _lifespan(app):
             assert app.state.agent_node is None
+    warning = next(e for e in logs if e["event"] == "agent_node.disabled")
+    assert "auth_token" in warning["reason"]
+
+
+def test_plain_token_is_fine() -> None:
+    assert AgentNodeConfig(enabled=True, auth_token="abc-123_XYZ").auth_token_problem() is None
 
 
 async def test_enabled_builds_service_and_routes_completions_by_source(tmp_path: Path) -> None:

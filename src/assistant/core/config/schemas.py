@@ -364,6 +364,17 @@ class AgentNodeConfig(BaseModel):
     # The webhook is abandoned this long after the job's effective deadline.
     webhook_deadline_margin_seconds: int = Field(default=149, ge=0)
 
+    def auth_token_problem(self) -> str | None:
+        """Why ``auth_token`` cannot be used as a bearer token, or None when it is fine."""
+        token = self.auth_token
+        if not token.strip():
+            return "auth_token is empty (set ASSISTANT_AGENT_NODE_AUTH_TOKEN)"
+        if not token.isascii():
+            return "auth_token must be ASCII"
+        if token != token.strip():
+            return "auth_token must not have leading or trailing whitespace"
+        return None
+
 
 class RuntimeConfig(BaseModel):
     """Aggregated runtime configuration across all domains."""
