@@ -354,51 +354,79 @@ Proposal validation (no write):
    `target_history_id` instead of the strings. `dedupe_key` = sha256 of
    `(capability_id, base_sha256, op, old_string, new_string | history_id)`.
 
-Summary (`summary_for_user`, `core/capabilities/edit_summary.py`): a generic structural
-diff of the parsed manifests (`model_dump` before vs. after, so shorthands such as
-`command_allowlist: [git]` appear with their effective defaults). Headline with id and file
-name, the reason (clipped to 300 chars with `(+N chars hidden)`), then one line per changed
-leaf with the concrete values: `path: before → after`, `path: + value`, `path: − removed`.
-Lists of entries are matched by their identity field (`tool_id`, `id`, `command_pattern`,
-`name`), so e.g. `tool_overrides.shell_execute_allowlisted.command_allowlist[git].allowed_args_pattern: "^status$" → ".*"`;
-lists of strings show each item added (`+`) or removed (`−`); a pure reorder says
-`order changed`. Values on ⚠ lines are never cut: a changed string longer than 120 chars
-is shown as a diff excerpt with up to 20 unchanged chars of context on each side and the
-removed / added segments in full, e.g.
-`allowed_args_pattern: edited (134 → 137 chars): …"aaaaaaaaaaaaaaaaaa)$"[+"|.*"]`. A ⚠
-value, differing segment or key longer than 400 chars cannot be shown in full, so the
-proposal is refused (`rejected_invalid`, "propose a smaller edit"). Only non-sensitive
-values are cut with `(+N chars hidden)`. Inside `claude_code_settings.mcp_servers.<server>`,
-every value at or below an `env` / `headers` key or a secret-looking key (token, secret,
-password, api key, auth, credential, cookie, private key) is shown as `<hidden>` whatever
-its type, also when the agent changes its type (`env: {...}` → `"x"`) or replaces an
-enclosing value: dicts keep their key names, `KEY=value` list items keep `KEY`, and a change
-that touches only hidden values says `(secret value changed)`. Secrets elsewhere (e.g. a
-`?token=` in an MCP `url` or in `args`) are shown, so keep them in `env` / `headers`.
-YAML parse errors on the edit path report the problem and line / column only, never the
-source excerpt PyYAML embeds (it may quote a secret).
+Summary (`summary_for_user`, `core/capabilities/edit_summary.py`): a structural diff of the
+parsed manifests (`model_dump` before vs. after in Python mode, so shorthands such as
+`command_allowlist: [git]` appear with their effective defaults and free-form MCP values keep
+their real types). Headline with id and file name, the reason (clipped to 300 chars with
+`(+N chars hidden)`), then the changed fields. The rendering of security-sensitive (⚠) changes
+is deliberately simple, and its invariants are property-tested
+(`tests/assistant/core/capabilities/test_edit_summary.py`):
 
-Every manifest-derived string in the summary (values, list items, keys such as
-`tool_overrides` / `mcp_servers` names, the file name), the reason and the prompt excerpt
-is rendered as one line: values and keys are double-quoted with `\n`, `\r`, `\t`, `"` and
-`\\` escaped, free text has whitespace runs collapsed, and control, format (bidi
-overrides/isolates, zero-width), line/paragraph separator, private-use and unassigned
-characters, spaces other than U+0020, and blank-rendering letters / marks (Hangul fillers
-U+115F / U+1160 / U+3164 / U+FFA0, Braille blank U+2800, combining grapheme joiner,
-variation selectors, tag characters) are escaped as `\uXXXX`. So no manifest content can forge extra summary lines or a
-fake "Approved"/⚠-free appearance. The failure detail of an applied confirmation
-(shown in the "Failed:" status line) is sanitised the same way.
+- **Type-strict change detection.** Values are compared by their canonical form, which
+  differs whenever the type or the value differs anywhere in the tree: `true` vs `1`, `1` vs
+  `1.0`, `0.0` vs `-0.0`, a string vs bytes, a date vs a string, a set vs a list are changes,
+  and dict keys are matched type-strictly (`true:` and `1:` are different keys). Values that
+  are not JSON-native are rendered with a tag (`!!binary 61`, `!!timestamp "2024-01-01"`,
+  `!!set [...]`, `!!float .nan`), never as `null` or a plain string (such values are rejected
+  in `claude_code_settings.mcp_servers` anyway, see below).
+- **Full value before → after, ASCII only.** Every changed ⚠ leaf or list is one line
+  `⚠ path: <full old value> → <full new value>`. Strings are `json.dumps(...,
+  ensure_ascii=True)`, so every non-ASCII character — a Cyrillic or Greek lookalike, a
+  fullwidth letter, a combining mark, a blank-rendering filler — shows as `\uXXXX`, and so
+  do newlines and control characters. Keys and entry identities that are not plain ASCII
+  identifiers are shown the same way (`mcp_servers["g\u0456thub"]`). Everything a manifest
+  controls on a ⚠ line is ASCII, so the `→` separator and the markers below cannot be forged.
+- **Lists are shown whole, in order** (`args`, `permissions.allow` / `deny`, `nested_capabilities`,
+  ...): there is no added / removed item view, so a reorder is always visible. Lists of
+  entries with a unique string identity (`tool_id`, `id`, `command_pattern`, `name`) are
+  matched by it: each changed field of an entry is its own line (`…command_allowlist[git].allowed_args_pattern: "^status$" → ".*"`),
+  and any order change other than appending prints both identity sequences
+  (`⚠ tools (order of tool_id): ["a", "b"] → ["c", "a", "b"]`).
+- **Nothing is skipped.** A key or entry present on one side only is shown with its full
+  value against `(absent)`, so every field of an added block is listed, `[]`, `{}` and `null`
+  included. A line that sets `delegation_allowed_backends` or `delegation_model_allowlist`
+  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`.
+- **Never cut.** If the ⚠ lines do not all fit the summary cap, the proposal is
+  `rejected_invalid` and the agent is asked for smaller edits (or to let the user edit by
+  hand); a ⚠ line is never truncated or dropped in favour of another.
 
-Every top-level field except `prompt` (tools, tool_overrides, params_override, MCP servers,
-nested capabilities, Claude Code permissions and MCP servers, and any field added later) is
-security-sensitive: its lines are marked `⚠`, listed first, and a
-`⚠ Security-sensitive changes …` line precedes the field list. `prompt` shows the size
-change, the added / removed line counts and an excerpt of the added text that says how much
-was cut (`excerpt (first 300 of N added chars)`). The summary is capped in UTF-16 code units
-(the unit Telegram counts) at `SUMMARY_MAX_CHARS`: if it does not fit, non-⚠ lines are
-dropped with an explicit `(+N more changes not shown)` line; if the ⚠ lines alone do not
-fit, the proposal is `rejected_invalid` and the agent is asked to split it into smaller
-edits. `No manifest fields change` appears only when the parsed manifests are identical.
+Secrets: inside `claude_code_settings.mcp_servers.<server>`, every value at or below an
+`env` / `headers` key or a secret-looking key (token, secret, password, api key, auth,
+credential, cookie, private key) is shown as `<hidden>` whatever its type, also when the
+agent changes its type (`env: {...}` → `"x"`) or replaces an enclosing value. Dicts keep
+their key names; a `KEY=value` list item is split at the first `=` and keeps `KEY` only when
+it is an upper-case variable name followed by a real value (a padded base64 secret such as
+`dGhpc2lz==` is hidden whole). A change that touches only hidden values says
+`(secret value changed)`. **The approver cannot verify `env` / `headers` value changes in
+Telegram: only the key names are visible** (e.g. `GITHUB_READ_ONLY: "1" → "0"` or a new
+`NODE_OPTIONS` / `LD_PRELOAD` value shows as `<hidden>`). Reject any env / header change you
+did not ask for, or make it by hand. Secrets elsewhere (e.g. a `?token=` in an MCP `url` or in
+`args`) are shown, so keep them in `env` / `headers`.
+
+`prompt` is the only non-sensitive field: it shows the size change, the added / removed line
+counts and ASCII-escaped excerpts of both the added and the removed text, each saying how
+much was cut (`added text (first 300 of N chars)`). The reason keeps readable non-ASCII text
+but has whitespace collapsed and control, format (bidi, zero-width), separator and
+blank-rendering characters escaped as `\uXXXX`, so it cannot forge extra summary lines; the
+failure detail of an applied confirmation (the "Failed:" status line) is sanitised the same
+way. The summary is capped in UTF-16 code units (the unit Telegram counts) at
+`SUMMARY_MAX_CHARS`: non-⚠ lines that do not fit are dropped with an explicit
+`(+N more changes not shown)` line. `No manifest fields change` appears only when the
+canonical forms of the parsed manifests are identical.
+
+Bounds and errors: an agent-edited manifest may be at most 256 KiB and nest at most 32
+collections (`MAX_MANIFEST_BYTES` / `MAX_NESTING_DEPTH` in `manifest_structure.py`, checked
+on PyYAML's non-recursive event stream before composing); a larger file on disk is
+`not_editable`. Any unexpected exception during propose, rollback-propose or apply
+(RecursionError, MemoryError, a library bug) becomes `rejected_invalid` naming only the
+exception class, and the four tools never let an exception fail the turn.
+`claude_code_settings.mcp_servers` must be plain JSON (string keys, strings, numbers,
+booleans, null, lists, mappings; no dates, `!!binary`, `!!set`, `.nan` / `.inf`), because
+it is passed to Claude Code as `json.dumps` output; the schema rejects anything else. YAML
+errors are reported as class and line / column only (`[a.yaml] YAML parse error:
+ScannerError (line 7, column 31)`), never with PyYAML's message or source excerpt: that
+excerpt may quote a secret, possibly of a manifest the agent cannot read, and the message
+reaches catalog errors, logs, edit outcomes and the `[[CONFIRMATION_RESOLVED]]` record.
 
 Apply (`CapabilityEditHandler.apply` on Approve; per-capability `asyncio.Lock`, file I/O in
 `asyncio.to_thread`):
