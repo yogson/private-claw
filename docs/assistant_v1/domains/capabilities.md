@@ -371,7 +371,9 @@ Every manifest-derived string in the summary (values, list items, keys such as
 is rendered as one line: values and keys are double-quoted with `\n`, `\r`, `\t`, `"` and
 `\\` escaped, free text has whitespace runs collapsed, and control, format (bidi
 overrides/isolates, zero-width), line/paragraph separator, private-use and unassigned
-characters are escaped as `\uXXXX`. So no manifest content can forge extra summary lines or a
+characters, spaces other than U+0020, and blank-rendering letters / marks (Hangul fillers
+U+115F / U+1160 / U+3164 / U+FFA0, Braille blank U+2800, combining grapheme joiner,
+variation selectors, tag characters) are escaped as `\uXXXX`. So no manifest content can forge extra summary lines or a
 fake "Approved"/⚠-free appearance. The failure detail of an applied confirmation
 (shown in the "Failed:" status line) is sanitised the same way.
 

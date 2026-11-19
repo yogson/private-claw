@@ -579,3 +579,38 @@ def test_control_bidi_and_zero_width_characters_are_escaped(char: str) -> None:
     )
     _assert_single_line_structure(text)
     assert text.splitlines()[1].startswith("Reason: why")
+
+
+@pytest.mark.parametrize(
+    "char",
+    [
+        "ㅤ",  # HANGUL FILLER (Lo)
+        "ᅟ",  # HANGUL CHOSEONG FILLER (Lo)
+        "ᅠ",  # HANGUL JUNGSEONG FILLER (Lo)
+        "ﾠ",  # HALFWIDTH HANGUL FILLER (Lo)
+        "⠀",  # BRAILLE PATTERN BLANK (So)
+        "͏",  # COMBINING GRAPHEME JOINER (Mn)
+        "️",  # VARIATION SELECTOR-16 (Mn)
+        "\U000e0041",  # TAG LATIN CAPITAL LETTER A (Cf)
+        " ",  # NO-BREAK SPACE (Zs)
+        "　",  # IDEOGRAPHIC SPACE (Zs)
+    ],
+)
+def test_blank_rendering_characters_are_escaped(char: str) -> None:
+    # Reviewer N8: these render as blanks and used to pass the sanitiser.
+    value = f"^(ls{char}|.*)$"
+    after = _cap(
+        claude_code_settings={"permissions": {"allow": [value]}},
+        tool_overrides={f"t{char}": {"max_timeout_seconds": 1}},
+    )
+    text = _summary(_cap(), after)
+    assert char not in text
+    code = ord(char)
+    escaped = f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+    assert f'allow: + "^(ls{escaped}|.*)$"' in text
+    assert f'tool_overrides["t{escaped}"]' in text
+
+
+def test_plain_spaces_and_visible_text_are_not_escaped() -> None:
+    after = _cap(claude_code_settings={"permissions": {"allow": ["Bash(git log:*) ✅ ок"]}})
+    assert 'allow: + "Bash(git log:*) ✅ ок"' in _summary(_cap(), after)

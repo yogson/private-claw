@@ -76,6 +76,20 @@ _PLAIN_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 # Control, format (bidi controls, zero-width), surrogate, private-use, unassigned, and
 # line / paragraph separators.
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+# Characters that render blank but are letters, marks or symbols, so the categories above
+# miss them: Hangul fillers, Braille blank, and the Default_Ignorable_Code_Point marks
+# (combining grapheme joiner, Khmer / Mongolian invisibles, variation selectors, tags).
+_INVISIBLE_RANGES = (
+    (0x034F, 0x034F),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x2800, 0x2800),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFFA0, 0xFFA0),
+    (0xE0000, 0xE0FFF),
+)
 _SENSITIVE_PREFIX = "  ⚠ "
 _PLAIN_PREFIX = "  • "
 
@@ -512,11 +526,19 @@ def inline(text: str) -> str:
 
 def _escape_unsafe(text: str) -> str:
     return "".join(
-        (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}")
-        if unicodedata.category(c) in _UNSAFE_CATEGORIES
-        else c
+        (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}") if _unsafe(c) else c
         for c in text
     )
+
+
+def _unsafe(char: str) -> bool:
+    """Control / format / separator chars, spaces other than U+0020, and blank-rendering
+    letters or marks (a lookalike blank could hide or fake part of a value)."""
+    category = unicodedata.category(char)
+    if category in _UNSAFE_CATEGORIES or (category == "Zs" and char != " "):
+        return True
+    code = ord(char)
+    return any(low <= code <= high for low, high in _INVISIBLE_RANGES)
 
 
 def _fit_lines(head: list[str], sensitive: list[str], plain: list[str], max_units: int) -> str:
