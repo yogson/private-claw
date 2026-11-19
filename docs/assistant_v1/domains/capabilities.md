@@ -442,6 +442,18 @@ Operator setup: add the four `capability_*` entries from `config/tools.yaml` to 
 `tools.yaml`, enable `capability_admin` (policy or nesting), and mark the manifests the
 agent may edit with `self_edit: true`.
 
+> **Secrets in editable manifests.** `capability_read` returns the **full raw YAML** of an
+> opted-in manifest to the model (and therefore to the provider and the session store),
+> including any inline secrets such as `claude_code_settings.mcp_servers.*.env` values. The
+> history backups hold the same content. The confirmation summary masks env/header values,
+> but the model still sees them. Keep secrets out of `self_edit` manifests: put them in the
+> environment of the process or in a non-editable manifest, and reference them from there.
+
+Event loop: `capability_propose_edit` / `capability_propose_rollback` run the service's file
+I/O and validation (including entrypoint resolution) in `asyncio.to_thread`; the sync tools
+`capability_read` / `capability_history` are run in a worker thread by pydantic-ai, and
+apply runs in `asyncio.to_thread` under the per-capability lock.
+
 ## Static Activation Model and Tool-Call Invariants (current, in force)
 
 Active capabilities are static, resolved by `resolve_active_capabilities` over the CapabilityCatalog

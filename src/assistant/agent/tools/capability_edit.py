@@ -7,8 +7,13 @@ Never write a manifest themselves: a valid edit or rollback becomes a pending
 ``capability_edit`` user confirmation (core.confirmation). The user approves or rejects it
 with buttons; the real outcome (applied / failed with reason / stale) is written into
 session history as a [[CONFIRMATION_RESOLVED]] record.
+
+File I/O and validation never run on the event loop: the async propose tools call the
+service through ``asyncio.to_thread``; the sync tools (read, history) are run in a worker
+thread by pydantic-ai.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -104,7 +109,9 @@ async def capability_propose_edit(
         new_chars=len(new_string),
     )
     try:
-        proposal = service.propose_edit(capability_id, old_string, new_string, reason, base_sha256)
+        proposal = await asyncio.to_thread(
+            service.propose_edit, capability_id, old_string, new_string, reason, base_sha256
+        )
     except CapabilityEditError as exc:
         return _error(service, exc)
     return await _request_confirmation(ctx, ctx.deps.confirmation_requester, proposal)
@@ -162,7 +169,9 @@ async def capability_propose_rollback(
         history_id=history_id,
     )
     try:
-        proposal = service.propose_rollback(capability_id, history_id, reason, base_sha256)
+        proposal = await asyncio.to_thread(
+            service.propose_rollback, capability_id, history_id, reason, base_sha256
+        )
     except CapabilityEditError as exc:
         return _error(service, exc)
     return await _request_confirmation(ctx, ctx.deps.confirmation_requester, proposal)

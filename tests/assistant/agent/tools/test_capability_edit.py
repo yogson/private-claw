@@ -144,6 +144,29 @@ async def test_propose_creates_a_pending_confirmation(
     assert (config_dir / "capabilities" / "editable.yaml").read_text() == MANIFEST
 
 
+async def test_proposals_run_off_the_event_loop_thread(
+    edit_service: CapabilityEditService,
+    confirmations: ConfirmationService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    for name in ("propose_edit", "propose_rollback"):
+        original = getattr(edit_service, name)
+
+        def spy(*args: Any, _original: Any = original, **kwargs: Any) -> Any:
+            seen.append(threading.get_ident())
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(edit_service, name, spy)
+    ctx = _ctx(edit_service, confirmations)
+    await _propose(ctx)
+    await capability_propose_rollback(ctx, "editable", "20260101T000000000000Z__deadbeef", "r", "x")
+    assert len(seen) == 2 and loop_thread not in seen
+
+
 async def test_invalid_and_stale_proposals_create_nothing(
     edit_service: CapabilityEditService, confirmations: ConfirmationService
 ) -> None:
