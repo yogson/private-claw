@@ -3,6 +3,7 @@ Integration tests for the Telegram confirmation flow: rendering after turns and
 Approve/Reject callback handling (CMP_API_FASTAPI_GATEWAY + CMP_CHANNEL_TELEGRAM_ADAPTER).
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,10 @@ from assistant.api.confirmation_handler import deliver_with_confirmations
 from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
 from assistant.channels.telegram.adapter import TelegramAdapter
-from assistant.channels.telegram.confirmation_render import NO_LONGER_VALID_TEXT
+from assistant.channels.telegram.confirmation_render import (
+    NO_LONGER_VALID_TEXT,
+    NOT_DELIVERED_TEXT,
+)
 from assistant.channels.telegram.models import (
     CallbackQueryMeta,
     EventSource,
@@ -32,10 +36,12 @@ from assistant.core.confirmation import (
     ConfirmationService,
     ConfirmationStatus,
     SessionConfirmationRecorder,
+    unresolved_pending_ids,
 )
 from assistant.core.orchestrator.models import OrchestratorResult, PendingAskData
 from assistant.store.filesystem.session import FilesystemSessionStore
 from assistant.store.models import SessionRecordType, TaskRecord, TaskStatus
+from tests.assistant.confirmation_helpers import persist_pending_proposal
 
 CHAT_ID = 123456
 SESSION = f"tg:{CHAT_ID}"
@@ -310,6 +316,255 @@ async def test_undeliverable_confirmation_is_discarded() -> None:
         chat_id=CHAT_ID,
         trace_id="t",
     )
+
+    assert request.status == ConfirmationStatus.FAILED
+    assert service.pending_for_session(SESSION) is None
+
+
+def _recorded_service(tmp_path: Path) -> tuple[ConfirmationService, FilesystemSessionStore]:
+    store = FilesystemSessionStore(tmp_path)
+    service = ConfirmationService(
+        ConfirmationHandlerRegistry([_Handler()]), recorder=SessionConfirmationRecorder(store)
+    )
+    return service, store
+
+
+async def _resolution_statuses(store: FilesystemSessionStore) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for record in await store.replay_for_turn(SESSION, 200):
+        content = str(record.payload.get("content", ""))
+        if content.startswith(CONFIRMATION_RESOLVED_MARKER):
+            payload = json.loads(content.removeprefix(CONFIRMATION_RESOLVED_MARKER))
+            statuses[payload["confirmation_id"]] = payload["status"]
+    return statuses
+
+
+def _ask() -> PendingAskData:
+    return PendingAskData(
+        question_id="q",
+        question="Tea or coffee?",
+        options=[{"id": "0", "label": "Tea"}],
+        session_id=SESSION,
+        turn_id="t",
+        tool_call_id="q",
+    )
+
+
+async def test_response_build_failure_after_turn_frees_slot_and_records_outcome(
+    tmp_path: Path,
+) -> None:
+    """N8: the turn ended, then building the response raised before any delivery."""
+    adapter = _adapter()
+    service, store = _recorded_service(tmp_path)
+    request = await _pending(service)
+    await persist_pending_proposal(store, SESSION, request.confirmation_id)
+    adapter.build_ask_question_response = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("render bug")
+    )
+    result = OrchestratorResult(text="", pending_ask=_ask(), confirmations=[request])
+    handler = _build_orchestrator_handler(adapter, _orchestrator(result), confirmations=service)
+
+    with pytest.raises(RuntimeError, match="render bug"):
+        await handler(_text_event())
+
+    assert request.status == ConfirmationStatus.FAILED
+    adapter.send_response.assert_not_awaited()  # type: ignore[attr-defined]
+    # The session slot is free: a new, different proposal is accepted immediately.
+    retry = ConfirmationDraft(
+        kind="memory_update", payload={}, summary_for_user="s", dedupe_key="2"
+    )
+    assert (await service.request(SESSION, retry)).created
+    # The next turn's replay shows a terminal outcome for the undelivered id.
+    assert (await _resolution_statuses(store))[request.confirmation_id] == "failed"
+    assert unresolved_pending_ids(await store.replay_for_turn(SESSION, 200)) == []
+
+
+async def test_confirmation_message_build_failure_discards_it(tmp_path: Path) -> None:
+    adapter = _adapter()
+    service, store = _recorded_service(tmp_path)
+    request = await _pending(service)
+    adapter.build_confirmation_response = MagicMock(  # type: ignore[method-assign]
+        side_effect=ValueError("bad prompt")
+    )
+
+    sent = await deliver_with_confirmations(
+        adapter, service, response=None, confirmations=[request], chat_id=CHAT_ID, trace_id="t"
+    )
+
+    assert sent is None
+    assert request.status == ConfirmationStatus.FAILED
+    assert service.pending_for_session(SESSION) is None
+    assert (await _resolution_statuses(store))[request.confirmation_id] == "failed"
+
+
+async def test_cancelled_delivery_discards_confirmation_and_reraises(tmp_path: Path) -> None:
+    """N8: a /stop (task cancellation) while sending must not leave the slot taken."""
+    adapter = _adapter()
+    service, store = _recorded_service(tmp_path)
+    request = await _pending(service)
+    adapter.send_response = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[True, asyncio.CancelledError()]
+    )
+    response = adapter.build_ask_question_response(
+        session_id=SESSION, trace_id="t", question="Tea?", options=[{"id": "0", "label": "Tea"}]
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await deliver_with_confirmations(
+            adapter,
+            service,
+            response=response,
+            confirmations=[request],
+            chat_id=CHAT_ID,
+            trace_id="t",
+        )
+
+    assert request.status == ConfirmationStatus.FAILED
+    assert service.pending_for_session(SESSION) is None
+    assert (await _resolution_statuses(store))[request.confirmation_id] == "failed"
+
+
+class _GatedRecorder:
+    """Blocks inside record_resolution until released, then writes the real record."""
+
+    def __init__(self, store: FilesystemSessionStore) -> None:
+        self._inner = SessionConfirmationRecorder(store)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.written = asyncio.Event()
+
+    async def record_resolution(self, request: ConfirmationRequest) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await self._inner.record_resolution(request)
+        self.written.set()
+
+
+async def test_second_cancellation_during_discard_still_writes_the_record(
+    tmp_path: Path,
+) -> None:
+    """The discard is shielded: a cancel arriving while it runs does not abort it."""
+    adapter = _adapter()
+    store = FilesystemSessionStore(tmp_path)
+    recorder = _GatedRecorder(store)
+    service = ConfirmationService(ConfirmationHandlerRegistry([_Handler()]), recorder=recorder)
+    request = await _pending(service)
+    adapter.send_response = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    task = asyncio.create_task(
+        deliver_with_confirmations(
+            adapter, service, response=None, confirmations=[request], chat_id=CHAT_ID, trace_id="t"
+        )
+    )
+    await asyncio.wait_for(recorder.entered.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    recorder.release.set()
+    await asyncio.wait_for(recorder.written.wait(), timeout=2)
+
+    assert request.status == ConfirmationStatus.FAILED
+    assert (await _resolution_statuses(store))[request.confirmation_id] == "failed"
+
+
+async def test_second_cancellation_during_discard_still_frees_the_slot() -> None:
+    """A cancel while the discard waits for the per-id lock must not leave it pending."""
+    adapter, service = _adapter(), _service()
+    request = await _pending(service)
+    adapter.send_response = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    async with service._lock_for(request.confirmation_id):  # e.g. a press being processed
+        task = asyncio.create_task(
+            deliver_with_confirmations(
+                adapter,
+                service,
+                response=None,
+                confirmations=[request],
+                chat_id=CHAT_ID,
+                trace_id="t",
+            )
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not task.done() and request.is_pending
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert request.status == ConfirmationStatus.FAILED
+    assert service.pending_for_session(SESSION) is None
+
+
+async def test_press_on_undelivered_confirmation_says_no_longer_valid(tmp_path: Path) -> None:
+    """The send can fail after the message arrived; the toast must not claim otherwise."""
+    adapter = _adapter()
+    service, store = _recorded_service(tmp_path)
+    request = await _pending(service)
+    data = _button_data(adapter, request, 0)
+    adapter.send_response = AsyncMock(side_effect=TimeoutError("timed out"))  # type: ignore[method-assign]
+    await deliver_with_confirmations(
+        adapter, service, response=None, confirmations=[request], chat_id=CHAT_ID, trace_id="t"
+    )
+    assert request.status == ConfirmationStatus.FAILED
+
+    await _press(adapter, service, data)
+
+    assert _ack_text(adapter) == NOT_DELIVERED_TEXT
+    assert "could not be delivered" not in _ack_text(adapter)
+    edited = adapter.edit_message_text.await_args.args[2]  # type: ignore[attr-defined]
+    assert edited.endswith(NOT_DELIVERED_TEXT)
+    # The agent-facing record keeps the precise reason.
+    stored = await store.read_session(SESSION)
+    (record,) = [r for r in stored if r.event_id == f"confirmation-{request.confirmation_id}"]
+    assert "could not be delivered" in record.payload["content"]
+
+
+async def test_send_reporting_false_is_treated_as_not_delivered() -> None:
+    adapter, service = _adapter(), _service()
+    adapter.send_response = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    request = await _pending(service)
+
+    await deliver_with_confirmations(
+        adapter, service, response=None, confirmations=[request], chat_id=CHAT_ID, trace_id="t"
+    )
+
+    assert request.status == ConfirmationStatus.FAILED
+
+
+async def test_delivered_confirmation_stays_pending() -> None:
+    adapter, service = _adapter(), _service()
+    request = await _pending(service)
+
+    await deliver_with_confirmations(
+        adapter, service, response=None, confirmations=[request], chat_id=CHAT_ID, trace_id="t"
+    )
+
+    assert request.is_pending
+    assert service.pending_for_session(SESSION) is request
+
+
+async def test_delegation_feedback_response_build_failure_frees_slot() -> None:
+    adapter, service = _adapter(), _service()
+    request = await _pending(service)
+    adapter.build_ask_question_response = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("render bug")
+    )
+    result = OrchestratorResult(text="", pending_ask=_ask(), confirmations=[request])
+    handler = _build_delegation_feedback_handler(_orchestrator(result), adapter, service)
+    now = datetime.now(UTC)
+    task = TaskRecord(
+        task_id="task-x",
+        parent_session_id=SESSION,
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=now,
+        updated_at=now,
+    )
+
+    with pytest.raises(RuntimeError, match="render bug"):
+        await handler(task)
 
     assert request.status == ConfirmationStatus.FAILED
     assert service.pending_for_session(SESSION) is None

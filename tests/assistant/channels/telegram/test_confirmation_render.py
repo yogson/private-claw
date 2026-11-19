@@ -4,12 +4,14 @@ from datetime import UTC, datetime, timedelta
 
 from assistant.channels.telegram.confirmation_render import (
     NO_LONGER_VALID_TEXT,
+    NOT_DELIVERED_TEXT,
     render_confirmation_prompt,
     render_resolved_text,
     status_text,
 )
 from assistant.channels.telegram.formatter import format_markdown_for_telegram
 from assistant.core.confirmation import (
+    NOT_DELIVERED_OUTCOME_STATUS,
     ConfirmationOutcome,
     ConfirmationRequest,
     ConfirmationStatus,
@@ -82,3 +84,16 @@ def test_short_prompt_is_unchanged() -> None:
     assert render_confirmation_prompt(request) == (
         "🧠 Save this to memory?\n\nAction: upsert\n\nUser prefers tea."
     )
+
+
+def test_failed_not_delivered_status_is_neutral_other_failures_show_detail() -> None:
+    undelivered = _request("s", status=ConfirmationStatus.FAILED)
+    undelivered.result = ConfirmationOutcome(
+        ok=False,
+        status=NOT_DELIVERED_OUTCOME_STATUS,
+        detail="The confirmation buttons could not be delivered to the user.",
+    )
+    assert status_text(undelivered) == NOT_DELIVERED_TEXT
+
+    apply_failed = _request("s", status=ConfirmationStatus.FAILED, detail="Apply failed: disk")
+    assert status_text(apply_failed) == "⚠️ Failed: Apply failed: disk"

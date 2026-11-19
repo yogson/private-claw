@@ -11,11 +11,13 @@ from assistant.core.confirmation.handlers import (
 )
 from assistant.core.confirmation.history import (
     CONFIRMATION_RESOLVED_MARKER,
+    CONFIRMATION_TOOL_NAMES,
     ConfirmationRecorderInterface,
     SessionConfirmationRecorder,
     format_resolution_text,
     is_confirmation_record,
     neutralize_confirmation_marker,
+    unresolved_pending_ids,
 )
 from assistant.core.confirmation.memory_update import (
     MEMORY_BODY_MAX_CHARS,
@@ -36,14 +38,17 @@ from assistant.core.confirmation.models import (
 )
 from assistant.core.confirmation.service import (
     DEFAULT_CONFIRMATION_TTL_SECONDS,
+    NOT_DELIVERED_OUTCOME_STATUS,
     ConfirmationService,
 )
 
 __all__ = [
     "CONFIRMATION_RESOLVED_MARKER",
+    "CONFIRMATION_TOOL_NAMES",
     "DEFAULT_CONFIRMATION_TTL_SECONDS",
     "MEMORY_BODY_MAX_CHARS",
     "MEMORY_UPDATE_KIND",
+    "NOT_DELIVERED_OUTCOME_STATUS",
     "ConfirmationDecision",
     "ConfirmationDraft",
     "ConfirmationHandlerInterface",
@@ -63,4 +68,5 @@ __all__ = [
     "is_confirmation_record",
     "memory_body_length_error",
     "neutralize_confirmation_marker",
+    "unresolved_pending_ids",
 ]

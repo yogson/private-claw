@@ -19,6 +19,7 @@ SESSION = "tg:1"
 def _ctx(service: ConfirmationService | None) -> MagicMock:
     ctx = MagicMock()
     ctx.tool_call_id = "tc-1"
+    ctx.tool_name = "memory_propose_update"
     requester = None
     if service is not None:
 
@@ -114,3 +115,23 @@ async def test_body_at_display_limit_is_shown_in_full() -> None:
     pending = service.pending_for_session(SESSION)
     assert pending is not None and body in pending.summary_for_user
     assert "truncated" not in pending.summary_for_user
+
+
+async def test_draft_carries_the_runtime_tool_name() -> None:
+    # The orchestrator's requester only accepts drafts from CONFIRMATION_TOOL_NAMES.
+    drafts: list[ConfirmationDraft] = []
+    service = ConfirmationService(ConfirmationHandlerRegistry())
+
+    async def requester(draft: ConfirmationDraft) -> ConfirmationRequestResult:
+        drafts.append(draft)
+        return await service.request(SESSION, draft)
+
+    ctx = MagicMock()
+    ctx.tool_call_id = "tc-1"
+    ctx.tool_name = "memory_propose_update"
+    ctx.deps = TurnDeps(confirmation_requester=requester)
+
+    result = await _propose(ctx)
+
+    assert result["status"] == "pending_confirmation"
+    assert [d.origin_tool_name for d in drafts] == ["memory_propose_update"]

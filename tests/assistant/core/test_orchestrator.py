@@ -4,12 +4,14 @@ Tests for CMP_CORE_AGENT_ORCHESTRATOR orchestrator module.
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
+from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.agent.interfaces import MessageRole
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.core.config.schemas import (
@@ -25,11 +27,14 @@ from assistant.core.config.schemas import (
     ToolsConfig,
 )
 from assistant.core.confirmation import (
+    CONFIRMATION_RESOLVED_MARKER,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
     ConfirmationRequest,
     ConfirmationService,
     ConfirmationStatus,
+    SessionConfirmationRecorder,
+    unresolved_pending_ids,
 )
 from assistant.core.events.models import (
     AttachmentMeta,
@@ -51,7 +56,9 @@ from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.service import MEMORY_SEARCH_MATCH_BODY_MAX_CHARS
 from assistant.memory.retrieval.models import RetrievalAudit, RetrievalResult, ScoredArtifact
 from assistant.memory.store.models import MemoryArtifact, MemoryFrontmatter, MemoryType
+from assistant.store.filesystem.session import FilesystemSessionStore
 from assistant.store.models import SessionRecord, SessionRecordType, TurnTerminalStatus
+from tests.assistant.confirmation_helpers import persist_pending_proposal
 
 
 def _runtime_config() -> RuntimeConfig:
@@ -1033,7 +1040,8 @@ class TestOrchestratorExecuteTurn:
         mock_pydantic_adapter: MagicMock,
         mock_session_factory: MagicMock,
     ) -> None:
-        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+        recorder = AsyncMock()
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry(), recorder=recorder)
         mock_store.sessions.append = AsyncMock(side_effect=RuntimeError("persist failed"))
 
         async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
@@ -1054,6 +1062,47 @@ class TestOrchestratorExecuteTurn:
             await orch.execute_turn(_minimal_event(text="remember this"))
         # The never-rendered confirmation must not block the session's pending slot.
         assert confirmations.pending_for_session("tg:123") is None
+        # Its tool call never reached history, so no resolution record is written for it.
+        recorder.record_resolution.assert_not_awaited()
+
+    @pytest.mark.parametrize("tool_name", ["", "mcp_srv_memory_propose_update", "new_tool"])
+    @pytest.mark.asyncio
+    async def test_requester_refuses_drafts_from_unregistered_tools(
+        self,
+        tool_name: str,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        # A tool outside CONFIRMATION_TOOL_NAMES would create proposals that are never
+        # reconciled after a restart or /stop, so the requester refuses them loudly.
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+        errors: list[BaseException] = []
+        draft = _memory_draft().model_copy(update={"origin_tool_name": tool_name})
+
+        async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
+            try:
+                await kwargs["deps"].confirmation_requester(draft)  # type: ignore[attr-defined]
+            except RuntimeError as exc:
+                errors.append(exc)
+            return ("ok", [], None)
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_run_turn)
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+
+        result = await orch.execute_turn(_minimal_event(text="remember this"))
+
+        assert len(errors) == 1 and "CONFIRMATION_TOOL_NAMES" in str(errors[0])
+        assert confirmations.pending_for_session("tg:123") is None
+        assert result.confirmations == []
 
     @pytest.mark.asyncio
     async def test_expired_confirmations_are_recorded_before_history_is_read(
@@ -1099,6 +1148,233 @@ class TestOrchestratorExecuteTurn:
 
         assert order[:2] == ["recorded:expired", "replay"]
         assert stale.status == ConfirmationStatus.EXPIRED
+
+    @pytest.mark.asyncio
+    async def test_pending_confirmation_orphaned_by_restart_is_expired_once(
+        self,
+        tmp_path: Path,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        store = FilesystemSessionStore(tmp_path)
+        mock_store.sessions = store
+        # Before the restart a turn proposed ORPHAN_ID; nobody pressed its buttons.
+        await persist_pending_proposal(store, "tg:123", ORPHAN_ID)
+        restarted = ConfirmationService(
+            ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+        )
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=restarted,
+        )
+
+        # The memory tool is still active, so the tool-mismatch guard lets turn 1 run.
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={MEMORY_TOOL_NAME},
+        ):
+            first = await orch.execute_turn(_minimal_event(event_id="ev-1", text="hi"))
+
+            # The first turn after the restart already sees the outcome.
+            assert first is not None and first.text == "ok"
+            assert mock_pydantic_adapter.run_turn.await_count == 1
+            first_turn = mock_pydantic_adapter.run_turn.call_args_list[0].kwargs["messages"]
+            seen = [str(m.get("content", "")) for m in first_turn]
+            assert any(c.startswith(CONFIRMATION_RESOLVED_MARKER) and ORPHAN_ID in c for c in seen)
+
+            await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi again"))
+        # A later press of the old button must not add a second record.
+        await restarted.record_unknown_expired(ORPHAN_ID, "tg:123")
+
+        stored = await store.read_session("tg:123")
+        resolutions = [r for r in stored if r.event_id == f"confirmation-{ORPHAN_ID}"]
+        assert len(resolutions) == 1
+        payload = json.loads(
+            resolutions[0].payload["content"].removeprefix(CONFIRMATION_RESOLVED_MARKER)
+        )
+        assert payload["status"] == "expired"
+        assert "no longer awaiting an answer" in payload["detail"]
+        assert unresolved_pending_ids(await store.replay_for_turn("tg:123", 200)) == []
+
+    @pytest.mark.asyncio
+    async def test_reconcile_record_does_not_bypass_tool_mismatch_warning(
+        self,
+        tmp_path: Path,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        # History ends with a memory proposal; after the restart the memory tool is gone.
+        store = FilesystemSessionStore(tmp_path)
+        mock_store.sessions = store
+        await persist_pending_proposal(store, "tg:123", ORPHAN_ID)
+        restarted = ConfirmationService(
+            ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+        )
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=restarted,
+        )
+
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids", return_value=set()
+        ):
+            first = await orch.execute_turn(_minimal_event(event_id="ev-1", text="hi"))
+            second = await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi again"))
+
+        # Same as without the reconcile record: the user is warned and the LLM never runs,
+        # on every turn until the capability is re-enabled.
+        for result in (first, second):
+            assert result is not None
+            assert "not currently active" in result.text and MEMORY_TOOL_NAME in result.text
+        mock_pydantic_adapter.run_turn.assert_not_awaited()
+        # The reconcile record itself is still written.
+        stored = await store.read_session("tg:123")
+        assert any(r.event_id == f"confirmation-{ORPHAN_ID}" for r in stored)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restart_before_next_turn", [False, True])
+    async def test_stopped_turn_confirmation_is_recorded_by_next_turn(
+        self,
+        restart_before_next_turn: bool,
+        tmp_path: Path,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        """/stop persists the pending tool result as a cancelled turn; the next turn records it."""
+        from assistant.agent.pydantic_ai_agent import TurnCancelledWithPartial
+
+        store = FilesystemSessionStore(tmp_path)
+        mock_store.sessions = store
+        confirmations = ConfirmationService(
+            ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+        )
+        created_ids: list[str] = []
+
+        async def _propose_then_stop(**kwargs: object) -> object:
+            deps = kwargs["deps"]
+            outcome = await deps.confirmation_requester(_memory_draft())  # type: ignore[attr-defined]
+            cid = outcome.request.confirmation_id
+            created_ids.append(cid)
+            raise TurnCancelledWithPartial(
+                [
+                    ModelResponse(
+                        parts=[ToolCallPart(tool_name=MEMORY_TOOL_NAME, tool_call_id="tc", args={})]
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name=MEMORY_TOOL_NAME,
+                                tool_call_id="tc",
+                                content=json.dumps(
+                                    {"status": "pending_confirmation", "confirmation_id": cid}
+                                ),
+                            )
+                        ]
+                    ),
+                ]
+            )
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_propose_then_stop)
+
+        def _orch(service: ConfirmationService) -> Orchestrator:
+            return Orchestrator(
+                store=mock_store,
+                config=_runtime_config(),
+                idempotency=mock_idempotency,
+                pydantic_ai_adapter=mock_pydantic_adapter,
+                session_factory=mock_session_factory,
+                confirmation_service=service,
+            )
+
+        orch = _orch(confirmations)
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={MEMORY_TOOL_NAME},
+        ):
+            with pytest.raises(TurnCancelledWithPartial):
+                await orch.execute_turn(_minimal_event(event_id="ev-1", text="remember tea"))
+            (cid,) = created_ids
+            # The slot is free at once, no record yet, the tool result is in history.
+            assert confirmations.pending_for_session("tg:123") is None
+            replay = await store.replay_for_turn("tg:123", 200)
+            assert not any(r.turn_id.startswith("confirmation-") for r in replay)
+            assert unresolved_pending_ids(replay) == [cid]
+
+            if restart_before_next_turn:
+                orch = _orch(
+                    ConfirmationService(
+                        ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+                    )
+                )
+            mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+            await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi"))
+
+        stored = await store.read_session("tg:123")
+        (resolution,) = [r for r in stored if r.event_id == f"confirmation-{cid}"]
+        payload = json.loads(
+            resolution.payload["content"].removeprefix(CONFIRMATION_RESOLVED_MARKER)
+        )
+        if restart_before_next_turn:
+            assert payload["status"] == "expired"
+            assert "no longer awaiting an answer" in payload["detail"]
+        else:
+            assert payload["status"] == "failed"
+            assert "turn did not complete" in payload["detail"]
+        # The record follows the whole cancelled turn, so the agent sees them in order.
+        (cancelled_turn,) = {
+            r.turn_id for r in stored if r.record_type == SessionRecordType.TOOL_RESULT
+        }
+        assert resolution.sequence > max(r.sequence for r in stored if r.turn_id == cancelled_turn)
+        assert unresolved_pending_ids(await store.replay_for_turn("tg:123", 200)) == []
+
+    @pytest.mark.asyncio
+    async def test_pending_confirmation_known_to_service_is_not_expired(
+        self,
+        tmp_path: Path,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        store = FilesystemSessionStore(tmp_path)
+        mock_store.sessions = store
+        confirmations = ConfirmationService(
+            ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+        )
+        live = (await confirmations.request("tg:123", _memory_draft())).request
+        assert live is not None
+        await persist_pending_proposal(store, "tg:123", live.confirmation_id)
+        mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+
+        await orch.execute_turn(_minimal_event(text="hi"))
+
+        assert live.is_pending
+        stored = await store.read_session("tg:123")
+        assert not any(r.turn_id.startswith("confirmation-") for r in stored)
 
     @pytest.mark.asyncio
     async def test_user_typed_resolution_marker_is_neutralized(
@@ -1156,7 +1432,11 @@ def _memory_draft() -> ConfirmationDraft:
         summary_for_user="Action: upsert",
         dedupe_key="k1",
         origin_tool_call_id="tool-1",
+        origin_tool_name="memory_propose_update",
     )
+
+
+ORPHAN_ID = "0123456789abcdef"
 
 
 def _tool_call_record(
@@ -1276,6 +1556,29 @@ class TestDetectToolMismatch:
             return_value=set(),
         ):
             assert orch._detect_tool_mismatch(records, _runtime_config()) is None
+
+    def test_confirmation_record_turns_are_not_the_most_recent_turn(self) -> None:
+        """A synthetic resolution turn after a tool-calling turn does not hide its tools."""
+        orch = self._make_orch()
+        turn_id = f"confirmation-{ORPHAN_ID}"
+        records = [
+            _tool_call_record(turn_id="t1", tool_name="missing_tool", sequence=0),
+            SessionRecord(
+                session_id="s1",
+                sequence=1,
+                event_id=turn_id,
+                turn_id=turn_id,
+                timestamp=datetime.now(UTC),
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": f"msg-{turn_id}", "content": "[[CONFIRMATION_RESOLVED]] {}"},
+            ),
+        ]
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={"other_tool"},
+        ):
+            result = orch._detect_tool_mismatch(records, _runtime_config())
+        assert result is not None and "missing_tool" in result
 
     def test_returns_none_when_tool_name_empty(self) -> None:
         """Records with an empty tool_name payload should not cause false positives."""

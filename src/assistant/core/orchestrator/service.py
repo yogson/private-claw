@@ -32,11 +32,14 @@ from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
 from assistant.core.confirmation import (
+    CONFIRMATION_TOOL_NAMES,
     ConfirmationDraft,
     ConfirmationRequest,
     ConfirmationRequestResult,
     ConfirmationService,
+    is_confirmation_record,
     neutralize_confirmation_marker,
+    unresolved_pending_ids,
 )
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -730,6 +733,8 @@ class Orchestrator:
             with self._session_traces.session_trace(session_id, turn_id):
                 await self._expire_due_confirmations(session_id)
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
+                if await self._reconcile_pending_confirmations(session_id, records):
+                    records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 # Check if compaction is needed before building messages.
                 compact_records = await self._should_compact_session(session_id)
@@ -795,6 +800,19 @@ class Orchestrator:
             return None
 
         async def _request(draft: ConfirmationDraft) -> ConfirmationRequestResult:
+            if draft.origin_tool_name not in CONFIRMATION_TOOL_NAMES:
+                # Only registered tools' pending results are reconciled after a restart or
+                # /stop; an unregistered tool's proposal would be left pending forever.
+                logger.error(
+                    "orchestrator.confirmation_tool_not_registered",
+                    session_id=session_id,
+                    tool_name=draft.origin_tool_name,
+                    kind=draft.kind,
+                )
+                raise RuntimeError(
+                    f"Tool {draft.origin_tool_name!r} requested a confirmation but is not in "
+                    "CONFIRMATION_TOOL_NAMES (assistant.core.confirmation.history)"
+                )
             outcome = await service.request(session_id, draft)
             if outcome.created and outcome.request is not None and created is not None:
                 created.append(outcome.request)
@@ -813,8 +831,32 @@ class Orchestrator:
                 "orchestrator.confirmation_expiry_failed", session_id=session_id, exc_info=True
             )
 
+    async def _reconcile_pending_confirmations(
+        self, session_id: str, records: list[SessionRecord]
+    ) -> bool:
+        # A proposal whose replayed tool result still says `pending_confirmation` but that
+        # has no resolution record gets one, so the agent stops waiting for it: `expired`
+        # if this process no longer tracks it (e.g. after a restart), its final state if
+        # it is already final (e.g. a /stop-ed turn). True when history must be re-read.
+        if self._confirmations is None:
+            return False
+        pending_ids = unresolved_pending_ids(records)
+        if not pending_ids:
+            return False
+        try:
+            return await self._confirmations.reconcile_pending(session_id, pending_ids)
+        except Exception:
+            logger.warning(
+                "orchestrator.confirmation_reconcile_failed", session_id=session_id, exc_info=True
+            )
+            return False
+
     async def _discard_confirmations(self, created: list[ConfirmationRequest]) -> None:
         # A failed/cancelled turn never renders its confirmations; free the session slot.
+        # No history record here. Most failures persist no tool call, so a record would
+        # relate to nothing the agent can see. A /stop persists the partial turn, including
+        # the `pending_confirmation` tool result, as a cancelled turn; reconcile_pending
+        # writes the `failed` record at the start of the next turn, after that turn.
         if self._confirmations is None:
             return
         for request in created:
@@ -823,6 +865,7 @@ class Orchestrator:
                     self._confirmations.discard(
                         request.confirmation_id,
                         "The turn did not complete, so the confirmation was never shown.",
+                        record=False,
                     )
                 )
 
@@ -879,6 +922,12 @@ class Orchestrator:
         after a capability change), the check short-circuits: the model has
         already adapted and must not be blocked.
 
+        Synthetic confirmation-resolution turns (``confirmation-<id>``) are not model
+        turns and are skipped when picking the most recent turn. Otherwise a resolution
+        record (from a button press, or written by turn-start reconciliation after a
+        restart) would hide the tool calls of the real last turn and let the LLM run
+        where the user should get the warning.
+
         MCP tools (``mcp_<server>_<tool>``, see ``is_mcp_tool_name``) are excluded from
         the comparison: they are discovered from the servers at runtime and are not
         listed as tool ids.
@@ -888,9 +937,11 @@ class Orchestrator:
         # Identify the most recently completed turn.  Records from build_replay
         # are ordered by sequence and represent only complete turns, so the last
         # record's turn_id is the most recently completed turn.
+        confirmation_turn_ids = {r.turn_id for r in records if is_confirmation_record(r)}
         last_turn_id: str | None = None
         for record in records:
-            last_turn_id = record.turn_id
+            if record.turn_id not in confirmation_turn_ids:
+                last_turn_id = record.turn_id
 
         if last_turn_id is None:
             return None

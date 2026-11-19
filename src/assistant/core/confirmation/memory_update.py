@@ -41,7 +41,7 @@ def memory_body_length_error(intent: MemoryUpdateIntent) -> str | None:
 
 
 def build_memory_update_draft(
-    intent: MemoryUpdateIntent, origin_tool_call_id: str = ""
+    intent: MemoryUpdateIntent, origin_tool_call_id: str = "", origin_tool_name: str = ""
 ) -> ConfirmationDraft:
     """Build a confirmation draft showing the actual memory change to the user."""
     return ConfirmationDraft(
@@ -50,6 +50,7 @@ def build_memory_update_draft(
         summary_for_user=memory_update_summary(intent),
         dedupe_key=memory_update_dedupe_key(intent),
         origin_tool_call_id=origin_tool_call_id,
+        origin_tool_name=origin_tool_name,
     )
 
 

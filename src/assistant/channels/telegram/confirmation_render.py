@@ -4,11 +4,19 @@ Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 Telegram texts for confirmation prompts, callback answers, and resolved-message edits.
 """
 
-from assistant.core.confirmation import ConfirmationRequest, ConfirmationStatus
+from assistant.core.confirmation import (
+    NOT_DELIVERED_OUTCOME_STATUS,
+    ConfirmationRequest,
+    ConfirmationStatus,
+)
 
 APPROVE_LABEL = "✅ Approve"
 REJECT_LABEL = "❌ Reject"
 NO_LONGER_VALID_TEXT = "⌛ Expired: this confirmation is no longer valid."
+# For a request discarded as undelivered. The send may have failed after the message
+# actually arrived (e.g. a timeout), so the user may be looking at these buttons: do
+# not claim they could not be delivered.
+NOT_DELIVERED_TEXT = "⚠️ This confirmation is no longer valid."
 _TITLES = {"memory_update": "🧠 Save this to memory?"}
 _DEFAULT_TITLE = "Confirmation required"
 _APPROVED_TEXTS = {"memory_update": "✅ Saved."}
@@ -39,6 +47,8 @@ def status_text(request: ConfirmationRequest | None) -> str:
     if request.status == ConfirmationStatus.EXPIRED:
         return NO_LONGER_VALID_TEXT
     if request.status == ConfirmationStatus.FAILED:
+        if request.result is not None and request.result.status == NOT_DELIVERED_OUTCOME_STATUS:
+            return NOT_DELIVERED_TEXT
         detail = request.detail[:_DETAIL_MAX_CHARS]
         return f"⚠️ Failed: {detail}" if detail else "⚠️ Failed."
     return "⏳ Still pending."

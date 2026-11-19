@@ -5,13 +5,13 @@ In-memory confirmation service: request (with dedupe and one-pending-per-session
 idempotent resolve (per-id lock + compare-and-set), expiry (swept before every
 agent turn and on request/resolve), and history recording of every final state.
 State is intentionally not persisted; after a restart unknown confirmation ids
-resolve as "expired" and, when the channel can prove the session, an ``expired``
-record is written for them (record_unknown_expired).
+resolve as "expired" and an ``expired`` record is written for them: when the channel
+can prove the session of a pressed button (record_unknown_expired), and at turn start
+for ids that history still shows as pending (reconcile_pending).
 """
 
 import asyncio
-import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -27,6 +27,8 @@ from assistant.core.confirmation.models import (
     ConfirmationResolveResult,
     ConfirmationStatus,
     ConfirmationUiRef,
+    is_confirmation_id,
+    new_confirmation_id,
 )
 
 logger = structlog.get_logger(__name__)
@@ -41,7 +43,14 @@ _UNKNOWN_DETAIL = (
     "The user pressed a button for a confirmation the assistant no longer tracks "
     "(e.g. it was pending when the assistant restarted). Nothing was applied by this press."
 )
+_ORPHANED_DETAIL = (
+    "This confirmation is no longer awaiting an answer (the assistant restarted or the "
+    "turn ended before it was resolved), so the user can no longer approve it. Nothing "
+    "was applied. Propose it again if it is still needed."
+)
 UNKNOWN_KIND = "unknown"
+# Outcome status of a request discarded because its buttons never (provably) reached the user.
+NOT_DELIVERED_OUTCOME_STATUS = "not_delivered"
 
 
 def _utc_now() -> datetime:
@@ -79,7 +88,7 @@ class ConfirmationService:
             return ConfirmationRequestResult(blocked_by=current)
         now = self._clock()
         request = ConfirmationRequest(
-            confirmation_id=uuid.uuid4().hex[:16],
+            confirmation_id=new_confirmation_id(),
             kind=draft.kind,
             session_id=session_id,
             origin_tool_call_id=draft.origin_tool_call_id,
@@ -140,15 +149,24 @@ class ConfirmationService:
                 await self._finish(request, status, outcome)
             return ConfirmationResolveResult(request=request, changed=True)
 
-    async def discard(self, confirmation_id: str, detail: str) -> None:
-        """Mark a still-pending request failed (e.g. its buttons could not be delivered)."""
+    async def discard(self, confirmation_id: str, detail: str, *, record: bool = True) -> None:
+        """Mark a still-pending request failed (e.g. its buttons could not be delivered).
+
+        ``record=False`` skips the history record: for proposals of failed or cancelled
+        turns. Most failures persist no tool call, so the record would relate to nothing
+        the agent can see. A ``/stop`` does persist the partial turn, including the
+        ``pending_confirmation`` tool result; reconcile_pending then writes the record at
+        the start of the next turn, after that cancelled turn.
+        """
         request = self._requests.get(confirmation_id)
         if request is None:
             return
         async with self._lock_for(confirmation_id):
             if request.is_pending:
-                outcome = ConfirmationOutcome(ok=False, status="not_delivered", detail=detail)
-                await self._finish(request, ConfirmationStatus.FAILED, outcome)
+                outcome = ConfirmationOutcome(
+                    ok=False, status=NOT_DELIVERED_OUTCOME_STATUS, detail=detail
+                )
+                await self._finish(request, ConfirmationStatus.FAILED, outcome, record=record)
 
     async def _apply(
         self, request: ConfirmationRequest, user_id: str | None
@@ -174,6 +192,8 @@ class ConfirmationService:
         request: ConfirmationRequest,
         status: ConfirmationStatus,
         outcome: ConfirmationOutcome,
+        *,
+        record: bool = True,
     ) -> None:
         request.status = status
         request.result = outcome
@@ -186,8 +206,13 @@ class ConfirmationService:
             status=status.value,
             outcome_status=outcome.status,
         )
+        if record:
+            await self._record(request)
+
+    async def _record(self, request: ConfirmationRequest) -> bool:
+        """Hand ``request`` to the recorder; True if it was written without error."""
         if self._recorder is None:
-            return
+            return False
         try:
             await self._recorder.record_resolution(request)
         except Exception as exc:
@@ -196,6 +221,8 @@ class ConfirmationService:
                 confirmation_id=request.confirmation_id,
                 error=str(exc),
             )
+            return False
+        return True
 
     async def expire_due(self, session_id: str | None = None) -> None:
         """Expire pending requests past their TTL (all sessions, or only ``session_id``).
@@ -217,15 +244,19 @@ class ConfirmationService:
                 if request.is_pending:
                     await self._finish(request, ConfirmationStatus.EXPIRED, _expired_outcome())
 
-    async def record_unknown_expired(self, confirmation_id: str, session_id: str) -> None:
+    async def record_unknown_expired(
+        self, confirmation_id: str, session_id: str, detail: str = _UNKNOWN_DETAIL
+    ) -> bool:
         """Write an ``expired`` record for an id this process does not know.
 
-        For button presses whose signature proves ``session_id`` issued the id
-        (e.g. a confirmation pending across a restart). The store deduplicates
-        the record by its event id, so repeated presses write it once.
+        For ids proven to belong to ``session_id``: a button press whose signature
+        proves the session (e.g. a confirmation pending across a restart), or a
+        pending id found in that session's own history. The store deduplicates the
+        record by its event id, so it is written at most once per id.
+        Returns True if the record was written without error.
         """
         if confirmation_id in self._requests or self._recorder is None:
-            return
+            return False
         now = self._clock()
         stub = ConfirmationRequest(
             confirmation_id=confirmation_id,
@@ -237,17 +268,39 @@ class ConfirmationService:
             created_at=now,
             expires_at=now,
             resolved_at=now,
-            result=ConfirmationOutcome(ok=False, status="expired", detail=_UNKNOWN_DETAIL),
+            result=ConfirmationOutcome(ok=False, status="expired", detail=detail),
         )
         logger.info(
             "confirmation.unknown_expired", confirmation_id=confirmation_id, session_id=session_id
         )
-        try:
-            await self._recorder.record_resolution(stub)
-        except Exception as exc:
-            logger.warning(
-                "confirmation.record_failed", confirmation_id=confirmation_id, error=str(exc)
-            )
+        return await self._record(stub)
+
+    async def reconcile_pending(self, session_id: str, confirmation_ids: Iterable[str]) -> bool:
+        """Give every id that ``session_id``'s history shows as pending a final record.
+
+        Called at turn start with the ids whose replayed tool result still says
+        ``pending_confirmation`` and that have no resolution record yet
+        (unresolved_pending_ids). Ids not in the service's own format are ignored.
+        - unknown ids (the process restarted, or the request was pruned): ``expired``
+          record;
+        - known, already final ids whose record was skipped (``discard(record=False)``)
+          or failed to write: their final state is recorded now;
+        - still-pending ids of this process: left alone.
+        Call ``expire_due(session_id)`` first so timed-out ids are final here.
+        Returns True if any record was written, i.e. history should be re-read.
+        """
+        wrote = False
+        for confirmation_id in dict.fromkeys(confirmation_ids):
+            if not is_confirmation_id(confirmation_id):
+                continue
+            request = self._requests.get(confirmation_id)
+            if request is None:
+                wrote |= await self.record_unknown_expired(
+                    confirmation_id, session_id, detail=_ORPHANED_DETAIL
+                )
+            elif not request.is_pending and request.session_id == session_id:
+                wrote |= await self._record(request)
+        return wrote
 
     def _prune_resolved(self, now: datetime) -> None:
         # Resolved requests are kept for one TTL so repeated taps still get an exact answer.
