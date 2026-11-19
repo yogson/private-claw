@@ -51,4 +51,6 @@ class DelegationAcceptResult(BaseModel):
     task_id: str
     status: str
     rejection_reason: str | None = None
+    retryable: bool = False
+    """True for a transient refusal (concurrency / budget): the caller may retry later."""
     expires_at: str | None = None

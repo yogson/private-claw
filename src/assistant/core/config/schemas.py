@@ -334,6 +334,52 @@ class CompactionConfig(BaseModel):
     )
 
 
+class AgentNodeRepositoryConfig(BaseModel):
+    """One repository the agent-node HTTP ingress may run jobs against."""
+
+    path: str = Field(min_length=1, description="Absolute path of the local checkout")
+    capabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_absolute(cls, v: str) -> str:
+        if not Path(v).expanduser().is_absolute():
+            raise ValueError("repository path must be absolute")
+        return v
+
+
+class AgentNodeConfig(BaseModel):
+    """agent-node compatible HTTP ingress (config/agent_node.yaml).
+
+    The whole domain is optional: an absent file means the ingress is disabled.
+    Env override prefix: ASSISTANT_AGENT_NODE_ (e.g. ASSISTANT_AGENT_NODE_AUTH_TOKEN).
+    """
+
+    enabled: bool = False
+    auth_token: str = ""
+    default_model: str | None = None
+    backend: str = "claude_code_streaming"
+    # Claude Code permission mode for ingress jobs. "auto" lets the auto-mode
+    # classifier approve safe actions and block risky ones; anything it would
+    # escalate to a human is denied, since ingress runs are unattended.
+    permission_mode: Literal["auto", "acceptEdits", "default", "plan", "bypassPermissions"] = "auto"
+    repositories: dict[str, AgentNodeRepositoryConfig] = Field(default_factory=dict)
+    webhook_timeout_seconds: float = Field(default=10.0, ge=1)
+    # The webhook is abandoned this long after the job's effective deadline.
+    webhook_deadline_margin_seconds: int = Field(default=149, ge=0)
+
+    def auth_token_problem(self) -> str | None:
+        """Why ``auth_token`` cannot be used as a bearer token, or None when it is fine."""
+        token = self.auth_token
+        if not token.strip():
+            return "auth_token is empty (set ASSISTANT_AGENT_NODE_AUTH_TOKEN)"
+        if not token.isascii():
+            return "auth_token must be ASCII"
+        if token != token.strip():
+            return "auth_token must not have leading or trailing whitespace"
+        return None
+
+
 class RuntimeConfig(BaseModel):
     """Aggregated runtime configuration across all domains."""
 
@@ -347,4 +393,5 @@ class RuntimeConfig(BaseModel):
     store: StoreConfig
     memory: MemoryConfig
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+    agent_node: AgentNodeConfig | None = None  # None: config/agent_node.yaml absent
     config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution

@@ -39,6 +39,7 @@ _TERMINAL_TASK_STATUSES = (
     TaskStatus.CANCELLED,
     TaskStatus.EXPIRED,
 )
+_TASK_BUDGET_REASON = "task token budget exceeded"
 _DEFAULT_LOG_TAIL_LINES = 200
 _MAX_LOG_TAIL_LINES = 2000
 
@@ -186,10 +187,15 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 "rejected_policy",
                 "model_id is not in delegation_model_allowlist",
             )
-        if await self._reaches_concurrency_limit(tool_params):
+        # Callers that queue behind the worker slots (HTTP ingress) opt out of the limit.
+        skip_limit = isinstance(tool_params, dict) and bool(
+            tool_params.get("delegation_skip_concurrency_limit")
+        )
+        if not skip_limit and await self._reaches_concurrency_limit(tool_params):
             return self._rejected(
                 "rejected_policy",
                 "max concurrent delegation tasks reached",
+                retryable=True,
             )
         budget_reason, projected_tokens = await self._check_budget(
             session_id=session_id,
@@ -197,7 +203,12 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             tool_params=tool_params,
         )
         if budget_reason is not None:
-            return self._rejected("rejected_policy", budget_reason)
+            # Window budgets free up as usage ages out; a per-task cap never will.
+            return self._rejected(
+                "rejected_policy",
+                budget_reason,
+                retryable=budget_reason != _TASK_BUDGET_REASON,
+            )
 
         ttl_seconds = self._resolve_ttl_seconds(tool_params)
         now = datetime.now(UTC)
@@ -218,6 +229,11 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         logfire_ctx = request.get("logfire_context")
         if isinstance(logfire_ctx, dict) and logfire_ctx:
             metadata["logfire_context"] = logfire_ctx
+        # Caller-supplied extras (e.g. the HTTP ingress's ``source``); never override core keys.
+        extra_metadata = request.get("task_metadata")
+        if isinstance(extra_metadata, dict):
+            for key, value in extra_metadata.items():
+                metadata.setdefault(key, value)
         task = TaskRecord(
             task_id=task_id,
             parent_session_id=session_id,
@@ -495,6 +511,12 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         """
         if self._question_relay_callback is None:
             return
+        if task.metadata.get("interactive") is False:
+            # No human to ask (e.g. HTTP ingress jobs): leave the backend without a relay
+            # so AskUserQuestion is answered at once with "user unavailable" instead of
+            # waiting out DELEGATION_RELAY_TIMEOUT_S for a reply that cannot come.
+            logger.info("subagent.question_relay.disabled", task_id=task.task_id)
+            return
         task_id = task.task_id
         session_id = task.parent_session_id or ""
         pending_key = self._pending_question_key(session_id)
@@ -656,7 +678,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
 
         per_task_cap = self._coerce_int(tool_params.get("delegation_per_task_token_cap"))
         if per_task_cap and projected_tokens > per_task_cap:
-            return "task token budget exceeded", projected_tokens
+            return _TASK_BUDGET_REASON, projected_tokens
 
         budget_window = (
             self._coerce_int(tool_params.get("delegation_budget_window_seconds"))
@@ -745,13 +767,14 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         return parsed if parsed > 0 else None
 
     @staticmethod
-    def _rejected(status: str, reason: str) -> dict[str, Any]:
+    def _rejected(status: str, reason: str, *, retryable: bool = False) -> dict[str, Any]:
         logger.info("subagent.spawn.blocked", status=status, reason=reason)
         return DelegationAcceptResult(
             accepted=False,
             task_id="",
             status=status,
             rejection_reason=reason,
+            retryable=retryable,
         ).model_dump()
 
     def _default_max_workers(self) -> int:

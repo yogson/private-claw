@@ -164,7 +164,10 @@ class ClaudeCodeBackendAdapter(DelegationBackendAdapterInterface):
                 error="claude run ended without a result line (--output-format stream-json)",
             )
 
-        usage = result_line.get("usage") or {}
+        usage = dict(result_line.get("usage") or {})
+        for key in ("total_cost_usd", "num_turns", "duration_ms"):
+            if result_line.get(key) is not None:
+                usage[key] = result_line[key]
         if result_line.get("is_error"):
             error_text = result_line.get("result")
             return DelegationResult(

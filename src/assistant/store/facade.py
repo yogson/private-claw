@@ -9,7 +9,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from assistant.agent_node.interfaces import AgentNodeStoreInterface
 from assistant.core.session.interfaces import SessionMetadataStoreInterface
+from assistant.store.filesystem.agent_node import FilesystemAgentNodeStore
 from assistant.store.filesystem.atomic import atomic_write_text, ensure_directory
 from assistant.store.filesystem.idempotency import FilesystemIdempotencyLedger
 from assistant.store.filesystem.lock import FilesystemLockCoordinator
@@ -69,6 +71,8 @@ class StoreFacade(StoreFacadeInterface):
             self._idempotency_dir, idempotency_ttl_seconds
         )
 
+        self._agent_node = FilesystemAgentNodeStore(self._runtime_dir / "agent_node")
+
         self._session_metadata: FilesystemSessionMetadataStore | None = None
         if enable_session_metadata:
             self._session_metadata = FilesystemSessionMetadataStore(self._metadata_dir)
@@ -91,6 +95,11 @@ class StoreFacade(StoreFacadeInterface):
     @property
     def idempotency(self) -> IdempotencyLedgerInterface:
         return self._idempotency
+
+    @property
+    def agent_node(self) -> AgentNodeStoreInterface:
+        """Jobs, idempotency records and webhook outbox of the agent-node HTTP ingress."""
+        return self._agent_node
 
     @property
     def locks(self) -> LockCoordinatorInterface:
