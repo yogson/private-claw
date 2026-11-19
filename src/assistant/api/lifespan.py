@@ -9,6 +9,9 @@ from fastapi import FastAPI
 
 from assistant.agent.adapter_cache import TurnAdapterCache
 from assistant.agent.tools.registry import active_capabilities_for, collect_enabled_mcp_server_ids
+from assistant.agent_node.service import AgentNodeService
+from assistant.agent_node.webhook import WebhookSender
+from assistant.api.completion_dispatcher import CompletionHandler, build_completion_dispatcher
 from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.deps import set_runtime_config
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
@@ -22,7 +25,9 @@ from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap_with_catalog
 from assistant.core.capabilities import ClaudeCodeSettingsSync, SubagentMcpServersSync
+from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.resolver import resolve_policy
+from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.confirmation import (
     ConfirmationHandlerRegistry,
     ConfirmationService,
@@ -50,6 +55,35 @@ from assistant.subagents.coordinator import DelegationCoordinator
 logger = structlog.get_logger(__name__)
 
 
+def _build_delegation_coordinator(
+    *,
+    store: StoreFacade,
+    runtime_config: RuntimeConfig,
+    capability_catalog: CapabilityCatalog,
+) -> DelegationCoordinator:
+    """Coordinator over the Claude Code backends, kept in sync with the active capabilities.
+
+    MCP servers declared by the active capabilities are handed to the sub-agents
+    explicitly: Claude Code does not read "mcpServers" from settings.json, and the SDK
+    backend loads no filesystem settings at all. They are recomputed on every new
+    capability snapshot revision.
+    """
+    default_policy = runtime_config.capabilities
+    claude_code_backend = ClaudeCodeBackendAdapter()
+    claude_code_streaming_backend = ClaudeCodeStreamingBackendAdapter()
+    subagent_mcp_sync = SubagentMcpServersSync(
+        resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
+        targets=[claude_code_backend, claude_code_streaming_backend],
+    )
+    subagent_mcp_sync(capability_catalog.current())
+    capability_catalog.subscribe(subagent_mcp_sync)
+    return DelegationCoordinator(
+        store=store,
+        config=runtime_config,
+        backends=[claude_code_backend, claude_code_streaming_backend],
+    )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime_config, capability_catalog = bootstrap_with_catalog()
@@ -63,6 +97,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.attachment_downloader = None
     app.state.store = None
     app.state.delegation_coordinator = None
+    app.state.agent_node = None
+    telegram_completion: CompletionHandler | None = None
 
     app.state.capability_catalog = capability_catalog
     default_policy = runtime_config.capabilities
@@ -158,22 +194,10 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.telegram_adapter = adapter
 
-        # MCP servers declared by the active capabilities are handed to the
-        # sub-agents explicitly: Claude Code does not read "mcpServers" from
-        # settings.json, and the SDK backend loads no filesystem settings at all.
-        # They are recomputed on every new capability snapshot revision.
-        claude_code_backend = ClaudeCodeBackendAdapter()
-        claude_code_streaming_backend = ClaudeCodeStreamingBackendAdapter()
-        subagent_mcp_sync = SubagentMcpServersSync(
-            resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
-            targets=[claude_code_backend, claude_code_streaming_backend],
-        )
-        subagent_mcp_sync(capability_catalog.current())
-        capability_catalog.subscribe(subagent_mcp_sync)
-        delegation_coordinator = DelegationCoordinator(
+        delegation_coordinator = _build_delegation_coordinator(
             store=store,
-            config=runtime_config,
-            backends=[claude_code_backend, claude_code_streaming_backend],
+            runtime_config=runtime_config,
+            capability_catalog=capability_catalog,
         )
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
@@ -191,8 +215,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             capability_catalog=capability_catalog,
             confirmation_service=confirmations,
         )
-        delegation_coordinator.set_completion_callback(
-            _build_delegation_feedback_handler(orchestrator, adapter, confirmations)
+        telegram_completion = _build_delegation_feedback_handler(
+            orchestrator, adapter, confirmations
         )
         delegation_coordinator.set_question_relay_callback(_build_question_relay_handler(adapter))
 
@@ -231,6 +255,63 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         )
 
+    agent_node_service: AgentNodeService | None = None
+    agent_node_cfg = runtime_config.agent_node
+    if agent_node_cfg is not None and agent_node_cfg.enabled:
+        if not agent_node_cfg.auth_token.strip():
+            logger.warning(
+                "agent_node.disabled",
+                reason="auth_token is empty (set ASSISTANT_AGENT_NODE_AUTH_TOKEN)",
+            )
+        else:
+            if store is None:
+                store = StoreFacade(
+                    data_root=Path(runtime_config.app.data_root),
+                    lock_ttl_seconds=runtime_config.store.lock_ttl_seconds,
+                    idempotency_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
+                )
+                await store.initialize()
+                app.state.store = store
+            coordinator = app.state.delegation_coordinator
+            if coordinator is None:
+                coordinator = _build_delegation_coordinator(
+                    store=store,
+                    runtime_config=runtime_config,
+                    capability_catalog=capability_catalog,
+                )
+                await coordinator.start()
+                app.state.delegation_coordinator = coordinator
+            agent_node_service = AgentNodeService(
+                config=agent_node_cfg,
+                runtime_config=runtime_config,
+                store=store.agent_node,
+                task_store=store.tasks,
+                coordinator=coordinator,
+                sender=WebhookSender(
+                    store.agent_node, timeout_seconds=agent_node_cfg.webhook_timeout_seconds
+                ),
+                data_root=Path(runtime_config.app.data_root),
+                idempotency_ttl_seconds=runtime_config.store.idempotency_retention_seconds,
+            )
+            app.state.agent_node = agent_node_service
+            logger.info(
+                "agent_node.enabled",
+                repositories=sorted(agent_node_cfg.repositories),
+            )
+    if app.state.delegation_coordinator is not None:
+        app.state.delegation_coordinator.set_completion_callback(
+            build_completion_dispatcher(
+                default_handler=telegram_completion,
+                agent_node_handler=(
+                    agent_node_service.on_task_completed if agent_node_service else None
+                ),
+            )
+        )
+    if agent_node_service is not None:
+        # After the callback is wired: a job finalized by the reconcile loop's first pass
+        # must find the dispatcher in place, and recovered pending webhooks resume here.
+        await agent_node_service.start()
+
     # Connect the MCP servers the active capabilities reference once, for the whole app
     # lifetime (stdio servers are spawned here, not per turn). Runs in the background so a
     # slow or dead server never delays startup; a failed server is retried lazily with
@@ -249,6 +330,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        if agent_node_service is not None:
+            await agent_node_service.stop()
         mcp_start_task.cancel()
         with suppress(asyncio.CancelledError):
             await mcp_start_task

@@ -8,10 +8,12 @@ import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import RedirectResponse
 
 from assistant.admin.router import router as admin_router
 from assistant.api.lifespan import _lifespan
+from assistant.api.routers import agent_node as agent_node_router
 from assistant.api.routers import config as config_router
 from assistant.api.routers import health
 from assistant.api.routers import tasks as tasks_router
@@ -32,6 +34,12 @@ app.include_router(health.router)
 app.include_router(config_router.router)
 app.include_router(tasks_router.router)
 app.include_router(admin_router)
+app.include_router(agent_node_router.router)
+# Keeps FastAPI's 422 shape but never echoes webhook_secret / github_token back.
+app.add_exception_handler(
+    RequestValidationError,
+    agent_node_router.request_validation_exception_handler,  # type: ignore[arg-type]
+)
 
 
 @app.get("/admin", include_in_schema=False)
