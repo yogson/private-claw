@@ -35,7 +35,10 @@ _RESERVED_ENV = {
     AGENT_NODE_ENABLED_ENV,
 }
 _ALLOWED_KEYS = {"port", "token_env", "data_dir", "agent_node", "env", "instance_name"}
-_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Instance names and labels: the label reaches the app as ASSISTANT_APP_INSTANCE_NAME,
+# which is JSON-parsed, so it must not parse as a number, bool or null.
+_NAME_RE = re.compile(r"(?!(?:true|false|null)\Z)[a-z][a-z0-9_-]{0,31}")
+_NAME_RULE = "must be 1-32 chars [a-z0-9_-], start with a letter, not true/false/null"
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -116,8 +119,8 @@ def parse_instances(data: Any, repo_root: Path) -> list[InstanceSpec]:
 
 def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> InstanceSpec | None:
     start = len(problems)
-    if not _NAME_RE.match(name):
-        problems.append(f"{name}: instance name must match [a-z0-9][a-z0-9-]*")
+    if not _NAME_RE.fullmatch(name):
+        problems.append(f"{name}: instance name {_NAME_RULE}")
     if not isinstance(raw, dict):
         problems.append(f"{name}: expected a mapping with at least port and token_env")
         return None
@@ -143,8 +146,8 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
     if not isinstance(agent_node, bool):
         problems.append(f"{name}: agent_node must be true or false")
     label = raw.get("instance_name", name)
-    if not isinstance(label, str):
-        problems.append(f"{name}: instance_name must be a string")
+    if not isinstance(label, str) or not _NAME_RE.fullmatch(label):
+        problems.append(f"{name}: instance_name {_NAME_RULE}")
     env = _parse_env(name, raw.get("env") or {}, problems)
 
     if len(problems) > start or not isinstance(port, int) or not isinstance(token_env, str):
@@ -169,7 +172,7 @@ def _parse_env(name: str, raw: Any, problems: list[str]) -> dict[str, str]:
         key = str(key)
         if not _ENV_NAME_RE.match(key):
             problems.append(f"{name}: env key '{key}' is not a valid variable name")
-        elif key in _RESERVED_ENV:
+        elif key.upper() in _RESERVED_ENV:
             problems.append(f"{name}: env key '{key}' is set by the launcher; use the YAML keys")
         elif isinstance(value, dict | list) or value is None:
             problems.append(f"{name}: env value for '{key}' must be a scalar")

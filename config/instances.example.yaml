@@ -6,7 +6,7 @@
 # Tokens never go in this file: token_env names a variable in .env or the shell env.
 # Every instance needs its own bot token, port and data dir. Extra instances bind 127.0.0.1.
 instances:
-  research:                               # name: [a-z0-9][a-z0-9-]*
+  research:                               # name: [a-z][a-z0-9_-]{0,31}
     port: 8001                            # not 8000, unique, free
     token_env: TG_BOT_TOKEN_RESEARCH      # must not start with ASSISTANT_
     # data_dir: data/instances/research   # default: data/instances/<name>

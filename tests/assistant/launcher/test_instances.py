@@ -48,7 +48,7 @@ def test_parse_explicit_values(tmp_path: Path) -> None:
                 "port": 8002,
                 "token_env": "TG_WRITING",
                 "data_dir": "/srv/writing",
-                "instance_name": "Writing",
+                "instance_name": "writing_desk",
                 "agent_node": True,
                 "env": {"ASSISTANT_MEMORY_DEFAULT_USER_ID": "writing", "X_FLAG": True, "N": 3},
             }
@@ -57,7 +57,7 @@ def test_parse_explicit_values(tmp_path: Path) -> None:
     )
 
     assert spec.data_dir == Path("/srv/writing").resolve()
-    assert spec.instance_name == "Writing"
+    assert spec.instance_name == "writing_desk"
     assert spec.agent_node is True
     assert spec.env == {"ASSISTANT_MEMORY_DEFAULT_USER_ID": "writing", "X_FLAG": "true", "N": "3"}
 
@@ -87,7 +87,7 @@ def test_parse_reports_every_problem(tmp_path: Path) -> None:
     )
     text = "\n".join(problems)
 
-    assert "Bad_Name: instance name must match" in text
+    assert "Bad_Name: instance name must be 1-32 chars" in text
     assert "noport: port must be an integer" in text
     assert "prefixed: token_env 'ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN_X' must not start" in text
     assert "lowerprefix: token_env 'assistant_tok' must not start" in text
@@ -95,6 +95,30 @@ def test_parse_reports_every_problem(tmp_path: Path) -> None:
     assert "reserved: env key 'ASSISTANT_APP_DATA_ROOT' is set by the launcher" in text
     assert "boolport: port must be an integer" in text
     assert "notmap: expected a mapping" in text
+
+
+@pytest.mark.parametrize("bad", ["2", "1e3", "true", "false", "null", "-x", "a" * 33, "a\n"])
+def test_parse_rejects_names_and_labels_the_app_would_not_read_as_string(
+    tmp_path: Path, bad: str
+) -> None:
+    by_name = _problems({bad: {"port": 8001, "token_env": "TG_A"}}, tmp_path)
+    by_label = _problems(
+        {"ok": {"port": 8001, "token_env": "TG_A", "instance_name": bad}}, tmp_path
+    )
+
+    assert any("instance name must be 1-32 chars" in p for p in by_name)
+    assert by_label == [
+        "ok: instance_name must be 1-32 chars [a-z0-9_-], start with a letter, not true/false/null"
+    ]
+
+
+def test_parse_rejects_reserved_env_keys_in_any_case(tmp_path: Path) -> None:
+    env = {"assistant_channel_telegram_bot_token": "x", "Assistant_App_Data_Root": "y"}
+    problems = _problems({"a": {"port": 8001, "token_env": "TG_A", "env": env}}, tmp_path)
+
+    assert problems == [
+        f"a: env key '{key}' is set by the launcher; use the YAML keys" for key in env
+    ]
 
 
 def test_load_instances_missing_file_points_to_example(tmp_path: Path) -> None:
