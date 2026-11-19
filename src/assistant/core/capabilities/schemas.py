@@ -112,6 +112,10 @@ class CapabilityDefinition(BaseModel):
     nested_capabilities: list[str] = Field(default_factory=list)
     # Whole MCP servers (ids from config/mcp_servers.yaml) whose tools this capability grants.
     mcp_servers: list[str] = Field(default_factory=list)
+    # Opt-in for agent-proposed edits (CapabilityEditService, kind ``capability_edit``):
+    # only manifests a human marked ``self_edit: true`` may be edited, and only after the
+    # user approves each edit with buttons. The agent can never change this flag itself.
+    self_edit: bool = False
 
     def get_effective_tool_overrides(self, tool_id: str) -> dict[str, Any]:
         """Merge tool_overrides[tool_id] with any inline params from tools list."""

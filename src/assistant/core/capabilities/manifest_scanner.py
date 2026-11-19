@@ -138,12 +138,13 @@ class ManifestScanner:
             definitions[definition.capability_id] = definition
             states[definition.capability_id] = parsed.state
         if not issues:
-            issues.extend(self._validate(definitions))
+            issues.extend(self.validate(definitions))
         content_key = frozenset((f.state.path.name, f.state.sha256) for f in parsed_files)
         retry = any(f.retry or f.racy for f in parsed_files)
         return ManifestCandidate(tuple(issues), definitions, states, content_key, retry)
 
-    def _validate(self, definitions: dict[str, CapabilityDefinition]) -> list[CapabilityLoadIssue]:
+    def validate(self, definitions: dict[str, CapabilityDefinition]) -> list[CapabilityLoadIssue]:
+        """Cross-file validation of ``definitions`` (nested references + the validator)."""
         issues = validate_nested_references(definitions)
         if self._validator is not None:
             try:
