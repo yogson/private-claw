@@ -1,0 +1,46 @@
+# agent-node compatible HTTP ingress (optional domain).
+# Lets the operational-graphs system (automation) submit jobs over HTTP
+# (POST /jobs, POST /jobs/{id}/cancel, GET /jobs/{id}) and get the result back
+# through a signed completion webhook. Delete this file to disable the ingress.
+# Environment override prefix: ASSISTANT_AGENT_NODE_
+
+enabled: false
+
+# Bearer token the caller must present. Prefer the env var over writing it here:
+#   ASSISTANT_AGENT_NODE_AUTH_TOKEN=...
+auth_token: ""
+
+# Model for jobs that do not name one (must be in model.yaml model_allowlist).
+# null: the delegation default model.
+default_model: null
+
+# Delegation backend that runs the jobs.
+backend: claude_code_streaming
+
+# Claude Code permission mode for jobs: auto (recommended), acceptEdits, default,
+# plan or bypassPermissions. In auto mode, actions the classifier escalates for
+# human approval are denied, because ingress runs are unattended.
+permission_mode: auto
+
+# repo_full_name -> local checkout the sub-agent works in. A request naming any
+# other repository is refused with 422.
+# Optional capabilities: ids from capabilities/*.yaml whose prompts (nested ones
+# included) are prepended to every job on that repository, before the caller's
+# prompt. Many-to-many: list several per repo, reuse one across repos.
+# A job also gets exactly the MCP servers of those capabilities: their
+# claude_code_settings.mcp_servers plus their mcp_servers ids from
+# mcp_servers.yaml (include_tools is enforced; exclude_tools and confirm_tools are
+# blocked). A job without a repository gets no MCP servers.
+# "capability: <id>" is shorthand for a single entry.
+repositories:
+  owner/repo:
+    path: /absolute/path/to/local/checkout
+    capability: some_capability
+  owner/other-repo:
+    path: /absolute/path/to/other/checkout
+    capabilities: [some_capability, another_capability]
+
+# Per-attempt webhook timeout, and how long after the job's effective deadline
+# an undelivered webhook is given up on.
+webhook_timeout_seconds: 10
+webhook_deadline_margin_seconds: 149

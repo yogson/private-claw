@@ -13,9 +13,10 @@ import contextlib
 import dataclasses
 import os
 import shutil
+from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeGuard, cast, get_args
 
 import structlog
 
@@ -31,8 +32,16 @@ os.environ.setdefault(
     str(DELEGATION_RELAY_TIMEOUT_S * 1000 + 10_000),
 )
 
+from assistant.core.capabilities.subagent_mcp import SubagentMcpResolver, resolve_run_mcp
+from assistant.core.config.schemas import SubagentPermissionMode
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
+from assistant.subagents.permission_modes import (
+    PermissionModeMonitor,
+    StreamEventKind,
+    explain_cli_rejection,
+    resolve_permission_mode,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -40,13 +49,18 @@ logger = structlog.get_logger(__name__)
 # Import failures are caught at execution time in execute().
 try:
     from claude_agent_sdk import (
+        AssistantMessage,
         ClaudeAgentOptions,
+        HookMatcher,
+        PermissionMode,
         PermissionResultAllow,
         PermissionResultDeny,
         ResultMessage,
+        SystemMessage,
         TaskNotificationMessage,
         TaskStartedMessage,
         ToolPermissionContext,
+        UserMessage,
         query,
     )
 
@@ -57,6 +71,25 @@ try:
 except ImportError:
     _SDK_AVAILABLE = False
 
+# Tail of the CLI's stderr kept per run, to explain a rejected flag.
+_STDERR_TAIL_LINES = 20
+
+
+def _is_sdk_permission_mode(mode: str) -> "TypeGuard[PermissionMode]":
+    # The SDK's typed PermissionMode lags behind the CLI (0.1.50 lacks "auto"
+    # and "dontAsk"); modes it does not know go through extra_args instead.
+    return mode in get_args(PermissionMode)
+
+
+def _stream_event_kind(msg: Any) -> StreamEventKind:
+    # Only model output ends the startup permission-mode check; other events
+    # (RateLimitEvent, StreamEvent, ...) may still precede a downgrading status.
+    if isinstance(msg, SystemMessage):
+        return "system"
+    if isinstance(msg, (AssistantMessage, UserMessage, ResultMessage)):
+        return "model_output"
+    return "other"
+
 
 def _normalize_answer(reply: str, labels: list[str]) -> str:
     """Map a free-text reply to an option label when it names one (by number or text)."""
@@ -66,6 +99,16 @@ def _normalize_answer(reply: str, labels: list[str]) -> str:
         if label and reply.casefold() == label.casefold():
             return label
     return reply
+
+
+def _usage_with_run_stats(result_msg: Any) -> dict[str, Any]:
+    """Token usage plus the run's cost, turn count and duration when the SDK reports them."""
+    usage: dict[str, Any] = dict(result_msg.usage or {})
+    for key in ("total_cost_usd", "num_turns", "duration_ms"):
+        value = getattr(result_msg, key, None)
+        if isinstance(value, int | float):
+            usage[key] = value
+    return usage
 
 
 class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
@@ -94,6 +137,9 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         # --mcp-config.  Sub-agents run with --setting-sources "" (SDK default),
         # so servers registered in ~/.claude.json or settings.json never reach them.
         self._mcp_servers = mcp_servers or {}
+        # Resolves the servers of runs that name their capabilities
+        # (backend_params["mcp_capabilities"]); see core/capabilities/subagent_mcp.py.
+        self._mcp_resolver: SubagentMcpResolver | None = None
         # The SDK prefers its bundled CLI over PATH, and the bundled copy lags
         # behind: old CLIs send thinking={type:"enabled", budget_tokens}, which
         # newer models (e.g. claude-opus-5-5) reject with a 400.  Use the
@@ -108,6 +154,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         the active capabilities; runs already in flight keep the servers they started with.
         """
         self._mcp_servers = dict(mcp_servers)
+
+    def set_mcp_resolver(self, resolver: SubagentMcpResolver | None) -> None:
+        """Set how runs that name their capabilities get their MCP servers."""
+        self._mcp_resolver = resolver
 
     @property
     def backend_id(self) -> str:
@@ -134,6 +184,19 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             return DelegationResult(ok=False, error="claude-agent-sdk is not installed")
 
         relay = self._task_relays.get(request.task_id)
+        permission_mode = resolve_permission_mode(
+            request.backend_params.get("permission_mode"),
+            source="claude_code_streaming",
+            task_id=request.task_id,
+        )
+        stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+
+        def _on_stderr(line: str) -> None:
+            # Piping stderr (needed to read it) stops the CLI inheriting ours;
+            # log each line, tagged with the task, so it still reaches the
+            # service log.
+            stderr_tail.append(line)
+            logger.info("claude_streaming.stderr", task_id=request.task_id, line=line)
 
         async def _answer_ask_user_question(
             input_data: dict[str, Any],
@@ -183,11 +246,32 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             context: "ToolPermissionContext",
         ) -> "PermissionResultAllow | PermissionResultDeny":
             if tool_name == "AskUserQuestion":
+                # Never reached under dontAsk: the CLI denies AskUserQuestion
+                # itself there, so the relay only works in the other modes.
                 return await _answer_ask_user_question(input_data)
-            # Auto-approve everything else
-            return PermissionResultAllow()
+            if permission_mode == "bypassPermissions":
+                # Explicitly requested: the few prompts bypass mode still
+                # raises (e.g. critical-path removals) are approved too.
+                return PermissionResultAllow()
+            # Anything else reaching us is a prompt the permission mode did not
+            # resolve (auto-mode classifier fallback after repeated blocks, ask
+            # rules, Manual-mode prompts). Approving it here would silently
+            # turn the run into bypassPermissions, so deny it.
+            logger.warning(
+                "subagent.permission_prompt.denied",
+                task_id=request.task_id,
+                tool_name=tool_name,
+                permission_mode=permission_mode,
+            )
+            return PermissionResultDeny(
+                message=(
+                    f"{tool_name} needs approval, and nobody can approve it in this delegated "
+                    f"run (permission mode: {permission_mode}). Do not retry it: use another "
+                    "approach, or finish and report which action needs the user's approval."
+                )
+            )
 
-        sdk_options = self._build_options(request, _can_use_tool)
+        sdk_options = self._build_options(request, _can_use_tool, permission_mode, _on_stderr)
         prompt = request.objective
 
         try:
@@ -198,6 +282,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             # Background tasks (run_in_background / Monitor) started but not yet
             # reported finished via a task_notification.
             pending_bg: set[str] = set()
+            mode_monitor = PermissionModeMonitor(permission_mode, request.task_id, request.model_id)
+            mode_error: str | None = None
 
             # Set once the run is genuinely over (a ResultMessage with no
             # background tasks pending).  Until then the prompt iterator stays
@@ -221,8 +307,34 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
 
             log_path = Path(request.log_path) if request.log_path else None
 
+            # Set when the run must stop before it does anything (e.g. the CLI
+            # did not enter the requested permission mode).
+            aborted = asyncio.Event()
+
+            async def _handle_message(msg: Any) -> None:
+                nonlocal result_msg, final_text, mode_error
+                if aborted.is_set():
+                    return  # draining until the cancellation lands
+                if log_path is not None:
+                    await write_log_lines(log_path, msg, request.task_id)
+                kind = _stream_event_kind(msg)
+                mode_error = mode_monitor.observe(kind, msg.data if kind == "system" else {})
+                if mode_error is not None:
+                    # Never let the run continue in a mode nobody asked for
+                    # (e.g. Manual instead of an unavailable auto mode).
+                    run_finished.set()
+                    aborted.set()
+                elif isinstance(msg, TaskStartedMessage):
+                    pending_bg.add(msg.task_id)
+                elif isinstance(msg, TaskNotificationMessage):
+                    pending_bg.discard(msg.task_id)
+                elif isinstance(msg, ResultMessage):
+                    result_msg = msg
+                    final_text = msg.result or ""
+                    if msg.is_error or not pending_bg:
+                        run_finished.set()
+
             async def _run_query() -> None:
-                nonlocal result_msg, final_text
                 prompt_iter = _prompt_iter()
                 # query() only builds the transport itself, with this same
                 # option tweak for can_use_tool, when none is passed in.
@@ -233,36 +345,49 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 async for msg in query(
                     prompt=prompt_iter, options=sdk_options, transport=transport
                 ):
-                    if log_path is not None:
-                        await write_log_lines(log_path, msg, request.task_id)
-                    if isinstance(msg, TaskStartedMessage):
-                        pending_bg.add(msg.task_id)
-                    elif isinstance(msg, TaskNotificationMessage):
-                        pending_bg.discard(msg.task_id)
-                    elif isinstance(msg, ResultMessage):
-                        result_msg = msg
-                        final_text = msg.result or ""
-                        if msg.is_error or not pending_bg:
-                            run_finished.set()
+                    await _handle_message(msg)
 
             task = asyncio.create_task(_run_query())
+            abort_wait = asyncio.create_task(aborted.wait())
             try:
                 try:
-                    await asyncio.wait_for(asyncio.shield(task), timeout=request.timeout_seconds)
+                    done, _ = await asyncio.wait(
+                        {task, abort_wait},
+                        timeout=request.timeout_seconds,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if task in done:
+                        task.result()  # re-raise a failure of the run itself
+                    elif not done:
+                        raise TimeoutError
                 except TimeoutError:
                     return DelegationResult(ok=False, error="claude-agent-sdk run timed out")
             finally:
-                # Whatever path got us out of the shielded await (timeout, outer
+                abort_wait.cancel()
+                # Whatever path got us out of the wait (timeout, abort, outer
                 # cancellation, unexpected exception), the inner _run_query task
                 # must be terminated and awaited. Otherwise the claude-agent-sdk
                 # subprocess orphans and keeps consuming memory until OOM.
+                # Cancelling the task (rather than breaking out of the stream)
+                # lands inside the SDK's generators, so they close the CLI in
+                # this task; an abandoned generator would be finalized in
+                # another task, where anyio's cancel scope refuses to exit.
                 if not task.done():
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
 
         except Exception as exc:
-            return DelegationResult(ok=False, error=f"claude-agent-sdk execution failed: {exc}")
+            # Best effort: the SDK feeds stderr_tail from its own reader task,
+            # so the rejection line may not have arrived yet when the error
+            # propagates; then the generic message below is returned.
+            rejection = explain_cli_rejection(permission_mode, "\n".join(stderr_tail))
+            return DelegationResult(
+                ok=False, error=rejection or f"claude-agent-sdk execution failed: {exc}"
+            )
+
+        if mode_error is not None:
+            return DelegationResult(ok=False, error=mode_error)
 
         if result_msg is None:
             return DelegationResult(
@@ -277,11 +402,11 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             return DelegationResult(
                 ok=False,
                 error=result_msg.result or "claude-agent-sdk returned an error",
-                usage=result_msg.usage or {},
+                usage=_usage_with_run_stats(result_msg),
             )
 
         output_text = final_text.strip()
-        usage: dict[str, Any] = result_msg.usage or {}
+        usage: dict[str, Any] = _usage_with_run_stats(result_msg)
 
         if pending_bg:
             # The stream ended (closing the CLI) while background tasks were
@@ -314,6 +439,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         self,
         request: DelegationRun,
         can_use_tool: Callable[[str, dict[str, Any], Any], Awaitable[Any]],
+        permission_mode: SubagentPermissionMode,
+        on_stderr: Callable[[str], None] | None = None,
     ) -> Any:
         params = request.backend_params
         cwd = params.get("directory") or None
@@ -326,12 +453,14 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         if raw_effort is not None and effort is None and not extra_args:
             logger.warning("claude_streaming.effort_ignored", effort=raw_effort)
 
-        raw_permission_mode = str(params.get("permission_mode", "")).strip() or None
-        permission_mode = (
-            raw_permission_mode
-            if raw_permission_mode in ("default", "acceptEdits", "plan", "bypassPermissions")
-            else "bypassPermissions"  # safe default: no TTY to route approval requests to
-        )
+        # Same for permission modes the SDK's typed field does not know yet
+        # ("auto", "dontAsk"): `--permission-mode auto` via extra_args, with the
+        # typed field left unset so the flag is not passed twice.
+        sdk_permission_mode: PermissionMode | None = None
+        if _is_sdk_permission_mode(permission_mode):
+            sdk_permission_mode = permission_mode
+        else:
+            extra_args["permission-mode"] = permission_mode
 
         add_dirs_raw = params.get("add_dirs")
         add_dirs: list[str] = (
@@ -351,21 +480,44 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             else []
         )
 
+        run_mcp = resolve_run_mcp(params, self._mcp_servers, self._mcp_resolver)
+        pre_tool_use: list[Any] = []
+        if run_mcp.tool_filters:
+
+            async def _mcp_tool_filter(
+                input_data: Any, tool_use_id: str | None, context: Any
+            ) -> dict[str, Any]:
+                reason = run_mcp.denial_reason(str(input_data.get("tool_name", "")))
+                if reason is None:
+                    return {}
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }
+
+            pre_tool_use.append(HookMatcher(matcher=None, hooks=[cast(Any, _mcp_tool_filter)]))
+
         return ClaudeAgentOptions(
             model=request.model_id,
             cli_path=self._cli_path,
-            mcp_servers=cast(Any, dict(self._mcp_servers)),
+            mcp_servers=cast(Any, run_mcp.servers),
             max_turns=request.max_turns,
             cwd=cwd,
             effort=cast(Any, effort),
             extra_args=extra_args,
-            permission_mode=cast(Any, permission_mode),
+            permission_mode=sdk_permission_mode,
             add_dirs=cast(Any, add_dirs),
             plugins=cast(Any, plugins),
             can_use_tool=can_use_tool,
+            stderr=on_stderr,
             # Stub hook keeps SDK stdin open for ask_question relay (Fix 3).
             # Even if the SDK patch (Fix 1) is lost on reinstall, bool(hooks)
             # remains truthy so wait_for_result_and_end_input() won't close
             # stdin early. The empty matcher list is harmless.
-            hooks={"PreToolUse": []},
+            # The MCP tool filter (if any) enforces capability tool restrictions in
+            # every permission mode, bypassPermissions included.
+            hooks={"PreToolUse": pre_tool_use},
         )

@@ -7,9 +7,35 @@ Each schema corresponds to one config/*.yaml file.
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+
+# Claude Code permission modes a delegated sub-agent may run in (CLI config
+# values; the CLI's "manual" is an alias of "default").  See
+# assistant.subagents.permission_modes for how they are resolved per run.
+SubagentPermissionMode = Literal[
+    "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"
+]
+
+
+def normalize_permission_mode_alias(value: object) -> object:
+    """Strip a permission-mode string and map the CLI alias "manual" to "default".
+
+    Shared by config validation and the per-request resolver so both accept the
+    same spellings.  Anything else is returned as-is for the caller to validate
+    (mode names are case-sensitive, as in the CLI).
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    return "default" if stripped.lower() == "manual" else stripped
+
+
+# Config field type: same values as SubagentPermissionMode, plus the "manual" alias.
+SubagentPermissionModeSetting = Annotated[
+    SubagentPermissionMode, BeforeValidator(normalize_permission_mode_alias)
+]
 
 
 class RuntimeMode(StrEnum):
@@ -157,6 +183,10 @@ class ToolDefaultParams(BaseModel):
     delegation_default_max_turns: int | None = Field(default=None, ge=1)
     delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    # Claude Code permission mode for sub-agents unless the call sets its own;
+    # unset means "auto".  It is also the ceiling: a per-request mode may only be
+    # as restrictive or more.  "bypassPermissions" only when set explicitly.
+    delegation_default_permission_mode: SubagentPermissionModeSetting | None = None
 
     @field_validator("command_allowlist", mode="before")
     @classmethod
@@ -339,6 +369,83 @@ class CompactionConfig(BaseModel):
     )
 
 
+class AgentNodeRepositoryConfig(BaseModel):
+    """One repository the agent-node HTTP ingress may run jobs against."""
+
+    path: str = Field(min_length=1, description="Absolute path of the local checkout")
+    # Capability ids whose prompts are added to the context of every job on this repo
+    # (nested capabilities included). Many-to-many: a capability may serve several repos.
+    # ``capability: <id>`` is accepted as shorthand for a single entry.
+    capabilities: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_capability_shorthand(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "capability" not in data:
+            return data
+        data = dict(data)
+        single = data.pop("capability")
+        singles = single if isinstance(single, list) else [single]
+        listed = data.get("capabilities") or []
+        if not isinstance(listed, list):
+            listed = [listed]
+        merged: list[Any] = []
+        for item in [*singles, *listed]:
+            if item is not None and item not in merged:
+                merged.append(item)
+        data["capabilities"] = merged
+        return data
+
+    @field_validator("capabilities")
+    @classmethod
+    def _capability_ids_not_blank(cls, v: list[str]) -> list[str]:
+        cleaned = [c.strip() for c in v]
+        if any(not c for c in cleaned):
+            raise ValueError("capability ids must not be blank")
+        return list(dict.fromkeys(cleaned))
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_absolute(cls, v: str) -> str:
+        if not Path(v).expanduser().is_absolute():
+            raise ValueError("repository path must be absolute")
+        return v
+
+
+class AgentNodeConfig(BaseModel):
+    """agent-node compatible HTTP ingress (config/agent_node.yaml).
+
+    The whole domain is optional: an absent file means the ingress is disabled.
+    Env override prefix: ASSISTANT_AGENT_NODE_ (e.g. ASSISTANT_AGENT_NODE_AUTH_TOKEN).
+    """
+
+    enabled: bool = False
+    auth_token: str = ""
+    default_model: str | None = None
+    backend: str = "claude_code_streaming"
+    # Claude Code permission mode for ingress jobs. "auto" lets the auto-mode
+    # classifier approve safe actions and block risky ones; anything it would
+    # escalate to a human is denied, since ingress runs are unattended.
+    # Capped by the delegation ceiling (delegate_subagent_task's
+    # delegation_default_permission_mode), like any per-request mode.
+    permission_mode: SubagentPermissionModeSetting = "auto"
+    repositories: dict[str, AgentNodeRepositoryConfig] = Field(default_factory=dict)
+    webhook_timeout_seconds: float = Field(default=10.0, ge=1)
+    # The webhook is abandoned this long after the job's effective deadline.
+    webhook_deadline_margin_seconds: int = Field(default=149, ge=0)
+
+    def auth_token_problem(self) -> str | None:
+        """Why ``auth_token`` cannot be used as a bearer token, or None when it is fine."""
+        token = self.auth_token
+        if not token.strip():
+            return "auth_token is empty (set ASSISTANT_AGENT_NODE_AUTH_TOKEN)"
+        if not token.isascii():
+            return "auth_token must be ASCII"
+        if token != token.strip():
+            return "auth_token must not have leading or trailing whitespace"
+        return None
+
+
 class RuntimeConfig(BaseModel):
     """Aggregated runtime configuration across all domains."""
 
@@ -352,4 +459,5 @@ class RuntimeConfig(BaseModel):
     store: StoreConfig
     memory: MemoryConfig
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+    agent_node: AgentNodeConfig | None = None  # None: config/agent_node.yaml absent
     config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution
