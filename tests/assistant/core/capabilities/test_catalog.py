@@ -306,7 +306,8 @@ def test_unexpected_failures_never_escape_refresh(tmp_path: Path) -> None:
     _write(tmp_path, "a.yaml", _manifest("a", "v2"))
     snap = catalog.refresh()
     assert snap.revision == 1
-    assert "unexpected parse error: parser bug" in snap.blocking_errors[0].message
+    # Only the class: a parser bug's message could quote the manifest.
+    assert snap.blocking_errors[0].message == "[a.yaml] unexpected parse error (RuntimeError)"
 
     with patch.object(catalog._scanner, "scan", side_effect=PermissionError("denied")):
         snap = catalog.refresh()

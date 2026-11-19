@@ -5,9 +5,11 @@ Interface of the capability catalog, the single owner of capability manifest sta
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
-from assistant.core.capabilities.snapshot import CapabilitySnapshot
+from assistant.core.capabilities.schemas import CapabilityDefinition
+from assistant.core.capabilities.snapshot import CapabilityLoadIssue, CapabilitySnapshot
+from assistant.core.capabilities.validation import validate_nested_references
 
 type SnapshotSubscriber = Callable[[CapabilitySnapshot], None]
 
@@ -43,3 +45,13 @@ class CapabilityCatalogInterface(ABC):
         that ``refresh()``/``reload()`` may return before its revision reached every
         callback. Callback exceptions are logged and never raised.
         """
+
+    def validate_candidate(
+        self, definitions: Mapping[str, CapabilityDefinition]
+    ) -> list[CapabilityLoadIssue]:
+        """Run the cross-file checks a reload would run on ``definitions`` (no I/O, no swap).
+
+        Lets an editor reject a change before writing it. The default checks nested
+        references only; :class:`CapabilityCatalog` adds its configured validator.
+        """
+        return validate_nested_references(definitions)

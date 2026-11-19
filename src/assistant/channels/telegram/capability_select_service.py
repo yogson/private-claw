@@ -128,9 +128,9 @@ def _error_lines(snapshot: CapabilitySnapshot) -> list[str]:
 
 
 def _display_message(message: str) -> str:
-    # The full message stays in the logs. PyYAML appends the offending source line(s) after
-    # the first line ("in <byte string>, line N, column M:" + snippet), which may hold
-    # secrets (e.g. MCP server env), so only the first line and the location are shown.
+    # Catalog messages no longer quote manifest content (the loader reports YAML errors as
+    # class + location only). Defensively, only the first line and a location are shown in
+    # case a multi-line message (with a source excerpt) ever reaches this point.
     first, _, rest = message.partition("\n")
     first = first.strip()
     location = _LOCATION_RE.search(rest)

@@ -229,6 +229,10 @@ class TelegramAdapter:
         """
         return await self._egress.send(response, chat_id)
 
+    async def send_response_message_ids(self, response: ChannelResponse, chat_id: int) -> list[int]:
+        """Like :meth:`send_response`, returning the ids of the sent Telegram messages."""
+        return await self._egress.send_message_ids(response, chat_id)
+
     async def acknowledge_callback(self, callback_id: str, text: str | None = None) -> None:
         """Answer a callback query so the client stops its spinner; text shows as a toast."""
         await self._egress.acknowledge_callback(callback_id, text)
@@ -418,14 +422,39 @@ class TelegramAdapter:
         )
         return item.session_id, item.answer_text
 
+    def build_confirmation_part_response(
+        self,
+        *,
+        trace_id: str,
+        request: ConfirmationRequest,
+        text: str,
+        reply_to_message_id: int | None = None,
+    ) -> ChannelResponse:
+        """Build one plain-text attachment part (no buttons) of a confirmation request."""
+        return ChannelResponse(
+            response_id=str(uuid.uuid4()),
+            channel="telegram",
+            session_id=request.session_id,
+            trace_id=trace_id,
+            message_type=MessageType.TEXT,
+            text=text,
+            plain_text=True,
+            reply_to_message_id=reply_to_message_id,
+        )
+
     def build_confirmation_response(
         self,
         *,
         chat_id: int,
         trace_id: str,
         request: ConfirmationRequest,
+        reply_to_message_id: int | None = None,
     ) -> ChannelResponse:
-        """Build the Approve/Reject message for one confirmation request."""
+        """Build the Approve/Reject message for one confirmation request.
+
+        ``reply_to_message_id``: part 1 of the request's attachments, so the buttons are
+        visibly bound to the parts sent before them.
+        """
         secret = self._task_callback_secret()
         cid = request.confirmation_id
         return ChannelResponse(
@@ -435,6 +464,10 @@ class TelegramAdapter:
             trace_id=trace_id,
             message_type=MessageType.INTERACTIVE,
             text=render_confirmation_prompt(request),
+            # Verbatim, like the plain-text edit after the press: markdown conversion would
+            # hide characters of what is being approved (e.g. ``__init__``, ``*``).
+            plain_text=True,
+            reply_to_message_id=reply_to_message_id,
             ui_kind="inline_keyboard",
             actions=[
                 ActionButton(

@@ -10,13 +10,11 @@ directory followed by ``os.replace`` and a best-effort fsync of the directory, s
 never see a torn file and the rename survives a power loss where the platform allows it.
 """
 
-import contextlib
 import json
-import os
-import stat
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from assistant.core.capabilities.atomic_file import atomic_write_bytes
 
 # Mode for a settings file created from scratch: it may carry MCP server env (secrets).
 NEW_SETTINGS_FILE_MODE = 0o600
@@ -56,38 +54,5 @@ def write_settings_file(path: Path, data: dict[str, Any]) -> None:
     """
     target = path.resolve() if path.is_symlink() else path
     target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        mode = stat.S_IMODE(target.stat().st_mode)
-    except FileNotFoundError:
-        mode = NEW_SETTINGS_FILE_MODE
-    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, indent=2) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp_name, mode)
-        os.replace(tmp_name, target)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
-        raise
-    _fsync_directory(target.parent)
-
-
-def _fsync_directory(directory: Path) -> None:
-    """Persist the rename itself (best effort).
-
-    Without it a power loss can bring the old file back (never a torn one). Platforms or
-    filesystems that cannot open or fsync a directory (e.g. Windows) are ignored.
-    """
-    try:
-        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+    content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+    atomic_write_bytes(target, content, new_file_mode=NEW_SETTINGS_FILE_MODE)

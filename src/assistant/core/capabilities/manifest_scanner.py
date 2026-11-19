@@ -138,12 +138,13 @@ class ManifestScanner:
             definitions[definition.capability_id] = definition
             states[definition.capability_id] = parsed.state
         if not issues:
-            issues.extend(self._validate(definitions))
+            issues.extend(self.validate(definitions))
         content_key = frozenset((f.state.path.name, f.state.sha256) for f in parsed_files)
         retry = any(f.retry or f.racy for f in parsed_files)
         return ManifestCandidate(tuple(issues), definitions, states, content_key, retry)
 
-    def _validate(self, definitions: dict[str, CapabilityDefinition]) -> list[CapabilityLoadIssue]:
+    def validate(self, definitions: dict[str, CapabilityDefinition]) -> list[CapabilityLoadIssue]:
+        """Cross-file validation of ``definitions`` (nested references + the validator)."""
         issues = validate_nested_references(definitions)
         if self._validator is not None:
             try:
@@ -180,5 +181,6 @@ class ManifestScanner:
         except ManifestParseError as exc:
             return _ParsedFile(state, None, tuple(exc.messages), racy=racy)
         except Exception as exc:  # parser bug: never let it escape into a turn
-            message = f"[{path.name}] unexpected parse error: {exc}"
+            # Only the class: the message of a parser bug may quote the manifest.
+            message = f"[{path.name}] unexpected parse error ({type(exc).__name__})"
             return _ParsedFile(state, None, (message,), racy=racy)

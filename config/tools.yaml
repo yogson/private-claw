@@ -12,6 +12,24 @@ tools:
     entrypoint: assistant.agent.tools.memory_propose_update:memory_propose_update
     enabled: true
 
+  # Capability manifest self-editing (bound by the capability_admin capability). Only
+  # manifests with self_edit: true are editable, each edit only after user approval.
+  - tool_id: capability_read
+    entrypoint: assistant.agent.tools.capability_edit:capability_read
+    enabled: true
+
+  - tool_id: capability_propose_edit
+    entrypoint: assistant.agent.tools.capability_edit:capability_propose_edit
+    enabled: true
+
+  - tool_id: capability_history
+    entrypoint: assistant.agent.tools.capability_edit:capability_history
+    enabled: true
+
+  - tool_id: capability_propose_rollback
+    entrypoint: assistant.agent.tools.capability_edit:capability_propose_rollback
+    enabled: true
+
   - tool_id: obsidian_wiki_search
     entrypoint: assistant.agent.tools.obsidian_wiki_search:obsidian_wiki_search
     enabled: true

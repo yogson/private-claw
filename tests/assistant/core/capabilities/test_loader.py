@@ -1,5 +1,6 @@
 """Unit tests for load_capability_definitions and startup validation."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,8 +8,10 @@ import yaml
 
 from assistant.core.capabilities.loader import (
     CapabilityLoadError,
+    ManifestParseError,
     discover_capability_manifests,
     load_capability_definitions,
+    parse_capability_manifest,
 )
 from assistant.core.capabilities.resolver import expand_nested_capabilities
 from assistant.core.capabilities.schemas import CapabilityDefinition
@@ -285,3 +288,49 @@ def test_load_unknown_nested_key_fails(tmp_path: Path) -> None:
 def test_tracked_manifests_pass_strict_schema(config_name: str) -> None:
     root = Path(__file__).resolve().parents[4] / config_name
     assert load_capability_definitions(config_dir=root)
+
+
+@pytest.mark.parametrize("key", ["1", "~", "true", "!!binary c2VsZl9lZGl0"])
+def test_non_string_top_level_key_is_a_parse_error(key: str) -> None:
+    with pytest.raises(ManifestParseError, match="top-level keys must be strings"):
+        parse_capability_manifest("x.yaml", f"capability_id: x\n{key}: y\n".encode())
+
+
+# --- S7: MCP server settings must be plain JSON (they are json.dumps'ed at launch) ---
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        (".nan", "nan is not valid JSON"),
+        ("-.inf", "-inf is not valid JSON"),
+        ("2024-01-01", "value of type date"),
+        ("2024-01-01T10:00:00", "value of type datetime"),
+        ("!!binary YQ==", "value of type bytes"),
+        ("!!set {a: null}", "value of type set"),
+        ("{1: x}", "key of type int"),
+        ("{true: x}", "key of type bool"),
+        ("{!!binary YQ==: 1, a: 2}", "key of type bytes"),
+        ("[ok, [.nan]]", "s.x[1][0]: nan"),
+    ],
+)
+def test_non_json_mcp_server_values_are_rejected(value: str, problem: str) -> None:
+    raw = f"capability_id: c\nclaude_code_settings:\n  mcp_servers:\n    s: {{x: {value}}}\n"
+    with pytest.raises(ManifestParseError) as info:
+        parse_capability_manifest("c.yaml", raw.encode())
+    assert problem in info.value.messages[0]
+
+
+@pytest.mark.parametrize("value", ["true", "1", "1.5", "null", '"s"', "[1, {a: [null]}]", "{}"])
+def test_plain_json_mcp_server_values_are_accepted(value: str) -> None:
+    raw = f"capability_id: c\nclaude_code_settings:\n  mcp_servers:\n    s: {{x: {value}}}\n"
+    definition = parse_capability_manifest("c.yaml", raw.encode())
+    assert definition.claude_code_settings is not None
+    json.dumps(definition.claude_code_settings.mcp_servers, allow_nan=False)
+
+
+@pytest.mark.parametrize("depth", [500, 1000, 5000])
+def test_deeply_nested_manifest_is_a_parse_error_not_a_crash(depth: int) -> None:
+    raw = "capability_id: c\nprompt: " + "[" * depth + "]" * depth + "\n"
+    with pytest.raises(ManifestParseError, match="RecursionError"):
+        parse_capability_manifest("c.yaml", raw.encode())

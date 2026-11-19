@@ -132,6 +132,12 @@ class CapabilityCatalog(CapabilityCatalogInterface):
         """Register ``callback`` for successful swaps to a new revision."""
         self._subscribers.append(callback)
 
+    def validate_candidate(
+        self, definitions: Mapping[str, CapabilityDefinition]
+    ) -> list[CapabilityLoadIssue]:
+        """Cross-file checks of a reload (nested references + the configured validator)."""
+        return self._scanner.validate(dict(definitions))
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

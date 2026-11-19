@@ -88,6 +88,11 @@ This document is normative for boundary governance across the `docs/assistant_v1
 
 - Owns:
   - manifest discovery/validation,
+  - agent-proposed manifest edits (`CapabilityEditService`: validation, backup/history,
+    atomic write, catalog reload); the confirmation flow only adapts it (kind
+    `capability_edit`) and Telegram only renders the generic confirmation, including
+    its attachments (core produces the full prompt diff, already split into parts;
+    the channel adds headers, orders and delivers them),
   - runtime capability selection support and invocation policy checks,
   - command/template safety controls.
 - Must not own:

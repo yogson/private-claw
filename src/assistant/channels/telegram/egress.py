@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyParameters,
     WebAppInfo,
 )
 
@@ -71,10 +72,17 @@ class TelegramEgress:
 
         Returns True on success. Raises TelegramSendError after exhausting retries.
         """
+        await self.send_message_ids(response, chat_id)
+        return True
+
+    async def send_message_ids(self, response: ChannelResponse, chat_id: int) -> list[int]:
+        """Like :meth:`send`, returning the Telegram message ids of the sent chunks (a
+        chunk whose id Telegram did not report is missing from the list)."""
+        message_ids: list[int] = []
         last_error = ""
         attempts_made = 0
 
-        use_formatting = response.parse_mode is None
+        use_formatting = response.parse_mode is None and not response.plain_text
         if use_formatting:
             formatted_chunks = format_markdown_for_telegram(response.text)
         else:
@@ -108,8 +116,16 @@ class TelegramEgress:
                         send_kwargs["entities"] = chunk_entities
                     else:
                         send_kwargs["parse_mode"] = response.parse_mode
-                    await self._bot.send_message(**send_kwargs)
+                    if chunk_index == 0 and response.reply_to_message_id is not None:
+                        send_kwargs["reply_parameters"] = ReplyParameters(
+                            message_id=response.reply_to_message_id,
+                            allow_sending_without_reply=False,
+                        )
+                    message = await self._bot.send_message(**send_kwargs)
                     sent_chunks += 1
+                    message_id = getattr(message, "message_id", None)
+                    if isinstance(message_id, int):
+                        message_ids.append(message_id)
                 if self._audit_logger is not None:
                     self._audit_logger.log_egress_success(
                         chat_id=chat_id,
@@ -125,7 +141,7 @@ class TelegramEgress:
                         trace_id=response.trace_id,
                         attempt=attempt,
                     )
-                return True
+                return message_ids
             except TelegramRetryAfter as exc:
                 last_error = str(exc)
                 if self._audit_logger is not None:

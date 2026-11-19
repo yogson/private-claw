@@ -46,7 +46,9 @@ def _request(
 
 def test_approved_label_is_per_kind() -> None:
     assert status_text(_request("s", status=ConfirmationStatus.APPROVED)) == "✅ Saved."
-    other = _request("s", kind="capability_edit", status=ConfirmationStatus.APPROVED)
+    edit = _request("s", kind="capability_edit", status=ConfirmationStatus.APPROVED)
+    assert status_text(edit) == "✅ Applied."
+    other = _request("s", kind="some_future_kind", status=ConfirmationStatus.APPROVED)
     assert status_text(other) == "✅ Approved."
 
 

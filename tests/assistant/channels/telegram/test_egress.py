@@ -53,6 +53,19 @@ class TestTelegramEgresSend:
         mock_send.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_plain_text_response_is_sent_verbatim(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        response = _make_interactive_response().model_copy(
+            update={"text": "excerpt: Use __init__ and *bold*", "plain_text": True}
+        )
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            assert await egress.send(response, chat_id=123) is True
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["text"] == "excerpt: Use __init__ and *bold*"
+        assert kwargs.get("parse_mode") is None and "entities" not in kwargs
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
     async def test_interactive_send_success(self) -> None:
         egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
         with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
@@ -95,6 +108,30 @@ class TestTelegramEgresSend:
         retried_chunk = mock_send.call_args_list[2].kwargs["text"]
         assert first_chunk != second_chunk
         assert second_chunk == retried_chunk
+
+    @pytest.mark.asyncio
+    async def test_reply_to_is_sent_on_the_first_chunk_and_ids_are_returned(self) -> None:
+        from types import SimpleNamespace
+
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        response = _make_text_response().model_copy(
+            update={"text": "A" * 5000, "plain_text": True, "reply_to_message_id": 77}
+        )
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            mock_send.side_effect = [SimpleNamespace(message_id=90), SimpleNamespace(message_id=91)]
+            ids = await egress.send_message_ids(response, chat_id=123)
+        assert ids == [90, 91]
+        first, second = (c.kwargs for c in mock_send.call_args_list)
+        reply = first["reply_parameters"]
+        assert reply.message_id == 77 and reply.allow_sending_without_reply is False
+        assert "reply_parameters" not in second
+
+    @pytest.mark.asyncio
+    async def test_no_reply_parameters_without_reply_to(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            assert await egress.send(_make_interactive_response(), chat_id=123) is True
+        assert "reply_parameters" not in mock_send.call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_long_interactive_send_is_split_and_keyboard_only_on_last_chunk(self) -> None:

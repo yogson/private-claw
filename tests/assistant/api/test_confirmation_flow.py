@@ -7,6 +7,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +30,8 @@ from assistant.channels.telegram.models import (
 from assistant.core.config.schemas import TelegramChannelConfig
 from assistant.core.confirmation import (
     CONFIRMATION_RESOLVED_MARKER,
+    ConfirmationAttachment,
+    ConfirmationDecision,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
     ConfirmationOutcome,
@@ -650,3 +653,174 @@ async def test_max_size_memory_proposal_is_one_message_and_status_fits_edit() ->
     edited = adapter.edit_message_text.await_args.args[2]  # type: ignore[attr-defined]
     assert len(edited.encode("utf-16-le")) // 2 <= 4096
     assert edited.endswith("✅ Saved.")
+
+
+# --- S9: attachment parts are delivered in full before the buttons ----------------
+
+
+def _attachment_adapter(fail_part: int | None = None) -> tuple[TelegramAdapter, list[Any]]:
+    """Adapter recording every send in order; part sends get ids 1001, 1002, ..."""
+    adapter = _adapter()
+    sends: list[Any] = []
+
+    async def send_ids(response: Any, chat_id: int) -> list[int]:
+        sends.append(response)
+        if fail_part is not None and len(sends) == fail_part:
+            raise RuntimeError("telegram down")
+        return [1000 + len(sends)]
+
+    async def send(response: Any, chat_id: int) -> bool:
+        sends.append(response)
+        return True
+
+    adapter.send_response_message_ids = AsyncMock(side_effect=send_ids)  # type: ignore[method-assign]
+    adapter.send_response = AsyncMock(side_effect=send)  # type: ignore[method-assign]
+    return adapter, sends
+
+
+async def _pending_with_parts(
+    service: ConfirmationService, parts: list[str]
+) -> ConfirmationRequest:
+    draft = ConfirmationDraft(
+        kind="capability_edit",
+        payload={},
+        summary_for_user="Capability edit: cap\n  • prompt: changed (see parts)",
+        dedupe_key="k",
+        attachments=[ConfirmationAttachment(title="Prompt change for cap", parts=parts)],
+    )
+    request = (await service.request(SESSION, draft)).request
+    assert request is not None
+    return request
+
+
+async def _deliver(adapter: TelegramAdapter, service: ConfirmationService, request: Any) -> None:
+    await deliver_with_confirmations(
+        adapter,
+        service,
+        response=None,
+        confirmations=[request],
+        chat_id=CHAT_ID,
+        trace_id="t",
+    )
+
+
+async def test_parts_are_sent_before_the_buttons_which_reply_to_part_1() -> None:
+    adapter, sends = _attachment_adapter()
+    service = _service()
+    parts = ["+ " + "я" * 3698, "+ " + "🧠" * 1849, "- last line"]
+    request = await _pending_with_parts(service, parts)
+    short = request.confirmation_id[:8]
+
+    await _deliver(adapter, service, request)
+
+    assert len(sends) == 4
+    *part_msgs, buttons = sends
+    for index, (message, part) in enumerate(zip(part_msgs, parts, strict=True), start=1):
+        assert message.text == (
+            f"Prompt change for cap — part {index}/3 (confirmation {short})\n\n{part}"
+        )
+        assert message.plain_text is True and not message.actions
+        assert len(message.text.encode("utf-16-le")) // 2 <= 4096
+    assert part_msgs[0].reply_to_message_id is None
+    assert [m.reply_to_message_id for m in part_msgs[1:]] == [1001, 1001]
+    assert buttons.ui_kind == "inline_keyboard" and len(buttons.actions) == 2
+    assert buttons.reply_to_message_id == 1001
+    assert f"This message is a reply to part 1 (confirmation {short})" in buttons.text
+    assert "Prompt change for cap (3 parts)" in buttons.text
+    assert request.status == ConfirmationStatus.PENDING
+
+
+@pytest.mark.parametrize("failing", [1, 2, 3])
+async def test_failed_part_fails_the_confirmation_frees_the_slot_and_sends_no_buttons(
+    failing: int,
+) -> None:
+    adapter, sends = _attachment_adapter(fail_part=failing)
+    service = _service()
+    request = await _pending_with_parts(service, ["p1", "p2", "p3"])
+
+    await _deliver(adapter, service, request)
+
+    assert len(sends) == failing  # nothing after the failed part
+    assert not any(s.actions for s in sends)
+    adapter.send_response.assert_not_awaited()  # type: ignore[attr-defined]
+    assert request.status == ConfirmationStatus.FAILED
+    assert request.result is not None and request.result.status == "not_delivered"
+    assert f"Part {failing} of 3" in request.detail and "buttons were not shown" in request.detail
+    assert service.pending_for_session(SESSION) is None
+    assert (await _pending(service)).is_pending  # the session slot is free again
+
+
+async def test_part_send_reporting_no_message_id_counts_as_not_delivered() -> None:
+    adapter, sends = _attachment_adapter()
+    adapter.send_response_message_ids = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    service = _service()
+    request = await _pending_with_parts(service, ["p1"])
+
+    await _deliver(adapter, service, request)
+
+    adapter.send_response.assert_not_awaited()  # type: ignore[attr-defined]
+    assert request.status == ConfirmationStatus.FAILED
+    assert service.pending_for_session(SESSION) is None
+
+
+async def test_button_failure_after_all_parts_fails_the_confirmation() -> None:
+    adapter, sends = _attachment_adapter()
+    adapter.send_response = AsyncMock(side_effect=RuntimeError("blocked"))  # type: ignore[method-assign]
+    service = _service()
+    request = await _pending_with_parts(service, ["p1", "p2"])
+
+    await _deliver(adapter, service, request)
+
+    assert len(sends) == 2
+    assert request.status == ConfirmationStatus.FAILED
+    assert service.pending_for_session(SESSION) is None
+
+
+async def test_resolved_message_keeps_the_parts_note_and_fits() -> None:
+    from assistant.channels.telegram.confirmation_render import render_resolved_text
+
+    service = _service()
+    request = await _pending_with_parts(service, ["p1"])
+    await service.resolve(request.confirmation_id, ConfirmationDecision.REJECT)
+    text = render_resolved_text("", request)
+    assert "📎 Sent in full above: Prompt change for cap (1 part)" in text
+    assert text.endswith("❌ Rejected.")
+
+
+async def test_memory_confirmation_is_unaffected_by_attachments() -> None:
+    adapter, sends = _attachment_adapter()
+    service = _service()
+    request = await _pending(service)
+
+    await _deliver(adapter, service, request)
+
+    adapter.send_response_message_ids.assert_not_awaited()  # type: ignore[attr-defined]
+    (buttons,) = sends
+    assert buttons.reply_to_message_id is None
+    assert "📎" not in buttons.text and "part 1" not in buttons.text
+    assert request.status == ConfirmationStatus.PENDING
+
+
+async def test_max_size_capability_summary_with_parts_note_is_not_truncated() -> None:
+    from assistant.core.confirmation import ATTACHMENT_TITLE_MAX_UTF16
+    from assistant.core.confirmation.service import SUMMARY_MAX_CHARS
+
+    adapter, sends = _attachment_adapter()
+    service = _service()
+    draft = ConfirmationDraft(
+        kind="capability_edit",
+        payload={},
+        summary_for_user="s" * SUMMARY_MAX_CHARS,
+        dedupe_key="k",
+        attachments=[
+            ConfirmationAttachment(title="t" * ATTACHMENT_TITLE_MAX_UTF16, parts=["p" * 3700])
+        ],
+    )
+    request = (await service.request(SESSION, draft)).request
+    assert request is not None
+
+    await _deliver(adapter, service, request)
+
+    part, buttons = sends
+    assert "truncated" not in part.text and part.text.endswith("p" * 3700)
+    assert "truncated" not in buttons.text and "read every part before deciding." in buttons.text

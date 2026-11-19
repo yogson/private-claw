@@ -118,12 +118,23 @@ Idempotency rule:
 ## User Confirmations (Normative)
 
 `CMP_CORE_CONFIRMATION_SERVICE` (`assistant.core.confirmation`) is the single mechanism for actions that need an
-explicit user decision. Memory updates are the first kind (`memory_update`); other kinds (e.g. capability-manifest
-edits) plug in by registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff).
+explicit user decision. Kinds: `memory_update` (memory proposals) and `capability_edit` (agent-proposed capability
+manifest edits and rollbacks; see `domains/capabilities.md` "Agent-Driven Manifest Editing"). Other kinds plug in by
+registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff). A kind can
+also attach content that the user must receive in full before deciding (`attachments`, below).
 
 Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `origin_tool_call_id`, `payload`,
-`summary_for_user`, `dedupe_key`, `status` (`pending|approved|rejected|expired|failed`), `created_at`, `expires_at`,
-`resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
+`summary_for_user`, `dedupe_key`, `attachments`, `status` (`pending|approved|rejected|expired|failed`), `created_at`,
+`expires_at`, `resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
+
+Attachments (`ConfirmationAttachment`: `title`, `parts`): optional, empty for `memory_update`. `capability_edit` uses
+one for a prompt change: the full prompt diff, see `domains/capabilities.md`. Core produces the content, already
+split into ordered parts of at most `ATTACHMENT_PART_MAX_UTF16` (3700) UTF-16 units, with a one-line title of at
+most `ATTACHMENT_TITLE_MAX_UTF16` (120). The model rejects anything larger, so content is split and never truncated;
+`summary_for_user`'s cap does not apply to it. A channel only renders and delivers. It must deliver every part
+before the buttons, bind the buttons visibly to the parts, and never show usable buttons unless every part was
+delivered. Any part that fails makes the confirmation undelivered (below). Attachments are not written to the
+history record (the record carries the summary). On resolve or expiry only the button message is edited.
 
 Rules:
 - State is in memory only. After a restart unknown ids resolve as "no longer valid". When the user presses a
@@ -139,7 +150,8 @@ Rules:
   still-pending id is left alone. History is then re-read, so the same turn sees the outcome. The store deduplicates
   records by event id, so a later press of the old button adds no second record.
   Only results of the first-party confirmation-creating tools in `CONFIRMATION_TOOL_NAMES`
-  (`assistant.core.confirmation.history`; currently `memory_propose_update`) are scanned, and only ids in the
+  (`assistant.core.confirmation.history`; currently `memory_propose_update`, `capability_propose_edit` and
+  `capability_propose_rollback`) are scanned, and only ids in the
   service's own format (16 lowercase hex chars, `is_confirmation_id`). Output of any other tool (MCP servers, fetched
   JSON, external APIs) is untrusted and may use the same shape; it must never become a trusted resolution record.
   Every new confirmation-creating tool (e.g. capability edits) must be added to `CONFIRMATION_TOOL_NAMES`.
@@ -161,7 +173,9 @@ Rules:
   decisions are no-ops that return the existing final state.
 - Approval runs the per-kind handler (`ConfirmationHandlerInterface.apply`). For `memory_update` only
   `written|updated|deleted|touched` writer statuses count as applied; anything else is `failed` with the writer
-  reason. The blocking writer runs in `asyncio.to_thread`.
+  reason. The blocking writer runs in `asyncio.to_thread`. For `capability_edit` only a written manifest that the
+  catalog serves counts as `applied`; `stale`, `not_editable`, `rejected_invalid`, `backup_failed`, `write_failed` and
+  `reload_rejected` are `failed` with a precise detail.
 - Only a button press is approval; text replies never resolve a confirmation.
 - `summary_for_user` is capped at `SUMMARY_MAX_CHARS` (3500) with an explicit "[truncated: N more chars not shown]"
   note. Kinds where the user must see everything they approve reject over-long proposals before requesting.
@@ -176,8 +190,10 @@ Rules:
   responses).
 - Undelivered confirmations never block the session. A confirmation whose buttons were not sent is discarded with a
   `failed` record (outcome status `not_delivered`), which frees the session slot at once and tells the agent the user
-  never saw it. This covers a failed or cancelled send, an error while building the turn's response or the
-  confirmation message, and a missing chat id. The Telegram glue wraps response building
+  never saw it. This covers a failed or cancelled send (of an attachment part or of the button message), an error
+  while building the turn's response or the confirmation message, and a missing chat id. A failed part is
+  named in the detail ("Part k of N of the content the user must read before deciding could not be delivered,
+  so the confirmation buttons were not shown. Nothing was applied."). The Telegram glue wraps response building
   (`discard_confirmations_on_error`) and delivery (`try/finally` in `deliver_with_confirmations`).
 - If the turn itself fails or is cancelled, its confirmations are discarded without a record
   (`discard(..., record=False)`), which frees the session slot at once. Most failures (model/API errors, a

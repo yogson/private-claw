@@ -26,10 +26,12 @@ from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap_with_catalog
 from assistant.core.capabilities import ClaudeCodeSettingsSync, SubagentMcpServersSync
 from assistant.core.capabilities.catalog import CapabilityCatalog
+from assistant.core.capabilities.edit_service import CapabilityEditService
 from assistant.core.capabilities.resolver import resolve_policy
 from assistant.core.capabilities.subagent_mcp import SubagentMcp, build_subagent_mcp
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.confirmation import (
+    CapabilityEditHandler,
     ConfirmationHandlerRegistry,
     ConfirmationService,
     MemoryUpdateHandler,
@@ -147,8 +149,18 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ) from None
         memory_writer = Mem0MemoryWriteService(runtime_config.memory, data_root=data_root)
         memory_retrieval = Mem0RetrievalService(runtime_config.memory)
+        # Agent-proposed manifest edits (kind capability_edit): applied only on approval,
+        # then picked up live through capability_catalog.reload().
+        capability_edit_service = CapabilityEditService(
+            capability_catalog,
+            retention=runtime_config.app.capability_history_retention,
+            max_prompt_parts=runtime_config.app.capability_edit_max_prompt_parts,
+            known_tool_ids=[t.tool_id for t in runtime_config.tools.tools],
+        )
         confirmations = ConfirmationService(
-            handlers=ConfirmationHandlerRegistry([MemoryUpdateHandler(memory_writer)]),
+            handlers=ConfirmationHandlerRegistry(
+                [MemoryUpdateHandler(memory_writer), CapabilityEditHandler(capability_edit_service)]
+            ),
             recorder=SessionConfirmationRecorder(store.sessions),
             ttl_seconds=runtime_config.app.confirmation_ttl_seconds,
         )
@@ -224,6 +236,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             vocabulary_store=vocabulary_store,
             capability_catalog=capability_catalog,
             confirmation_service=confirmations,
+            capability_edit_service=capability_edit_service,
         )
         telegram_completion = _build_delegation_feedback_handler(
             orchestrator, adapter, confirmations

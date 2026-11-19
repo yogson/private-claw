@@ -36,7 +36,7 @@ Define the manifest-driven capability and skill ecosystem for v1, including disc
 | Model ID | File Pattern | Required Fields | Purpose |
 |---|---|---|---|
 | `CMP_DATA_MODEL_TOOL_DEFINITION` | `config/tools.yaml` | `tool_id`, `entrypoint`, `enabled`, `default_params` | Tool registration and global defaults |
-| `CMP_DATA_MODEL_CAPABILITY_DEFINITION` | `config/capabilities/*.yaml` | `capability_id`, `prompt`, `tools` | Capability = prompt + toolset + per-tool overrides |
+| `CMP_DATA_MODEL_CAPABILITY_DEFINITION` | `config/capabilities/*.yaml` | `capability_id`, `prompt`, `tools` | Capability = prompt + toolset + per-tool overrides; optional `self_edit` opt-in for agent-proposed edits |
 | `CMP_DATA_MODEL_CAPABILITY_POLICY` | `config/capabilities.yaml` | `enabled_capabilities`, `denied_capabilities` | Operator policy: which capability manifests are active |
 | `CMP_DATA_MODEL_SKILL_MANIFEST` | `plugins/skills/*/manifest.yaml` | `skill_id`, `version`, `entrypoint`, `required_capabilities`, `capabilities` | Skill registration and dependencies |
 | `CMP_DATA_MODEL_MCP_SERVER_REGISTRY` | `config/mcp_servers.yaml` | `server_id`, `transport`, `enabled`, `connection` | External MCP server registration and connection policy |
@@ -284,6 +284,294 @@ Derived state follows revisions:
 Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
 `mcp_servers.yaml` and the other config domains.
 
+## Agent-Driven Manifest Editing (`self_edit`, [#54](https://github.com/yogson/private-claw/issues/54))
+
+The agent can propose edits to capability manifests. Nothing is ever written without an
+explicit user approval through the generic confirmation mechanism (kind `capability_edit`,
+see `domains/agent.md` "User Confirmations").
+
+Opt-in and scope:
+- `self_edit: StrictBool = false` in `CapabilityDefinition` (a quoted `"true"`/`"yes"` or
+  `1` is a validation error). Only manifests a human marked with the plain YAML boolean
+  `self_edit: true` are readable/editable by the agent (YAML 1.1 `yes`/`on` load as true
+  but do not opt in), and only if the file (after
+  following symlinks) lives inside the active config dir (e.g. `config.local/`). A symlink
+  that resolves elsewhere is `not_editable`; a symlink inside the config dir is written at
+  its target, so the link survives.
+- The agent may change any field **except** `capability_id` (a rename is create + delete,
+  both out of scope) and `self_edit` (only a human sets or clears it). Creating, deleting or
+  renaming capabilities is not supported. `tools.yaml`, `capabilities.yaml` and the other
+  config domains are never edited.
+- There is no content filtering: the approver checks the content. The service only
+  validates structure.
+
+Components:
+- `core/capabilities/edit_service.py` — `CapabilityEditService`: read, propose (validation),
+  apply, history, rollback. All domain logic lives here.
+- `core/capabilities/edit_summary.py` — the approver-facing summary.
+- `core/confirmation/capability_edit.py` — `build_capability_edit_draft` and
+  `CapabilityEditHandler` (registered in `ConfirmationHandlerRegistry` in `api/lifespan.py`).
+- `agent/tools/capability_edit.py` — thin tools, bound by the `capability_admin` capability
+  (`config/capabilities/capability_admin.yaml`, not enabled by default):
+
+| Tool | Result |
+|---|---|
+| `capability_read(capability_id)` | `{status: ok, capability_id, file, self_edit, raw_yaml, base_sha256, revision}` |
+| `capability_propose_edit(capability_id, old_string, new_string, reason, base_sha256)` | `pending_confirmation {confirmation_id, deduplicated, note}` / `another_confirmation_pending` / `rejected_invalid` / `not_editable` / `stale` / `unavailable` (with `reason`) |
+| `capability_history(capability_id, limit=10)` | `{status: ok, entries: [{history_id, created_at, sha256, reason, confirmation_id, op}]}` |
+| `capability_propose_rollback(capability_id, history_id, reason, base_sha256)` | same shape as `capability_propose_edit` |
+
+`not_editable` results also list `editable_capabilities`. Both propose tools are in
+`CONFIRMATION_TOOL_NAMES`.
+
+Proposal validation (no write):
+1. Resolve `capability_id` → file through the catalog snapshot (see opt-in rules above).
+   The file on disk must parse with `self_edit: true` and pass the structural check of
+   step 5, else `not_editable` (so a file that already hides a second opt-in is never
+   edited).
+2. sha256 of the raw bytes ≠ `base_sha256` → `stale` ("call capability_read again").
+3. Exact match on the **raw text**: `old_string` non-empty, different from `new_string`,
+   exactly one occurrence, else `rejected_invalid`. The replacement keeps comments and
+   formatting outside the edited span byte-identical (no YAML round-trip, no new dependency).
+4. The result must parse and validate against the strict schema (`extra="forbid"`), keep
+   the parsed `capability_id` and `self_edit: true` unchanged, name only tools from the
+   tools registry (`tools.yaml`) in `tool_overrides` keys and `tools` bindings it adds
+   (keys that already existed are tolerated), and pass the catalog's
+   cross-file checks on a candidate snapshot (`validate_candidate`: nested references,
+   tool bindings of the default policy).
+5. Structural guard of the protected keys (`core/capabilities/manifest_structure.py`,
+   `rejected_invalid`), run on the `yaml.compose` node tree **before** parsing, never on
+   the text (YAML escapes such as `"self\x5fedit"` and merge keys hide keys from text
+   matching): exactly one YAML document with a mapping root; no merge keys (`<<`) and no
+   aliases anywhere; scalar keys only; no two keys of one mapping equal after unescaping
+   and NFKC + casefold (so duplicates, quoting and case variants collide); no top-level key
+   that only normalises to `self_edit`/`capability_id`; exactly one top-level `self_edit`
+   and one `capability_id`; `self_edit` is the plain boolean `true`. Comments may mention
+   `self_edit` freely. The same check runs at propose, on rollback content and again at
+   apply.
+6. The draft payload is `{op: edit, capability_id, file, base_sha256, new_sha256,
+   old_string, new_string, reason, base_revision}`; rollbacks carry `op: rollback` and
+   `target_history_id` instead of the strings. `dedupe_key` = sha256 of
+   `(capability_id, base_sha256, op, old_string, new_string | history_id)`.
+
+Summary (`summary_for_user`, `core/capabilities/edit_summary.py`): a structural diff of the
+parsed manifests (`model_dump` before vs. after in Python mode, so shorthands such as
+`command_allowlist: [git]` appear with their effective defaults and free-form MCP values keep
+their real types). Headline with id and file name, the reason (clipped to 300 chars with
+`(+N chars hidden)`), then the changed fields. The rendering of security-sensitive (⚠) changes
+is deliberately simple, and its invariants are property-tested
+(`tests/assistant/core/capabilities/test_edit_summary.py`):
+
+- **Type-strict change detection.** Values are compared by their canonical form, which
+  differs whenever the type or the value differs anywhere in the tree: `true` vs `1`, `1` vs
+  `1.0`, `0.0` vs `-0.0`, a string vs bytes, a date vs a string, a set vs a list are changes,
+  and dict keys are matched type-strictly (`true:` and `1:` are different keys). Values that
+  are not JSON-native are rendered with a tag (`!!binary 61`, `!!timestamp "2024-01-01"`,
+  `!!set [...]`, `!!float .nan`), never as `null` or a plain string (such values are rejected
+  in `claude_code_settings.mcp_servers` anyway, see below).
+- **Full value before → after, ASCII only.** Every changed ⚠ leaf or list is one line
+  `⚠ path: <full old value> → <full new value>`. Strings are `json.dumps(...,
+  ensure_ascii=True)`, so every non-ASCII character — a Cyrillic or Greek lookalike, a
+  fullwidth letter, a combining mark, a blank-rendering filler — shows as `\uXXXX`, and so
+  do newlines and control characters. Keys and entry identities that are not plain ASCII
+  identifiers are shown the same way (`mcp_servers["g\u0456thub"]`). Everything a manifest
+  controls on a ⚠ line is ASCII, so the `→` separator and the markers below cannot be forged.
+- **Lists are shown whole, in order** (`args`, `permissions.allow` / `deny`, `nested_capabilities`,
+  ...): there is no added / removed item view, so a reorder is always visible. Lists of
+  entries with a unique string identity (`tool_id`, `id`, `command_pattern`, `name`) are
+  matched by it: each changed field of an entry is its own line (`…command_allowlist[git].allowed_args_pattern: "^status$" → ".*"`),
+  and any order change other than appending prints both identity sequences
+  (`⚠ tools (order of tool_id): ["a", "b"] → ["c", "a", "b"]`).
+- **Nothing is skipped.** A key or entry present on one side only is shown with its full
+  value against `(absent)`, so every field of an added block is listed, `[]`, `{}` and `null`
+  included. A line that sets `delegation_allowed_backends` or `delegation_model_allowlist`
+  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. Removing a
+  tool override field, or a whole override (`tool_overrides.<tool>`, `tool_overrides`,
+  `tools[<tool>].params_override`), does not clear it: the value from another override of
+  the tool, else tools.yaml, applies (`agent/tools/registry.py` merges them). Such a line
+  gets `[note: a removed tool override is inherited, not cleared: another override of this
+  tool or tools.yaml applies]`, plus what the field means when it is set nowhere if that is
+  wide: `delegation_default_permission_mode` → the built-in `auto` (the second-widest
+  mode), the delegation allowlists → NO restriction, the delegation token caps → no cap.
+- **Never cut.** If the ⚠ lines do not all fit the summary cap, the proposal is
+  `rejected_invalid` and the agent is asked for smaller edits (or to let the user edit by
+  hand); a ⚠ line is never truncated or dropped in favour of another.
+
+Secrets: inside `claude_code_settings.mcp_servers.<server>`, every value at or below an
+`env` / `headers` key or a secret-looking key (token, secret, password, api key, auth,
+credential, cookie, private key) is shown as `<hidden>` whatever its type, also when the
+agent changes its type (`env: {...}` → `"x"`) or replaces an enclosing value. Dicts keep
+their key names; a `KEY=value` list item is split at the first `=` and keeps `KEY` only when
+it is an upper-case variable name followed by a real value (a padded base64 secret such as
+`dGhpc2lz==` is hidden whole). A change that touches only hidden values says
+`(secret value changed)`. **The approver cannot verify `env` / `headers` value changes in
+Telegram: only the key names are visible** (e.g. `GITHUB_READ_ONLY: "1" → "0"` or a new
+`NODE_OPTIONS` / `LD_PRELOAD` value shows as `<hidden>`). Reject any env / header change you
+did not ask for, or make it by hand. Secrets elsewhere (e.g. a `?token=` in an MCP `url` or in
+`args`) are shown, so keep them in `env` / `headers`.
+The secret-key match is a deliberate over-approximation: `auth` matches anywhere in a key,
+so a whole `oauth: {client_secret: …, scope: all}` block is masked, `scope` included. It is
+not narrowed to whole tokens (`auth`, `authorization`, `x-auth-token`, `*_auth*`). Under a
+narrowed rule, the children of `oauth`, `oauth2` or `googleOAuth` would be shown unless their
+own names look secret, and real secrets are often stored under such children with neutral
+names (`oauth.key`, `oauth.access`, `oauth.bearer`). The cost is that a non-secret value
+below such a key cannot be verified in Telegram. Reject what you cannot verify, or make the
+change by hand.
+
+`prompt` is the only non-sensitive field, and it is shown **in full, outside the summary**.
+The summary has one short line that is never dropped:
+`• prompt: changed (32 → 439 chars, +1/−0 lines, see 1 attached part)`. The full change is a
+unified-style line diff (`core/capabilities/prompt_diff.py`): `@@ -a,b +c,d @@` hunk headers,
+then every removed line (`- `), every added line (`+ `) and up to 3 context lines (two spaces)
+around each change. An added prompt (`""` before) or a removed one is shown whole. Lines are
+split at `\n` only. Control, format (bidi, zero-width), separator, non-U+0020 space and
+blank-rendering characters (including `\r`, tabs and U+2028) are escaped as `\uXXXX` by the
+same character set as the reason. Other non-ASCII text is kept as is: prompts are often
+Russian, and `\uXXXX` for every Cyrillic letter would make them unreadable. Homoglyphs are
+therefore not exposed in this view. That is fine for free text the model reads, unlike the ⚠
+identifiers, where a lookalike could redirect a tool or a server. Backslashes are not escaped, so a
+literal `\u202e` typed into a prompt looks the same as an escaped U+202E. Both are visible,
+and neither can hide text. A content line always
+starts with `- `, `+ ` or two spaces, so prompt text cannot forge a hunk header.
+
+The diff is split into parts of at most 3700 UTF-16 units (`PROMPT_PART_MAX_UNITS`). A line
+that fits one part is never split. A longer line fills the rest of the current part and
+continues in the next ones, each continuation piece starting with `+…` / `-…` / ` …`. A
+part never starts with a blank context line (an empty prompt line renders as two spaces, and
+a part of only those would be an invisible message that `ConfirmationAttachment` refuses):
+such a part starts with an empty continuation of the previous part's last line (`+…`, ` …`,
+nothing after it) instead. No line is dropped. The
+parts travel with the confirmation as a `ConfirmationAttachment` (`domains/agent.md`, "User
+Confirmations"). Telegram sends them as separate plain-text messages before the buttons, each
+headed `Prompt change for <capability_id> — part i/N (confirmation <first 8 hex of the id>)`
+(`domains/telegram.md`). The bot sends the parts directly above the buttons, and the button
+message is a reply to the real part 1. The agent's own text comes before the parts. The tool
+result gives the agent the confirmation id, so its text can imitate a part header and appear
+above the real parts. It cannot change, remove or reorder the real parts. Read the parts
+directly above the buttons (the reply preview of the button message points to part 1).
+Nothing is ever cut. A prompt change that needs more than
+`app.capability_edit_max_prompt_parts` parts (default 8, up to 50) is `rejected_invalid`, and
+the agent is asked for a smaller prompt edit. So is a prompt side with more than 5000 lines
+(`MAX_PROMPT_LINES`). The diff uses `difflib.SequenceMatcher` (default autojunk) on the lines
+between the common prefix and suffix. It is near-linear: 3000 modified lines take about
+0.2 s. `difflib.ndiff`, whose similarity search took minutes on a few hundred modified lines,
+is not used. When a line repeats very often (autojunk), the diff may show more lines than a
+minimal one, never fewer.
+
+The reason keeps readable non-ASCII text but has whitespace collapsed and control, format
+(bidi, zero-width), separator and blank-rendering characters escaped as `\uXXXX`, so it cannot
+forge extra summary lines. Non-ASCII symbols (`⚠`, `✅`, `❌`, `→`, `•`, `⌛`, emoji; Unicode
+categories So / Sm / Sk) are escaped as well. `[[` becomes `[ [`, so the
+`[[CONFIRMATION_RESOLVED]]` marker cannot appear. Nothing on the Reason line can look like a
+summary line, a status line or the history marker. The failure detail of an applied
+confirmation (the "Failed:" status line) is sanitised like the reason minus the symbol rule.
+The summary is capped in UTF-16 code units (the unit Telegram counts) at `SUMMARY_MAX_CHARS`.
+The ⚠ lines and the prompt line are never dropped: if they do not fit, the proposal is
+refused. Other non-⚠ lines (there are none today) would be dropped with an explicit
+`(+N more changes not shown)` line. `No manifest fields change` appears only when the
+canonical forms of the parsed manifests are identical.
+
+Bounds and errors: an agent-edited manifest may be at most 256 KiB and nest at most 32
+collections (`MAX_MANIFEST_BYTES` / `MAX_NESTING_DEPTH` in `manifest_structure.py`, checked
+on PyYAML's non-recursive event stream before composing); a larger file on disk is
+`not_editable`. Any unexpected exception during propose, rollback-propose or apply
+(RecursionError, MemoryError, a library bug) becomes `rejected_invalid` naming only the
+exception class, and the four tools never let an exception fail the turn.
+`claude_code_settings.mcp_servers` must be plain JSON (string keys, strings, numbers,
+booleans, null, lists, mappings; no dates, `!!binary`, `!!set`, `.nan` / `.inf`), because
+it is passed to Claude Code as `json.dumps` output; the schema rejects anything else. This
+check (`check_json_native`) runs on every catalog load and reload, for every manifest (not
+only agent-editable ones), and is linear in the size of the YAML document. `yaml.safe_load`
+shares one object between an anchor and all its aliases, so the walk memoises containers
+by identity and visits each one once. It rejects a value that refers to itself (a recursive
+alias) and one with more than 100 000 nodes once aliases are expanded (`MAX_JSON_NODES`),
+which `json.dumps` would otherwise materialise at sub-agent launch. A < 800-byte alias chain
+(`x{i}: &a{i} [*a{i-1} ×10]`, 7–10 levels) is refused in about 1 ms instead of stalling the
+catalog and every capability tool. Aliases are still accepted in the manifests themselves
+(only agent-edited manifests refuse them, step 5 above), and every manifest in `config/` and
+`config.local/` loads unchanged. YAML
+errors are reported as class and line / column only (`[a.yaml] YAML parse error:
+ScannerError (line 7, column 31)`), never with PyYAML's message or source excerpt: that
+excerpt may quote a secret, possibly of a manifest the agent cannot read, and the message
+reaches catalog errors, logs, edit outcomes and the `[[CONFIRMATION_RESOLVED]]` record.
+
+Apply (`CapabilityEditHandler.apply` on Approve; per-capability `asyncio.Lock`, file I/O in
+`asyncio.to_thread`):
+1. Re-resolve the file (must be the same path), re-read it. sha256 ≠ `base_sha256` →
+   `failed`/`stale` ("changed between proposal and approval … nothing was written").
+2. `self_edit` revoked by a human in the meantime → `failed`/`not_editable`.
+3. Re-run the replacement (or read the history entry) and the full validation; the result
+   must hash to the approved `new_sha256`.
+4. Back up the current bytes to `<config_dir>/.capability_history/<capability_id>/<history_id>.yaml`
+   (`history_id = <UTC YYYYmmddTHHMMSSffffff>Z__<sha8>`) plus a `.json` sidecar
+   `{history_id, created_at, op, capability_id, file, sha256, new_sha256, reason,
+   confirmation_id, session_id, user_id, base_revision, target_history_id}`, both written
+   atomically. A failed backup aborts with `backup_failed`.
+5. Atomic write of the new content (`core/capabilities/atomic_file.py`: temp file in the
+   target's directory, fsync, `os.replace`, file mode kept, best-effort directory fsync).
+   A failed write leaves the original intact and removes the backup (`write_failed`).
+6. `catalog.reload("capability_edit:<confirmation_id>")`. If the catalog does not serve the
+   new content (e.g. another manifest broke meanwhile and the reload was rejected as a
+   whole), the previous bytes are restored and the outcome is `failed`/`reload_rejected`.
+   Otherwise the outcome is `applied` with `revision N → M` and the backup's history id.
+7. History is pruned to the newest `app.capability_history_retention` versions per
+   capability (default 50) after a successful apply.
+
+The handler never reports `applied` unless the write happened and the catalog serves it;
+the `[[CONFIRMATION_RESOLVED]]` record carries the real status and detail. Reject / expire
+write nothing. Audit: `capability_edit.proposed` (tool), `capability_edit.applied`,
+`capability_edit.rolled_back`, `capability_edit.failed`, `capability_edit.restored`,
+`capability_edit.history_pruned`, with `confirmation_id`, `session_id`, `user_id`,
+`capability_id`, `op`, `base_sha256`/`new_sha256` and the revisions; `capabilities.reloaded`
+logs the revision bump with `reason=capability_edit:<confirmation_id>`.
+
+History and rollback:
+- The history directory is a hidden sibling of `capabilities/` in the active config dir, so
+  it travels with the config and the catalog never loads it as manifests. `.capability_history/`
+  is in `.gitignore` (this matters when the active config dir is the tracked repo default
+  `config/`). Backups are verbatim copies of the manifests, so they contain whatever the
+  manifests contain, including inline `claude_code_settings.mcp_servers.*.env` secrets
+  (backup files are created with mode `0600`). When the history dir is inside a git work
+  tree and `git check-ignore` does not confirm that it is ignored (or git is unavailable),
+  `CapabilityEditService` logs `capability_edit.history_in_git_work_tree` (warning, at most
+  once per process): keep the directory ignored and never commit it.
+- Each entry is the content **before** an applied edit or rollback, so a rollback can itself
+  be rolled back. `capability_propose_rollback` validates the entry (well-formed id, sidecar
+  hash matches the file) and the restored content (same checks as an edit, including
+  `self_edit: true`) and goes through the same confirmation and apply steps.
+- A human can always roll back by copying a history file over the manifest; live reload
+  picks it up.
+
+Known limitation (out of scope by owner decision): sub-agents with direct filesystem
+access can write `<config_dir>/capabilities/*.yaml` directly. That is any Claude Code task
+whose permission mode allows file edits: `acceptEdits`, `auto` (the built-in default of
+`delegation_default_permission_mode`, see [subagents.md](subagents.md)) or
+`bypassPermissions`, including agent-node ingress jobs. With live reload such a write takes
+effect on the next turn **without** a confirmation and without a history entry. External
+edits are not backed up by the catalog.
+
+The sub-agent permission ceiling is itself a capability field
+(`tool_overrides.delegate_subagent_task.delegation_default_permission_mode`), so a
+self-edit proposal can raise it (e.g. to `bypassPermissions`). Like every non-`prompt`
+field it is shown as a full `⚠` line (before → after, the `manual` alias normalised to
+`default`) and applies only after approval.
+
+Operator setup: add the four `capability_*` entries from `config/tools.yaml` to the active
+`tools.yaml`, enable `capability_admin` (policy or nesting), and mark the manifests the
+agent may edit with `self_edit: true`.
+
+> **Secrets in editable manifests.** `capability_read` returns the **full raw YAML** of an
+> opted-in manifest to the model (and therefore to the provider and the session store),
+> including any inline secrets such as `claude_code_settings.mcp_servers.*.env` values. The
+> history backups hold the same content. The confirmation summary masks env/header values,
+> but the model still sees them. Keep secrets out of `self_edit` manifests: put them in the
+> environment of the process or in a non-editable manifest, and reference them from there.
+
+Event loop: `capability_propose_edit` / `capability_propose_rollback` run the service's file
+I/O and validation (including entrypoint resolution) in `asyncio.to_thread`; the sync tools
+`capability_read` / `capability_history` are run in a worker thread by pydantic-ai, and
+apply runs in `asyncio.to_thread` under the per-capability lock.
+
 ## Static Activation Model and Tool-Call Invariants (current, in force)
 
 Active capabilities are static, resolved by `resolve_active_capabilities` over the CapabilityCatalog
@@ -470,7 +758,7 @@ Memory-only representation is acceptable for low-risk context:
 
 - If a memory-stored procedure is reused or considered safety-critical, promote it to a capability before autonomous execution.
 - On first capture of a procedural workflow, require user confirmation to save as a capability.
-- When procedure semantics change, create a new capability version; do not silently mutate prior behavior.
+- When procedure semantics change, do not silently mutate prior behavior: either create a new capability version, or edit an opted-in (`self_edit: true`) manifest through the `capability_edit` flow, where every change is explicitly approved by the user and the previous version is kept in the capability history.
 - Memory should store mapping metadata, such as: `intent=deploy_to_prod`, `project=<id>`, `capability_id=<cap.deploy.prod.vN>`, and default input values.
 
 ### Execution Contract

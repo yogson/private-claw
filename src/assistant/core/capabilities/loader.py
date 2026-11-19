@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from assistant.core.capabilities.manifest_structure import describe_yaml_error
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.loader import resolve_config_dir
 
@@ -64,13 +65,30 @@ def parse_capability_manifest(file_name: str, raw: bytes) -> CapabilityDefinitio
     try:
         data = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
-        raise ManifestParseError([f"[{file_name}] YAML parse error: {exc}"]) from exc
+        # Never str(exc): PyYAML quotes the offending line, which may hold a secret, and
+        # these messages reach the catalog errors, the logs and edit outcomes.
+        raise ManifestParseError(
+            [f"[{file_name}] YAML parse error: {describe_yaml_error(exc)}"]
+        ) from exc
+    except Exception as exc:  # RecursionError on deep nesting, MemoryError, parser bugs
+        raise ManifestParseError(
+            [f"[{file_name}] YAML parse error: cannot be parsed ({type(exc).__name__})"]
+        ) from exc
     if not isinstance(data, dict):
         raise ManifestParseError([f"[{file_name}] expected dict, got {type(data).__name__}"])
+    bad_keys = sorted({type(k).__name__ for k in data if not isinstance(k, str)})
+    if bad_keys:
+        raise ManifestParseError(
+            [f"[{file_name}] top-level keys must be strings (found {', '.join(bad_keys)} keys)"]
+        )
     try:
         return CapabilityDefinition(**data)
     except ValidationError as exc:
         raise ManifestParseError(format_validation_error(file_name, exc)) from exc
+    except Exception as exc:  # e.g. RecursionError on deeply nested free-form values
+        raise ManifestParseError(
+            [f"[{file_name}] validation failed ({type(exc).__name__})"]
+        ) from exc
 
 
 def load_capability_definitions(

@@ -203,9 +203,7 @@ class TestCapabilityMenuFollowsCatalog:
         self._write(tmp_path, "a.yaml", "capability_id: alpha\nenv: {GITHUB_TOKEN: ghp_s3cr3t\n")
         text = self._menu(svc)
         assert "ghp_s3cr3t" not in text and "GITHUB_TOKEN" not in text
-        assert (
-            "`[a.yaml] YAML parse error: while parsing a flow mapping (line 2, column 6)`" in text
-        )
+        assert "`[a.yaml] YAML parse error: ParserError (line 3, column 1)`" in text
 
     def test_read_error_shows_the_file_name_but_no_absolute_path(self, tmp_path: Path) -> None:
         self._write(tmp_path, "a.yaml", "capability_id: alpha\n")
