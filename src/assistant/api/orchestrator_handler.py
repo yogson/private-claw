@@ -9,6 +9,7 @@ from pydantic_ai import ModelHTTPError, UnexpectedModelBehavior
 
 from assistant.api.confirmation_handler import (
     deliver_with_confirmations,
+    discard_confirmations_on_error,
     handle_confirmation_callback,
 )
 from assistant.api.utils import build_text_channel_response, build_webapp_button_channel_response
@@ -370,7 +371,12 @@ def _build_orchestrator_handler(
             )
         if orch_result is None:
             return None
-        response = _build_turn_response(adapter, orch_result, orch_event.session_id, event.trace_id)
+        # From here on the turn's confirmations are pending: if building the response
+        # fails, discard them so they cannot block the session for the whole TTL.
+        async with discard_confirmations_on_error(confirmations, orch_result.confirmations):
+            response = _build_turn_response(
+                adapter, orch_result, orch_event.session_id, event.trace_id
+            )
         return await deliver_with_confirmations(
             adapter,
             confirmations,

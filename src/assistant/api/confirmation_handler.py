@@ -8,6 +8,10 @@ Confirmation callbacks are always answered explicitly (real status toast + edite
 message without keyboard) and never fall through to the orchestrator/LLM.
 """
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import structlog
 
 from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
@@ -39,40 +43,93 @@ async def deliver_with_confirmations(
 
     Without confirmations the response is returned unchanged for the caller to send.
     With confirmations everything is sent here (so the buttons arrive last) and None
-    is returned. Undeliverable confirmations are discarded so they cannot block the
-    session's single pending slot.
+    is returned. Every confirmation whose buttons were not sent (send or build error,
+    no chat, cancellation) is discarded with a ``failed`` record, so it cannot block
+    the session's single pending slot and the agent learns it was never shown.
     """
     if not confirmations:
         return response
-    if not chat_id:
-        await _discard_all(service, confirmations)
-        logger.warning("confirmation.render.no_chat_id", trace_id=trace_id)
-        return response
-    if response is not None:
-        try:
-            await adapter.send_response(response, chat_id=chat_id)
-        except Exception:
-            logger.exception("confirmation.render.response_send_failed", chat_id=chat_id)
+    delivered: set[str] = set()
+    try:
+        if not chat_id:
+            logger.warning("confirmation.render.no_chat_id", trace_id=trace_id)
+            return response
+        if response is not None:
+            try:
+                await adapter.send_response(response, chat_id=chat_id)
+            except Exception:
+                logger.exception("confirmation.render.response_send_failed", chat_id=chat_id)
+        for request in confirmations:
+            if await _send_confirmation(adapter, request, chat_id=chat_id, trace_id=trace_id):
+                delivered.add(request.confirmation_id)
+        return None
+    finally:
+        await discard_undelivered(
+            service, [r for r in confirmations if r.confirmation_id not in delivered]
+        )
+
+
+@asynccontextmanager
+async def discard_confirmations_on_error(
+    service: ConfirmationService | None, confirmations: list[ConfirmationRequest]
+) -> AsyncIterator[None]:
+    """Discard ``confirmations`` if the wrapped block (e.g. building the turn's
+    response before delivery) raises or is cancelled, then re-raise."""
+    try:
+        yield
+    except BaseException:
+        await discard_undelivered(service, confirmations)
+        raise
+
+
+async def discard_undelivered(
+    service: ConfirmationService | None, confirmations: list[ConfirmationRequest]
+) -> None:
+    """Mark confirmations whose buttons never reached the user ``failed`` (with a record).
+
+    Shielded and error-tolerant: runs from ``finally``/``except`` blocks, including
+    on cancellation. Already-resolved requests are left unchanged.
+    """
+    if service is None:
+        return
     for request in confirmations:
+        try:
+            await asyncio.shield(service.discard(request.confirmation_id, _NOT_DELIVERED_DETAIL))
+        except Exception:
+            logger.warning(
+                "confirmation.render.discard_failed",
+                confirmation_id=request.confirmation_id,
+                exc_info=True,
+            )
+
+
+async def _send_confirmation(
+    adapter: TelegramAdapter, request: ConfirmationRequest, *, chat_id: int, trace_id: str
+) -> bool:
+    try:
         prompt = adapter.build_confirmation_response(
             chat_id=chat_id, trace_id=trace_id, request=request
         )
-        try:
-            await adapter.send_response(prompt, chat_id=chat_id)
-            logger.info(
-                "confirmation.render.sent",
-                confirmation_id=request.confirmation_id,
-                kind=request.kind,
-                chat_id=chat_id,
-            )
-        except Exception:
-            logger.exception(
-                "confirmation.render.send_failed",
-                confirmation_id=request.confirmation_id,
-                chat_id=chat_id,
-            )
-            await _discard_all(service, [request])
-    return None
+        sent = await adapter.send_response(prompt, chat_id=chat_id)
+    except Exception:
+        logger.exception(
+            "confirmation.render.send_failed",
+            confirmation_id=request.confirmation_id,
+            chat_id=chat_id,
+        )
+        return False
+    if sent is False:
+        logger.warning(
+            "confirmation.render.not_sent", confirmation_id=request.confirmation_id, chat_id=chat_id
+        )
+        return False
+    logger.info(
+        "confirmation.render.sent",
+        confirmation_id=request.confirmation_id,
+        kind=request.kind,
+        chat_id=chat_id,
+    )
+    return True
 
 
 async def handle_confirmation_callback(
@@ -149,12 +206,3 @@ async def _resolve(
         # restart): tell the agent it expired so it does not wait for an outcome.
         await service.record_unknown_expired(parsed.confirmation_id, session_id)
     return result.request
-
-
-async def _discard_all(
-    service: ConfirmationService | None, confirmations: list[ConfirmationRequest]
-) -> None:
-    if service is None:
-        return
-    for request in confirmations:
-        await service.discard(request.confirmation_id, _NOT_DELIVERED_DETAIL)

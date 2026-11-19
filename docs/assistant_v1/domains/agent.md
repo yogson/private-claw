@@ -129,8 +129,14 @@ Rules:
 - State is in memory only. After a restart unknown ids resolve as "no longer valid". When the user presses a
   button of such a confirmation, its signature proves which session issued it, so an `expired` record is written
   to that session (`ConfirmationService.record_unknown_expired`).
-  Known limitation: a confirmation that was pending at restart and is never pressed gets no record. Its replayed
-  tool result still says `pending_confirmation`, but nothing blocks a new proposal (the in-memory slot is free).
+- Pending at restart and never pressed: at turn start, after `expire_due(session_id)` and before the agent runs, the
+  orchestrator scans the replayed tool results whose `status` is `pending_confirmation`
+  (`unresolved_pending_ids`). Every such `confirmation_id` without a `confirmation-<id>` record is reconciled
+  (`ConfirmationService.reconcile_pending`). An id the service no longer knows gets an `expired` record
+  ("pending when the assistant restarted ... propose it again if still needed"). A known id that is already final
+  but was never recorded gets its final record. A still-pending id is left alone. History is then re-read, so the same
+  turn sees the outcome. The store deduplicates records by event id, so a later press of the old button adds no
+  second record.
 - TTL: `app.confirmation_ttl_seconds` (default 86400). The orchestrator calls `expire_due(session_id)` before each turn
   reads history, so a timed-out confirmation's `expired` record is visible to that turn. Expiry is also checked on
   request/resolve. Resolved entries are pruned one TTL after resolution (on request, resolve and sweep).
@@ -152,8 +158,15 @@ Rules:
   `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user cannot forge an outcome.
 - The orchestrator returns the confirmations created during a turn in `OrchestratorResult.confirmations`; channel
   handlers must render each one (normal turns, delegation-feedback turns, and alongside ask_question / web-app
-  responses). If a turn fails or a confirmation cannot be delivered, it is discarded (`failed`) so it cannot block
-  the session.
+  responses).
+- Undelivered confirmations never block the session. A confirmation whose buttons were not sent is discarded with a
+  `failed` record (outcome status `not_delivered`), which frees the session slot at once and tells the agent the user
+  never saw it. This covers a failed or cancelled send, an error while building the turn's response or the
+  confirmation message, and a missing chat id. The Telegram glue wraps response building
+  (`discard_confirmations_on_error`) and delivery (`try/finally` in `deliver_with_confirmations`).
+- If the turn itself fails, its confirmations are discarded without a record (`discard(..., record=False)`): the
+  failed turn's tool call is not in history, so the user never saw the proposal and the agent has nothing to relate
+  the record to. If the tool result did reach history, turn-start reconciliation writes the record.
 
 ### 1) Turn Classification (before retrieval)
 

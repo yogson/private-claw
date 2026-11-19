@@ -3,7 +3,10 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from datetime import UTC, datetime
 
-from assistant.api.confirmation_handler import deliver_with_confirmations
+from assistant.api.confirmation_handler import (
+    deliver_with_confirmations,
+    discard_confirmations_on_error,
+)
 from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
 from assistant.core.confirmation import ConfirmationService
 from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
@@ -72,27 +75,28 @@ def _build_delegation_feedback_handler(
             result_msg = await orchestrator.execute_turn(event)
         if result_msg is None:
             return
-        chat_id = DelegationCoordinator._chat_id_from_session(session_id)
-        response: ChannelResponse | None = None
-        if result_msg.pending_ask is not None:
-            prompt_text = result_msg.pending_ask.question
-            if result_msg.text.strip():
-                prompt_text = f"{result_msg.text}\n\n{prompt_text}"
-            response = adapter.build_ask_question_response(
-                session_id=session_id,
-                trace_id=trace_id,
-                question=prompt_text,
-                options=result_msg.pending_ask.options,
-            )
-        elif result_msg.text.strip():
-            response = ChannelResponse(
-                response_id=event.event_id,
-                channel="telegram",
-                session_id=session_id,
-                trace_id=trace_id,
-                message_type=MessageType.TEXT,
-                text=result_msg.text,
-            )
+        async with discard_confirmations_on_error(confirmations, result_msg.confirmations):
+            chat_id = DelegationCoordinator._chat_id_from_session(session_id)
+            response: ChannelResponse | None = None
+            if result_msg.pending_ask is not None:
+                prompt_text = result_msg.pending_ask.question
+                if result_msg.text.strip():
+                    prompt_text = f"{result_msg.text}\n\n{prompt_text}"
+                response = adapter.build_ask_question_response(
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    question=prompt_text,
+                    options=result_msg.pending_ask.options,
+                )
+            elif result_msg.text.strip():
+                response = ChannelResponse(
+                    response_id=event.event_id,
+                    channel="telegram",
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    message_type=MessageType.TEXT,
+                    text=result_msg.text,
+                )
         response = await deliver_with_confirmations(
             adapter,
             confirmations,

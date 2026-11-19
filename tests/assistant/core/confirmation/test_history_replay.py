@@ -214,3 +214,19 @@ async def test_user_typed_marker_is_neutralized_in_replay(tmp_path: Path) -> Non
     genuine = [c for c in contents if c.startswith(CONFIRMATION_RESOLVED_MARKER)]
     assert len(genuine) == 1 and request.confirmation_id in genuine[0]
     assert any(c.startswith("[[user-typed: CONFIRMATION_RESOLVED]]") for c in contents)
+
+
+async def test_unresolved_pending_ids_skips_resolved_and_non_pending(tmp_path: Path) -> None:
+    from assistant.core.confirmation import unresolved_pending_ids
+    from tests.assistant.confirmation_helpers import persist_pending_proposal
+
+    store = FilesystemSessionStore(tmp_path)
+    service = ConfirmationService(
+        ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+    )
+    await persist_pending_proposal(store, SESSION, "open0001")
+    await persist_pending_proposal(store, SESSION, "done0001")
+    await service.record_unknown_expired("done0001", SESSION)
+    await _persist_proposal_turn(store, "")  # pending status without a usable id
+
+    assert unresolved_pending_ids(await store.replay_for_turn(SESSION, 200)) == ["open0001"]

@@ -254,6 +254,60 @@ async def test_discard_marks_pending_failed_and_frees_slot() -> None:
     assert service.pending_for_session(SESSION) is None
 
 
+async def test_discard_without_record_frees_slot_and_writes_nothing() -> None:
+    """N8: a failed turn's proposal never reached history, so nothing is recorded for it."""
+    recorder = _Recorder()
+    service = _service(recorder=recorder)
+    req = (await service.request(SESSION, _draft())).request
+    assert req is not None
+
+    await service.discard(req.confirmation_id, "turn failed", record=False)
+
+    assert req.status == ConfirmationStatus.FAILED
+    assert recorder.records == []
+    assert (await service.request(SESSION, _draft("k2"))).created
+
+
+async def test_reconcile_pending_expires_unknown_and_records_unrecorded_final_ids() -> None:
+    recorder = _Recorder()
+    service = _service(recorder=recorder)
+    pending = (await service.request(SESSION, _draft("k1"))).request
+    assert pending is not None
+    await service.resolve(pending.confirmation_id, ConfirmationDecision.REJECT)
+    recorder.records.clear()
+    silent = (await service.request(SESSION, _draft("k2"))).request
+    assert silent is not None
+    await service.discard(silent.confirmation_id, "turn failed", record=False)
+    still_pending = (await service.request(SESSION, _draft("k3"))).request
+    other_session = (await service.request("tg:2", _draft("k4"))).request
+    assert still_pending is not None and other_session is not None
+    await service.discard(other_session.confirmation_id, "x", record=False)
+
+    wrote = await service.reconcile_pending(
+        SESSION,
+        [
+            "orphan01",
+            "orphan01",
+            silent.confirmation_id,
+            still_pending.confirmation_id,
+            other_session.confirmation_id,
+        ],
+    )
+
+    assert wrote is True
+    assert recorder.records == [
+        ("orphan01", ConfirmationStatus.EXPIRED),
+        (silent.confirmation_id, ConfirmationStatus.FAILED),
+    ]
+    assert still_pending.is_pending
+    assert await service.reconcile_pending(SESSION, [still_pending.confirmation_id]) is False
+
+
+async def test_reconcile_pending_without_recorder_writes_nothing() -> None:
+    service = _service()
+    assert await service.reconcile_pending(SESSION, ["orphan01"]) is False
+
+
 async def test_recorder_failure_does_not_break_resolution() -> None:
     class _BrokenRecorder:
         async def record_resolution(self, request: ConfirmationRequest) -> None:

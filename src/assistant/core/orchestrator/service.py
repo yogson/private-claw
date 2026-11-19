@@ -37,6 +37,7 @@ from assistant.core.confirmation import (
     ConfirmationRequestResult,
     ConfirmationService,
     neutralize_confirmation_marker,
+    unresolved_pending_ids,
 )
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
@@ -730,6 +731,8 @@ class Orchestrator:
             with self._session_traces.session_trace(session_id, turn_id):
                 await self._expire_due_confirmations(session_id)
                 records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
+                if await self._reconcile_pending_confirmations(session_id, records):
+                    records = await self._store.sessions.replay_for_turn(session_id, _REPLAY_BUDGET)
 
                 # Check if compaction is needed before building messages.
                 compact_records = await self._should_compact_session(session_id)
@@ -813,8 +816,30 @@ class Orchestrator:
                 "orchestrator.confirmation_expiry_failed", session_id=session_id, exc_info=True
             )
 
+    async def _reconcile_pending_confirmations(
+        self, session_id: str, records: list[SessionRecord]
+    ) -> bool:
+        # A proposal whose replayed tool result still says `pending_confirmation` but that
+        # this process no longer tracks (e.g. it was pending at restart) gets an `expired`
+        # record, so the agent stops waiting for it. True when history must be re-read.
+        if self._confirmations is None:
+            return False
+        pending_ids = unresolved_pending_ids(records)
+        if not pending_ids:
+            return False
+        try:
+            return await self._confirmations.reconcile_pending(session_id, pending_ids)
+        except Exception:
+            logger.warning(
+                "orchestrator.confirmation_reconcile_failed", session_id=session_id, exc_info=True
+            )
+            return False
+
     async def _discard_confirmations(self, created: list[ConfirmationRequest]) -> None:
         # A failed/cancelled turn never renders its confirmations; free the session slot.
+        # No history record: the failed turn's tool call is not in history, so the user
+        # never saw the proposal and the agent cannot relate the record to anything. If
+        # the tool result did reach history, reconcile_pending records the outcome later.
         if self._confirmations is None:
             return
         for request in created:
@@ -823,6 +848,7 @@ class Orchestrator:
                     self._confirmations.discard(
                         request.confirmation_id,
                         "The turn did not complete, so the confirmation was never shown.",
+                        record=False,
                     )
                 )
 
