@@ -67,6 +67,11 @@ def parse_capability_manifest(file_name: str, raw: bytes) -> CapabilityDefinitio
         raise ManifestParseError([f"[{file_name}] YAML parse error: {exc}"]) from exc
     if not isinstance(data, dict):
         raise ManifestParseError([f"[{file_name}] expected dict, got {type(data).__name__}"])
+    bad_keys = sorted({type(k).__name__ for k in data if not isinstance(k, str)})
+    if bad_keys:
+        raise ManifestParseError(
+            [f"[{file_name}] top-level keys must be strings (found {', '.join(bad_keys)} keys)"]
+        )
     try:
         return CapabilityDefinition(**data)
     except ValidationError as exc:

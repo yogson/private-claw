@@ -179,6 +179,18 @@ async def test_invalid_and_stale_proposals_create_nothing(
     assert confirmations.pending_for_session(SESSION) is None
 
 
+@pytest.mark.parametrize("key", ["1", "~", "!!binary c2VsZl9lZGl0"])
+async def test_non_string_top_level_key_is_a_rejection_not_an_exception(
+    edit_service: CapabilityEditService, confirmations: ConfirmationService, key: str
+) -> None:
+    # Reviewer repro S5: a TypeError used to escape the tool call.
+    ctx = _ctx(edit_service, confirmations)
+    result = await _propose(ctx, old="prompt: |", new=f"{key}: x\nprompt: |")
+    assert result["status"] == "rejected_invalid"
+    assert "top-level keys must be strings" in result["reason"]
+    assert confirmations.pending_for_session(SESSION) is None
+
+
 async def test_second_different_proposal_is_blocked(
     edit_service: CapabilityEditService, confirmations: ConfirmationService
 ) -> None:

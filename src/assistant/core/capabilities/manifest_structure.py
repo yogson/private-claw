@@ -11,8 +11,9 @@ unescaped:
 
 - exactly one YAML document whose root is a mapping;
 - no merge keys (``<<``) and no aliases anywhere in the document;
-- every mapping key is a scalar, and no mapping has two keys that are equal after
-  NFKC + casefold normalisation (so ``self_edit`` and ``Self_Edit`` collide);
+- every mapping key is a scalar, every top-level key a string, and no mapping has two
+  keys that are equal after NFKC + casefold normalisation (so ``self_edit`` and
+  ``Self_Edit`` collide);
 - top-level keys that only *normalise* to a protected key must be spelled exactly;
 - exactly one top-level ``self_edit`` and exactly one ``capability_id`` key;
 - ``self_edit`` is the plain YAML boolean ``true`` (not quoted, not ``yes``/``on``/``1``)
@@ -139,6 +140,13 @@ def _top_level(root: MappingNode) -> dict[str, Node]:
     counts = dict.fromkeys(PROTECTED_KEYS, 0)
     for key_node, value_node in root.value:
         key = key_node.value
+        if key_node.tag != _STR_TAG:
+            # ``1: x``, ``~: x``, ``!!binary ...: x`` construct non-str keys, which the
+            # schema cannot take as field names.
+            raise ManifestStructureError(
+                f"top-level keys must be strings (found a {key_node.tag.rsplit(':', 1)[-1]} "
+                f"key {key[:40]!r})"
+            )
         for protected in PROTECTED_KEYS:
             if key == protected:
                 counts[protected] += 1

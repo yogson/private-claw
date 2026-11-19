@@ -151,3 +151,26 @@ def test_self_edit_must_be_the_plain_boolean_true(value: str) -> None:
 def test_capability_id_must_be_a_string_scalar(value: str) -> None:
     message = _refused(f"capability_id: {value}\nself_edit: true\n")
     assert "capability_id must be a plain string" in message
+
+
+@pytest.mark.parametrize(
+    ("key", "kind"),
+    [
+        ("1", "int"),
+        ("~", "null"),
+        ("null", "null"),
+        ("true", "bool"),
+        ("1.5", "float"),
+        ("2001-01-01", "timestamp"),
+        ("!!binary c2VsZl9lZGl0", "binary"),
+        ("!!int '7'", "int"),
+    ],
+)
+def test_non_string_top_level_keys_are_refused(key: str, kind: str) -> None:
+    # Reviewer repro S5: these used to pass and make CapabilityDefinition(**data) raise.
+    assert f"top-level keys must be strings (found a {kind} key" in _refused(f"{key}: x\n" + BASE)
+
+
+def test_explicitly_tagged_string_keys_pass() -> None:
+    check_manifest_structure(BASE + "!!str mcp_servers: []\n")
+    check_manifest_structure(BASE + "'1': x\n")

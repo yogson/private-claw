@@ -7,8 +7,10 @@ import yaml
 
 from assistant.core.capabilities.loader import (
     CapabilityLoadError,
+    ManifestParseError,
     discover_capability_manifests,
     load_capability_definitions,
+    parse_capability_manifest,
 )
 from assistant.core.capabilities.resolver import expand_nested_capabilities
 from assistant.core.capabilities.schemas import CapabilityDefinition
@@ -285,3 +287,9 @@ def test_load_unknown_nested_key_fails(tmp_path: Path) -> None:
 def test_tracked_manifests_pass_strict_schema(config_name: str) -> None:
     root = Path(__file__).resolve().parents[4] / config_name
     assert load_capability_definitions(config_dir=root)
+
+
+@pytest.mark.parametrize("key", ["1", "~", "true", "!!binary c2VsZl9lZGl0"])
+def test_non_string_top_level_key_is_a_parse_error(key: str) -> None:
+    with pytest.raises(ManifestParseError, match="top-level keys must be strings"):
+        parse_capability_manifest("x.yaml", f"capability_id: x\n{key}: y\n".encode())

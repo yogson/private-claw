@@ -577,7 +577,7 @@ class CapabilityEditService:
                 STATUS_NOT_EDITABLE, f"cannot read {target.path.name}: {exc.strerror or exc}"
             ) from exc
         try:
-            definition = parse_capability_manifest(target.path.name, raw)
+            definition = _parse(target.path.name, raw)
         except ManifestParseError as exc:
             cause = exc.__cause__
             detail = (
@@ -625,7 +625,7 @@ class CapabilityEditService:
             ) from exc
         # 2. Schema.
         try:
-            after = parse_capability_manifest(name, new_text.encode("utf-8"))
+            after = _parse(name, new_text.encode("utf-8"))
         except ManifestParseError as exc:
             raise CapabilityEditError(
                 STATUS_REJECTED_INVALID,
@@ -749,6 +749,25 @@ class CapabilityEditService:
         return lock
 
 
+def _parse(file_name: str, raw: bytes) -> CapabilityDefinition:
+    """``parse_capability_manifest``; an unexpected exception (a parser / schema bug on
+    agent-controlled text) becomes a ManifestParseError instead of escaping the tool."""
+    try:
+        return parse_capability_manifest(file_name, raw)
+    except ManifestParseError:
+        raise
+    except Exception as exc:
+        # The message is not logged or returned: it could quote manifest content.
+        logger.warning(
+            "capability_edit.unexpected_parse_error",
+            file=file_name,
+            error_type=type(exc).__name__,
+        )
+        raise ManifestParseError(
+            [f"[{file_name}] unexpected validation error ({type(exc).__name__})"]
+        ) from exc
+
+
 def _summary(**kwargs: Any) -> str:
     """Approver summary; a change whose ⚠ lines do not all fit is refused, never cut."""
     try:
@@ -766,6 +785,13 @@ def _summary(**kwargs: Any) -> str:
             f"user in full (limit {exc.limit}); it cannot be shortened without hiding part of "
             "it, so propose a smaller edit (change less of this value at once) or ask the "
             "user to make the change by hand",
+        ) from exc
+    except Exception as exc:
+        logger.warning("capability_edit.summary_failed", error_type=type(exc).__name__)
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            f"the change summary for the user could not be built ({type(exc).__name__}); "
+            "nothing was proposed",
         ) from exc
 
 

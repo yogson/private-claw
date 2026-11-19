@@ -492,6 +492,95 @@ def test_unparsable_file_on_disk_does_not_quote_the_manifest_line(
     assert _SECRET not in err.reason
 
 
+# --- S5: unexpected parser / schema exceptions never escape -------------------------
+
+
+@pytest.mark.parametrize("key", ["1", "~", "!!binary c2VsZl9lZGl0"])
+def test_non_string_top_level_key_is_rejected_at_propose(
+    service: CapabilityEditService, key: str
+) -> None:
+    # Reviewer repro S5: used to raise TypeError out of propose_edit.
+    err = _error(_propose, service, "prompt: |", f"{key}: x\nprompt: |")
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "top-level keys must be strings" in err.reason
+
+
+def _boom_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    import assistant.core.capabilities.edit_service as module
+
+    real = module.parse_capability_manifest
+
+    def parse(file_name: str, raw: bytes) -> CapabilityDefinition:
+        if b"# boom" in raw:
+            raise TypeError("keywords must be strings")
+        return real(file_name, raw)
+
+    monkeypatch.setattr(module, "parse_capability_manifest", parse)
+
+
+def test_unexpected_validation_error_is_rejected_at_propose(
+    service: CapabilityEditService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _boom_parser(monkeypatch)
+    err = _error(_propose, service, "Be concise.", "Be concise. # boom")
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "unexpected validation error (TypeError)" in err.reason
+
+
+async def test_unexpected_validation_error_is_rejected_at_rollback_and_apply(
+    service: CapabilityEditService, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    history_id = service.history("editable")[0].history_id
+    entry = config_dir / HISTORY_DIR_NAME / "editable"
+    content = EDITABLE + "# boom\n"
+    (entry / f"{history_id}.yaml").write_text(content)
+    sidecar = json.loads((entry / f"{history_id}.json").read_text())
+    sidecar["sha256"] = _sha(content)
+    (entry / f"{history_id}.json").write_text(json.dumps(sidecar))
+    proposal = _propose(service, "Be brief.", "Be brief. # boom")
+    before = _manifest(config_dir).read_text()
+
+    _boom_parser(monkeypatch)
+    base = service.read("editable").base_sha256
+    err = _error(service.propose_rollback, "editable", history_id, "undo", base)
+    assert err.status == STATUS_REJECTED_INVALID and "TypeError" in err.reason
+    outcome = await _apply(service, proposal, "c2")
+    assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
+    assert "TypeError" in outcome.detail
+    assert _manifest(config_dir).read_text() == before
+
+
+async def test_non_string_key_in_a_tampered_payload_is_rejected_at_apply(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    new_text = EDITABLE.replace("prompt: |", "1: x\nprompt: |")
+    payload = {
+        **proposal.payload,
+        "old_string": "prompt: |",
+        "new_string": "1: x\nprompt: |",
+        "new_sha256": _sha(new_text),
+    }
+    outcome = await service.apply(payload, confirmation_id="c1", session_id="s", user_id=None)
+    assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
+    assert "top-level keys must be strings" in outcome.detail
+    assert _manifest(config_dir).read_text() == EDITABLE
+
+
+def test_unexpected_summary_error_is_rejected(
+    service: CapabilityEditService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import assistant.core.capabilities.edit_service as module
+
+    def broken(**_: Any) -> str:
+        raise TypeError("bug")
+
+    monkeypatch.setattr(module, "capability_change_summary", broken)
+    err = _error(_propose, service)
+    assert err.status == STATUS_REJECTED_INVALID and "TypeError" in err.reason
+
+
 # ---------------------------------------------------------------------------
 # apply
 # ---------------------------------------------------------------------------
