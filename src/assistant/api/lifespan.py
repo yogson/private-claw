@@ -22,8 +22,10 @@ from assistant.channels.telegram.usage import UsageStatsService
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.bootstrap import bootstrap_with_catalog
 from assistant.core.capabilities import ClaudeCodeSettingsSync, SubagentMcpServersSync
+from assistant.core.capabilities.edit_service import CapabilityEditService
 from assistant.core.capabilities.resolver import resolve_policy
 from assistant.core.confirmation import (
+    CapabilityEditHandler,
     ConfirmationHandlerRegistry,
     ConfirmationService,
     MemoryUpdateHandler,
@@ -101,8 +103,15 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ) from None
         memory_writer = Mem0MemoryWriteService(runtime_config.memory, data_root=data_root)
         memory_retrieval = Mem0RetrievalService(runtime_config.memory)
+        # Agent-proposed manifest edits (kind capability_edit): applied only on approval,
+        # then picked up live through capability_catalog.reload().
+        capability_edit_service = CapabilityEditService(
+            capability_catalog, retention=runtime_config.app.capability_history_retention
+        )
         confirmations = ConfirmationService(
-            handlers=ConfirmationHandlerRegistry([MemoryUpdateHandler(memory_writer)]),
+            handlers=ConfirmationHandlerRegistry(
+                [MemoryUpdateHandler(memory_writer), CapabilityEditHandler(capability_edit_service)]
+            ),
             recorder=SessionConfirmationRecorder(store.sessions),
             ttl_seconds=runtime_config.app.confirmation_ttl_seconds,
         )
@@ -190,6 +199,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             vocabulary_store=vocabulary_store,
             capability_catalog=capability_catalog,
             confirmation_service=confirmations,
+            capability_edit_service=capability_edit_service,
         )
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter, confirmations)

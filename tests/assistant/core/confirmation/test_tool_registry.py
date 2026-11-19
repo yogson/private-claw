@@ -94,6 +94,17 @@ def test_requester_discovery_finds_the_memory_tool() -> None:
     assert uses.get("assistant.agent.tools.memory_propose_update") == {"memory_propose_update"}
 
 
+def test_requester_discovery_finds_the_capability_edit_tools() -> None:
+    uses = _module_requester_uses()
+    assert uses.get("assistant.agent.tools.capability_edit") == {
+        "capability_propose_edit",
+        "capability_propose_rollback",
+    }
+    assert {"capability_propose_edit", "capability_propose_rollback"} <= CONFIRMATION_TOOL_NAMES
+    # Read-only capability tools never create confirmations, so they are not registered.
+    assert not {"capability_read", "capability_history"} & CONFIRMATION_TOOL_NAMES
+
+
 def test_every_requester_user_is_a_registered_confirmation_tool() -> None:
     entrypoints = {(module, attr) for module, attr in _tool_entrypoints().values()}
     unregistered: list[str] = []

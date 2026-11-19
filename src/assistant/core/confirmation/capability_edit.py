@@ -1,0 +1,54 @@
+"""
+Component ID: CMP_CORE_CONFIRMATION_SERVICE
+
+Capability-edit confirmation kind (``capability_edit``): draft building and the handler
+that applies an approved manifest edit or rollback through CapabilityEditService.
+
+The domain logic (validation, backup, atomic write, catalog reload) lives in
+``assistant.core.capabilities.edit_service``; this module only adapts it to the generic
+confirmation mechanism.
+"""
+
+from assistant.core.capabilities.edit_service import CapabilityEditService, EditProposal
+from assistant.core.confirmation.models import (
+    ConfirmationDraft,
+    ConfirmationOutcome,
+    ConfirmationRequest,
+)
+
+CAPABILITY_EDIT_KIND = "capability_edit"
+
+
+def build_capability_edit_draft(
+    proposal: EditProposal, origin_tool_call_id: str = "", origin_tool_name: str = ""
+) -> ConfirmationDraft:
+    """Wrap a validated proposal (edit or rollback) as a ``capability_edit`` draft."""
+    return ConfirmationDraft(
+        kind=CAPABILITY_EDIT_KIND,
+        payload=proposal.payload,
+        summary_for_user=proposal.summary,
+        dedupe_key=proposal.dedupe_key,
+        origin_tool_call_id=origin_tool_call_id,
+        origin_tool_name=origin_tool_name,
+    )
+
+
+class CapabilityEditHandler:
+    """Applies approved capability edits; reports the real outcome (never a false 'applied')."""
+
+    kind = CAPABILITY_EDIT_KIND
+
+    def __init__(self, service: CapabilityEditService) -> None:
+        self._service = service
+
+    async def apply(
+        self, request: ConfirmationRequest, *, user_id: str | None
+    ) -> ConfirmationOutcome:
+        """Re-check the precondition, back up, write atomically and reload the catalog."""
+        outcome = await self._service.apply(
+            request.payload,
+            confirmation_id=request.confirmation_id,
+            session_id=request.session_id,
+            user_id=user_id,
+        )
+        return ConfirmationOutcome(ok=outcome.ok, status=outcome.status, detail=outcome.detail)

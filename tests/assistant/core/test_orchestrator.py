@@ -1104,6 +1104,47 @@ class TestOrchestratorExecuteTurn:
         assert confirmations.pending_for_session("tg:123") is None
         assert result.confirmations == []
 
+    @pytest.mark.parametrize(
+        "tool_name", ["capability_propose_edit", "capability_propose_rollback"]
+    )
+    @pytest.mark.asyncio
+    async def test_requester_accepts_capability_edit_tools_and_deps_carry_the_service(
+        self,
+        tool_name: str,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+        edit_service = MagicMock()
+        seen: list[object] = []
+        draft = _memory_draft().model_copy(
+            update={"origin_tool_name": tool_name, "kind": "capability_edit"}
+        )
+
+        async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
+            deps = kwargs["deps"]
+            seen.append(deps.capability_edit_service)  # type: ignore[attr-defined]
+            await deps.confirmation_requester(draft)  # type: ignore[attr-defined]
+            return ("ok", [], None)
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_run_turn)
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+            capability_edit_service=edit_service,
+        )
+
+        result = await orch.execute_turn(_minimal_event(text="edit the capability"))
+
+        assert seen == [edit_service]
+        assert [c.kind for c in result.confirmations] == ["capability_edit"]
+
     @pytest.mark.asyncio
     async def test_expired_confirmations_are_recorded_before_history_is_read(
         self,

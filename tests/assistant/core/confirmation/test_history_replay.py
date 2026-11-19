@@ -251,6 +251,17 @@ async def test_unresolved_pending_ids_ignores_tools_that_do_not_create_confirmat
     assert unresolved_pending_ids(await store.replay_for_turn(SESSION, 200)) == [OPEN_ID]
 
 
+@pytest.mark.parametrize("tool_name", ["capability_propose_edit", "capability_propose_rollback"])
+async def test_unresolved_pending_ids_include_capability_edit_proposals(
+    tmp_path: Path, tool_name: str
+) -> None:
+    # Pending capability edits are reconciled after a restart or /stop like memory ones.
+    store = FilesystemSessionStore(tmp_path)
+    await persist_pending_proposal(store, SESSION, OPEN_ID, tool_name=tool_name)
+
+    assert unresolved_pending_ids(await store.replay_for_turn(SESSION, 200)) == [OPEN_ID]
+
+
 @pytest.mark.parametrize(
     "bad_id",
     [

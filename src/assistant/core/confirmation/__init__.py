@@ -5,6 +5,11 @@ Generic user-confirmation mechanism (memory updates first; other kinds plug in
 through ConfirmationHandlerRegistry).
 """
 
+from assistant.core.confirmation.capability_edit import (
+    CAPABILITY_EDIT_KIND,
+    CapabilityEditHandler,
+    build_capability_edit_draft,
+)
 from assistant.core.confirmation.handlers import (
     ConfirmationHandlerInterface,
     ConfirmationHandlerRegistry,
@@ -43,12 +48,14 @@ from assistant.core.confirmation.service import (
 )
 
 __all__ = [
+    "CAPABILITY_EDIT_KIND",
     "CONFIRMATION_RESOLVED_MARKER",
     "CONFIRMATION_TOOL_NAMES",
     "DEFAULT_CONFIRMATION_TTL_SECONDS",
     "MEMORY_BODY_MAX_CHARS",
     "MEMORY_UPDATE_KIND",
     "NOT_DELIVERED_OUTCOME_STATUS",
+    "CapabilityEditHandler",
     "ConfirmationDecision",
     "ConfirmationDraft",
     "ConfirmationHandlerInterface",
@@ -63,6 +70,7 @@ __all__ = [
     "ConfirmationUiRef",
     "MemoryUpdateHandler",
     "SessionConfirmationRecorder",
+    "build_capability_edit_draft",
     "build_memory_update_draft",
     "format_resolution_text",
     "is_confirmation_record",

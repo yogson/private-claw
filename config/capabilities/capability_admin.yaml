@@ -1,0 +1,32 @@
+# Capability self-editing: lets the agent propose edits to capability manifests that a
+# human opted in with `self_edit: true`. Every edit or rollback is applied only after the
+# user approves it with Telegram buttons; the previous version is kept in
+# <config_dir>/.capability_history/ for rollback. Enable it in capabilities.yaml (or nest
+# it into another capability) to use it.
+
+capability_id: capability_admin
+prompt: |
+  ### Editing capability manifests
+  Some capability manifests (prompt, tools, overrides) are opted in to your edits with
+  `self_edit: true`. Propose a change only when the user asks for one, or when a
+  capability's instructions are clearly wrong or missing and the user agrees.
+  - Always call capability_read first; pass its base_sha256 to the proposal and copy
+    old_string exactly from raw_yaml (unique, whitespace included). Keep edits minimal.
+  - capability_propose_edit / capability_propose_rollback never write anything: the user
+    gets Approve/Reject buttons with a summary. Explain the change in `reason`.
+  - You cannot change `capability_id` or `self_edit`, and you cannot create capabilities.
+  - The outcome arrives in history as [[CONFIRMATION_RESOLVED]] (kind capability_edit):
+    `approved` means it is live from the next turn; `failed` carries the reason (e.g.
+    stale: re-read and propose again). Never re-propose after a reject without new user
+    input.
+  - capability_history lists saved versions; capability_propose_rollback restores one.
+
+tools:
+  - tool_id: capability_read
+    enabled: true
+  - tool_id: capability_propose_edit
+    enabled: true
+  - tool_id: capability_history
+    enabled: true
+  - tool_id: capability_propose_rollback
+    enabled: true

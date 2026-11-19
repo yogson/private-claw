@@ -7,9 +7,12 @@ Placed at agent level to avoid circular imports with extensions (e.g. MCP bridge
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from assistant.core.confirmation.models import ConfirmationDraft, ConfirmationRequestResult
+
+if TYPE_CHECKING:
+    from assistant.core.capabilities.edit_service import CapabilityEditService
 
 # Hard cap on check_subagent_status/read_subagent_log calls for the same
 # task_id within one turn (the two tools share this budget). Prompt guidance
@@ -58,6 +61,8 @@ class TurnDeps:
         Callable[[ConfirmationDraft], Awaitable[ConfirmationRequestResult]] | None
     ) = None
     """Optional async callback that registers a user confirmation for the current session."""
+    capability_edit_service: "CapabilityEditService | None" = None
+    """Reads and validates capability manifest edits (capability_* tools); None = unavailable."""
 
 
 def consume_subagent_poll_budget(deps: TurnDeps, task_id: str) -> bool:

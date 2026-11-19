@@ -28,6 +28,7 @@ from assistant.agent.tools import build_tool_runtime_params
 from assistant.agent.tools.registry import active_capabilities_for, collect_enabled_tool_ids
 from assistant.agent.webapp_button_extractor import _extract_pending_webapp_buttons
 from assistant.core.capabilities.catalog import CapabilityCatalog
+from assistant.core.capabilities.edit_service import CapabilityEditService
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
@@ -168,9 +169,11 @@ class Orchestrator:
         usage_service: Any | None = None,
         capability_catalog: CapabilityCatalogInterface | None = None,
         confirmation_service: ConfirmationService | None = None,
+        capability_edit_service: CapabilityEditService | None = None,
     ) -> None:
         self._store = store
         self._confirmations = confirmation_service
+        self._capability_edit_service = capability_edit_service
         self._config = config
         self._idempotency = idempotency
         self._attachment_downloader = attachment_downloader
@@ -380,6 +383,7 @@ class Orchestrator:
             confirmation_requester=self._build_confirmation_requester(
                 session_id, created_confirmations
             ),
+            capability_edit_service=self._capability_edit_service,
         )
         try:
             response_text, new_msgs, usage = await adapter.run_turn(
