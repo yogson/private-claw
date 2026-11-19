@@ -150,6 +150,19 @@ def test_editable_ids_lists_only_opted_in_manifests(service: CapabilityEditServi
     assert service.editable_ids() == ["editable"]
 
 
+def test_editable_ids_skips_manifests_that_read_would_refuse(config_dir: Path) -> None:
+    caps = config_dir / "capabilities"
+    (caps / "loose.yaml").write_text("capability_id: loose\nself_edit: yes\nprompt: hi\n")
+    (caps / "hidden.yaml").write_text(
+        'capability_id: hidden\nself_edit: true\n"self\\x5fedit": true\nprompt: hi\n'
+    )
+    (caps / "plain.yaml").write_text("capability_id: plain\nself_edit: true\nprompt: hi\n")
+    catalog = CapabilityCatalog(config_dir, validator=_tool_validator, min_refresh_interval=0)
+    service = CapabilityEditService(catalog)
+    assert {"loose", "hidden"} <= set(catalog.current().definitions)
+    assert service.editable_ids() == ["editable", "plain"]
+
+
 def test_symlink_escaping_the_config_dir_is_not_editable(tmp_path: Path, config_dir: Path) -> None:
     outside = tmp_path / "outside.yaml"
     outside.write_text("capability_id: escaped\nself_edit: true\nprompt: x\n")

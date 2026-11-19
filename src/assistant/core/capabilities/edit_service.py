@@ -214,9 +214,24 @@ class CapabilityEditService:
     # ------------------------------------------------------------------
 
     def editable_ids(self) -> list[str]:
-        """Ids of the current snapshot's manifests that are opted in with ``self_edit``."""
+        """Ids of the current snapshot's manifests that :meth:`read` would accept.
+
+        A parsed ``self_edit`` of True is not enough: YAML 1.1 ``yes`` / ``on`` also parse
+        as True, and a file may hide a duplicate key. Each candidate runs the same checks
+        as :meth:`read` (plain ``self_edit: true``, structure, path), so the agent is never
+        offered a capability that then answers ``not_editable``.
+        """
         snapshot = self._catalog.current()
-        return sorted(cid for cid, d in snapshot.definitions.items() if d.self_edit)
+        ids: list[str] = []
+        for capability_id, definition in sorted(snapshot.definitions.items()):
+            if definition.self_edit is not True:
+                continue
+            try:
+                self._read_current(self._resolve(capability_id))
+            except CapabilityEditError:
+                continue
+            ids.append(capability_id)
+        return ids
 
     def read(self, capability_id: str) -> ManifestView:
         """Raw text and precondition hash of an editable manifest."""
