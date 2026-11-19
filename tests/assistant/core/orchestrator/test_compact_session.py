@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from assistant.core.config.schemas import CompactionConfig
+from assistant.core.orchestrator.payloads import records_to_messages
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import (
     SessionRecord,
@@ -685,6 +686,86 @@ class TestKeepRecentTurns:
         assert "t1" not in restored_turn_ids
         # Prior compaction summary is also preserved.
         assert "compaction-1" in restored_turn_ids
+
+
+def _resolution_turn(sequence: int, confirmation_id: str) -> list[SessionRecord]:
+    """A synthetic resolution turn as SessionConfirmationRecorder writes it."""
+    turn_id = f"confirmation-{confirmation_id}"
+    content = f'[[CONFIRMATION_RESOLVED]] {{"confirmation_id":"{confirmation_id}"}}'
+    return [
+        _rec(
+            sequence=sequence,
+            turn_id=turn_id,
+            event_id=turn_id,
+            payload={"message_id": f"msg-{turn_id}", "content": content},
+        ),
+        _rec(
+            sequence=sequence + 1,
+            turn_id=turn_id,
+            event_id=f"terminal-{turn_id}",
+            record_type=SessionRecordType.TURN_TERMINAL,
+            payload={"status": TurnTerminalStatus.COMPLETED.value},
+        ),
+    ]
+
+
+def _real_turn(sequence: int, turn_id: str, input_tokens: int = 1000) -> list[SessionRecord]:
+    return [
+        _rec(sequence=sequence, turn_id=turn_id),
+        _assistant_with_usage(sequence + 1, turn_id=turn_id, input_tokens=input_tokens),
+        _terminal(sequence + 2, turn_id=turn_id),
+    ]
+
+
+class TestConfirmationTurnsInCompaction:
+    """N7: synthetic confirmation-<id> turns do not count toward compaction thresholds."""
+
+    @pytest.mark.asyncio
+    async def test_kept_window_counts_real_turns_only(self) -> None:
+        cfg = _make_compaction_config(keep_recent_turns=2)
+        records = [
+            *_real_turn(0, "t1"),
+            *_resolution_turn(3, "a" * 16),
+            *_real_turn(5, "t2"),
+            *_real_turn(8, "t3"),
+            *_resolution_turn(11, "b" * 16),
+            *_real_turn(13, "t4"),
+            *_resolution_turn(16, "c" * 16),
+        ]
+        orch = _build_orchestrator(records, compaction_config=cfg)
+
+        assert await orch._compact_session("s1", "t", "u", records=records)  # noqa: SLF001
+
+        restored = orch._store.sessions.replace_session.call_args[0][1]  # noqa: SLF001
+        restored_turn_ids = {r.turn_id for r in restored}
+        # Same real turns as without the resolutions: the last two.
+        assert restored_turn_ids & {"t1", "t2", "t3", "t4"} == {"t3", "t4"}
+        # Resolutions inside the kept window are kept (and replayed); older ones are
+        # summarized with their turns.
+        assert f"confirmation-{'b' * 16}" in restored_turn_ids
+        assert f"confirmation-{'c' * 16}" in restored_turn_ids
+        assert f"confirmation-{'a' * 16}" not in restored_turn_ids
+        replayed = [m.content for m in records_to_messages(restored)]
+        assert sum(c.startswith("[[CONFIRMATION_RESOLVED]]") for c in replayed) == 2
+
+    @pytest.mark.asyncio
+    async def test_should_compact_does_not_count_resolution_turns(self) -> None:
+        cfg = _make_compaction_config(min_turns_before_compact=2, keep_recent_turns=2)
+        # 3 real turns (need 2 + 2 = 4) plus 3 resolutions: not enough real turns.
+        records = [
+            *_real_turn(0, "t1", input_tokens=12_000),
+            *_resolution_turn(3, "a" * 16),
+            *_real_turn(5, "t2", input_tokens=12_000),
+            *_resolution_turn(8, "b" * 16),
+            *_resolution_turn(10, "c" * 16),
+            *_real_turn(12, "t3", input_tokens=12_000),
+        ]
+        orch = _build_orchestrator(records, compaction_config=cfg)
+        assert await orch._should_compact_session("s1") is None  # noqa: SLF001
+
+        records.extend(_real_turn(15, "t4", input_tokens=12_000))
+        orch._store.sessions.read_session = AsyncMock(return_value=records)  # noqa: SLF001
+        assert await orch._should_compact_session("s1") is not None  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------

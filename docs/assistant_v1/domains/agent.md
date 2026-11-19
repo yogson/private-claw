@@ -104,13 +104,15 @@ The system should avoid free-form natural language scraping of assistant prose f
 ### Apply Pipeline
 
 1. The tool validates and normalizes the proposal into a `MemoryUpdateIntent` (invalid -> `rejected_invalid`).
-   A body longer than `MEMORY_BODY_MAX_CHARS` (2500) is also `rejected_invalid`: the user must see the full text
-   they approve, so it is never shown truncated. In the summary, `reason` is capped at 300 chars and `memory_id`
-   at 200.
+   A body longer than `MEMORY_BODY_MAX_UTF16` (2500 UTF-16 code units, as Telegram counts; an emoji is 2) is
+   also `rejected_invalid`: the user must see the full text they approve, so it is never shown truncated. In the
+   summary, `reason` is capped at 300 chars and `memory_id` at 200.
 2. It registers a `memory_update` confirmation request (see "User Confirmations") and returns
    `pending_confirmation` (with `confirmation_id`, `deduplicated`, `note`) or `another_confirmation_pending`.
 3. The call and its result are persisted inline with the turn like any other tool call, so later turns see them.
 4. Nothing is written until the user presses Approve; the write then goes through `MemoryUpdateHandler`.
+   The kind's code (draft, body limit, handler) lives with the memory extension
+   (`assistant.extensions.first_party.memory.confirmation`); `core.confirmation` stays kind-agnostic.
 
 Idempotency rule:
 - The writer intent id is `confirmation:<confirmation_id>`; one confirmation is applied at most once.
@@ -123,9 +125,9 @@ manifest edits and rollbacks; see `domains/capabilities.md` "Agent-Driven Manife
 registering a handler and building a draft with a `summary_for_user` (a summary, not a full diff). A kind can
 also attach content that the user must receive in full before deciding (`attachments`, below).
 
-Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `origin_tool_call_id`, `payload`,
-`summary_for_user`, `dedupe_key`, `attachments`, `status` (`pending|approved|rejected|expired|failed`), `created_at`,
-`expires_at`, `resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
+Request model (`ConfirmationRequest`): `confirmation_id`, `kind`, `session_id`, `user_id`, `origin_tool_call_id`,
+`payload`, `summary_for_user`, `dedupe_key`, `attachments`, `status` (`pending|approved|rejected|expired|failed`),
+`created_at`, `expires_at`, `resolved_at`, `result` (`ok`, `status`, `detail`), `ui_ref` (`chat_id`, `message_id`).
 
 Attachments (`ConfirmationAttachment`: `title`, `parts`): optional, empty for `memory_update`. `capability_edit` uses
 one for a prompt change: the full prompt diff, see `domains/capabilities.md`. Core produces the content, already
@@ -177,14 +179,22 @@ Rules:
   catalog serves counts as `applied`; `stale`, `not_editable`, `rejected_invalid`, `backup_failed`, `write_failed` and
   `reload_rejected` are `failed` with a precise detail.
 - Only a button press is approval; text replies never resolve a confirmation.
+- A request is bound to the user of the turn that requested it (`user_id`). A press by any other user (e.g. another
+  member of an allow-listed group chat) is answered with a "not yours" toast and changes nothing (`not_owner`); the
+  owner's approval writes to the owner's scope.
 - `summary_for_user` is capped at `SUMMARY_MAX_CHARS` (3500) with an explicit "[truncated: N more chars not shown]"
   note. Kinds where the user must see everything they approve reject over-long proposals before requesting.
 - Every final state (approved, rejected, expired, failed/not delivered) is appended to the session as its own complete
   synthetic turn (`turn_id = confirmation-<id>`, USER_MESSAGE + TURN_TERMINAL) with content
   `[[CONFIRMATION_RESOLVED]] {"confirmation_id","kind","status","summary","detail","origin_tool_call_id"}`.
-  It is replayed and compacted like any other turn. No agent turn is triggered by a resolution.
-  Only these synthetic records keep the marker. In user-typed text (history and the current turn) it is rewritten to
-  `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user cannot forge an outcome.
+  It is replayed and compacted like any other turn, except that it does not count toward `keep_recent_turns` or
+  `min_turns_before_compact`: a resolution stored after the first kept turn is kept with it, older ones are
+  summarized. No agent turn is triggered by a resolution.
+  Only these synthetic records keep the marker. In user-controlled text (history and the current turn, including
+  attachment file names and text-file content) it is rewritten to `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user
+  cannot forge an outcome. Matching is done after NFKC normalization and casefolding, with format characters
+  (zero-width, bidi marks) dropped and any separator between the two words, so near-miss spellings such as
+  `[[confirmation resolved]]` or full-width brackets are rewritten too. Tool results are not rewritten.
 - The orchestrator returns the confirmations created during a turn in `OrchestratorResult.confirmations`; channel
   handlers must render each one (normal turns, delegation-feedback turns, and alongside ask_question / web-app
   responses).

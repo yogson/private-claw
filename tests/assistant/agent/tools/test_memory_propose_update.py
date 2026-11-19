@@ -3,15 +3,18 @@
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from assistant.agent.tools.deps import TurnDeps
 from assistant.agent.tools.memory_propose_update import memory_propose_update
+from assistant.channels.telegram.confirmation_render import render_confirmation_prompt
 from assistant.core.confirmation import (
-    MEMORY_BODY_MAX_CHARS,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
     ConfirmationRequestResult,
     ConfirmationService,
 )
+from assistant.extensions.first_party.memory import MEMORY_BODY_MAX_UTF16
 
 SESSION = "tg:1"
 
@@ -98,16 +101,16 @@ async def test_unavailable_without_confirmation_service() -> None:
 async def test_body_longer_than_display_limit_is_rejected_not_truncated() -> None:
     service = ConfirmationService(ConfirmationHandlerRegistry())
 
-    result = await _propose(_ctx(service), body="x" * (MEMORY_BODY_MAX_CHARS + 1))
+    result = await _propose(_ctx(service), body="x" * (MEMORY_BODY_MAX_UTF16 + 1))
 
     assert result["status"] == "rejected_invalid"
-    assert str(MEMORY_BODY_MAX_CHARS) in result["reason"]
+    assert str(MEMORY_BODY_MAX_UTF16) in result["reason"]
     assert service.pending_for_session(SESSION) is None
 
 
 async def test_body_at_display_limit_is_shown_in_full() -> None:
     service = ConfirmationService(ConfirmationHandlerRegistry())
-    body = "y" * MEMORY_BODY_MAX_CHARS
+    body = "y" * MEMORY_BODY_MAX_UTF16
 
     result = await _propose(_ctx(service), body=body)
 
@@ -115,6 +118,34 @@ async def test_body_at_display_limit_is_shown_in_full() -> None:
     pending = service.pending_for_session(SESSION)
     assert pending is not None and body in pending.summary_for_user
     assert "truncated" not in pending.summary_for_user
+
+
+@pytest.mark.parametrize(
+    "body", ["😀" * 2500, "😀" * 1000 + "a" * 1500], ids=["emoji", "emoji-and-ascii"]
+)
+async def test_emoji_body_over_the_utf16_limit_is_rejected(body: str) -> None:
+    # Telegram counts UTF-16 units: these bodies are <= 2500 chars but would be shown cut.
+    service = ConfirmationService(ConfirmationHandlerRegistry())
+
+    result = await _propose(_ctx(service), body=body)
+
+    assert result["status"] == "rejected_invalid"
+    assert str(MEMORY_BODY_MAX_UTF16) in result["reason"]
+    assert service.pending_for_session(SESSION) is None
+
+
+async def test_emoji_body_at_the_utf16_limit_is_shown_in_full() -> None:
+    service = ConfirmationService(ConfirmationHandlerRegistry())
+    body = "😀" * (MEMORY_BODY_MAX_UTF16 // 2)
+
+    result = await _propose(_ctx(service), body=body)
+
+    assert result["status"] == "pending_confirmation"
+    pending = service.pending_for_session(SESSION)
+    assert pending is not None
+    prompt = render_confirmation_prompt(pending)
+    assert body in prompt and "truncated" not in prompt
+    assert "Reason: explicit ask" in prompt
 
 
 async def test_draft_carries_the_runtime_tool_name() -> None:

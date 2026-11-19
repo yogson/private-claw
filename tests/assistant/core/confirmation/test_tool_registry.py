@@ -14,10 +14,12 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic_ai import Tool
+from pydantic_ai import RunContext, Tool
 
 import assistant
 from assistant.agent.deps import TurnDeps
+from assistant.agent.tools.memory_propose_update import memory_propose_update
+from assistant.agent.tools.registry import is_tool_factory
 from assistant.core.confirmation import CONFIRMATION_TOOL_NAMES
 from assistant.core.confirmation.history import PENDING_TOOL_RESULT_STATUS
 
@@ -26,16 +28,38 @@ TOOLS_YAML = SRC_ROOT.parents[1] / "config" / "tools.yaml"
 REQUESTER_ATTR = "confirmation_requester"
 
 
-def _requester_users(tree: ast.Module) -> set[str]:
-    """Names of the top-level functions in ``tree`` that read ``<x>.confirmation_requester``."""
-    users: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        if any(
-            isinstance(sub, ast.Attribute) and sub.attr == REQUESTER_ATTR for sub in ast.walk(node)
+def _reads_requester(node: ast.AST) -> bool:
+    """True if ``node`` reads ``<x>.confirmation_requester`` or
+    ``getattr(<x>, "confirmation_requester", ...)``."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute) and sub.attr == REQUESTER_ATTR:
+            return True
+        if (
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "getattr"
+            and len(sub.args) >= 2
+            and isinstance(sub.args[1], ast.Constant)
+            and sub.args[1].value == REQUESTER_ATTR
         ):
-            users.add(node.name)
+            return True
+    return False
+
+
+def _requester_users(tree: ast.Module) -> set[str]:
+    """Top-level functions and (``Class.method``) methods in ``tree`` that read the requester."""
+    users: set[str] = set()
+
+    def visit(body: list[ast.stmt], prefix: str) -> None:
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                visit(node.body, f"{prefix}{node.name}.")
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _reads_requester(
+                node
+            ):
+                users.add(prefix + node.name)
+
+    visit(tree.body, "")
     return users
 
 
@@ -51,11 +75,7 @@ def _module_requester_uses() -> dict[str, set[str]]:
         if REQUESTER_ATTR not in source:
             continue
         tree = ast.parse(source)
-        has_attr_read = any(
-            isinstance(node, ast.Attribute) and node.attr == REQUESTER_ATTR
-            for node in ast.walk(tree)
-        )
-        if not has_attr_read:
+        if not _reads_requester(tree):
             continue
         module = ".".join(path.relative_to(SRC_ROOT.parent).with_suffix("").parts)
         uses[module] = _requester_users(tree)
@@ -73,8 +93,16 @@ def _tool_entrypoints() -> dict[str, tuple[str, str]]:
 
 
 def _runtime_tool_name(module: str, attr: str) -> str:
-    """The name the agent (and the session's tool results) uses for this entrypoint."""
+    """The name the agent (and the session's tool results) uses for this entrypoint.
+
+    For a factory entrypoint that is the name of the Tool it builds, as get_agent_tools
+    registers it, not the factory's own name.
+    """
     func = getattr(import_module(module), attr)
+    if is_tool_factory(func):
+        tool = func()
+        assert isinstance(tool, Tool), f"{module}:{attr} built no Tool; its name is unknown"
+        return tool.name
     return Tool[TurnDeps](func).name
 
 
@@ -92,6 +120,13 @@ def test_requester_discovery_finds_the_memory_tool() -> None:
     # Guards the discovery itself: if it found nothing, the checks below would be vacuous.
     uses = _module_requester_uses()
     assert uses.get("assistant.agent.tools.memory_propose_update") == {"memory_propose_update"}
+
+
+def test_pending_status_detection_finds_the_memory_tool() -> None:
+    # Same guard for the pending_confirmation scan used below.
+    source = inspect.cleandoc("\n" + inspect.getsource(memory_propose_update))
+    assert _returns_pending_status(source)
+    assert not _returns_pending_status("def t():\n    return {'status': 'ok'}\n")
 
 
 def test_requester_discovery_finds_the_capability_edit_tools() -> None:
@@ -160,8 +195,31 @@ def test_registry_has_no_stale_names() -> None:
         ("async def t(ctx):\n    r = ctx.deps.confirmation_requester\n", {"t"}),
         ("async def t(ctx):\n    await ctx.deps.confirmation_requester(d)\n", {"t"}),
         ("def helper(deps):\n    return getattr(deps, 'x')\n", set()),
+        ("async def t(ctx):\n    r = getattr(ctx.deps, 'confirmation_requester')\n", {"t"}),
+        ("def t(d):\n    return getattr(d, 'confirmation_requester', None)\n", {"t"}),
+        (
+            "class C:\n    async def m(self, ctx):\n        ctx.deps.confirmation_requester\n",
+            {"C.m"},
+        ),
+        (
+            "class C:\n    class D:\n        def m(s):\n            s.confirmation_requester\n",
+            {"C.D.m"},
+        ),
         ("x = 1\n", set()),
     ],
 )
 def test_requester_user_detection(source: str, expected: set[str]) -> None:
     assert _requester_users(ast.parse(source)) == expected
+
+
+async def _factory_built_tool(ctx: RunContext[TurnDeps]) -> str:
+    return "ok"
+
+
+def _tool_factory() -> Tool[TurnDeps] | None:
+    return Tool[TurnDeps](_factory_built_tool, name="factory_built_name")
+
+
+def test_runtime_tool_name_of_a_factory_is_the_built_tool_name() -> None:
+    assert _runtime_tool_name(__name__, "_tool_factory") == "factory_built_name"
+    assert _runtime_tool_name(__name__, "_factory_built_tool") == "_factory_built_tool"

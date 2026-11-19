@@ -19,6 +19,7 @@ from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.confirmation_render import (
     NO_LONGER_VALID_TEXT,
     NOT_DELIVERED_TEXT,
+    NOT_OWNER_TEXT,
 )
 from assistant.channels.telegram.models import (
     CallbackQueryMeta,
@@ -259,6 +260,59 @@ async def test_ack_failure_is_logged_and_resolution_still_completes() -> None:
 
     assert request.status == ConfirmationStatus.APPROVED
     adapter.edit_message_text.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+async def test_press_by_another_user_answers_not_yours_and_changes_nothing() -> None:
+    """N3: in a group chat only the user the confirmation was requested for may answer."""
+    adapter, handler = _adapter(), _Handler()
+    service = _service(handler)
+    draft = ConfirmationDraft(
+        kind="memory_update", payload={}, summary_for_user="s", dedupe_key="k"
+    )
+    request = (await service.request(SESSION, draft, user_id=str(CHAT_ID))).request
+    assert request is not None
+    data = _button_data(adapter, request, 0)
+    orchestrator = _orchestrator()
+    on_event = _build_orchestrator_handler(adapter, orchestrator, confirmations=service)
+
+    await on_event(_callback_event(data).model_copy(update={"user_id": "999"}))
+
+    assert _ack_text(adapter) == NOT_OWNER_TEXT
+    adapter.edit_message_text.assert_not_awaited()  # type: ignore[attr-defined]
+    assert request.is_pending and handler.calls == 0
+
+    await _press(adapter, service, data)
+
+    assert request.status == ConfirmationStatus.APPROVED and handler.calls == 1
+    assert _ack_text(adapter) == "✅ Saved."
+
+
+async def test_repeated_press_logs_no_warning_and_still_answers() -> None:
+    """N6: Telegram rejects the identical re-edit as "message is not modified"."""
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageText
+    from structlog.testing import capture_logs
+
+    adapter, handler = _adapter(), _Handler()
+    del adapter.edit_message_text  # use the real adapter -> egress path
+    not_modified = TelegramBadRequest(
+        EditMessageText(chat_id=CHAT_ID, message_id=MESSAGE_ID, text="x"),
+        "Bad Request: message is not modified",
+    )
+    bot_edit = AsyncMock(side_effect=[None, not_modified])
+    adapter._egress._bot.edit_message_text = bot_edit  # type: ignore[method-assign]  # noqa: SLF001
+    service = _service(handler)
+    request = await _pending(service)
+    data = _button_data(adapter, request, 0)
+
+    await _press(adapter, service, data)
+    with capture_logs() as logs:
+        await _press(adapter, service, data)
+
+    assert handler.calls == 1 and bot_edit.await_count == 2
+    assert adapter.acknowledge_callback.await_count == 2  # type: ignore[attr-defined]
+    assert _ack_text(adapter) == "✅ Saved."
+    assert not [e for e in logs if e["log_level"] in ("warning", "error", "critical")]
 
 
 async def test_normal_turn_sends_text_then_one_message_per_confirmation() -> None:
@@ -621,12 +675,15 @@ async def test_delegation_feedback_text_precedes_confirmation() -> None:
 
 async def test_max_size_memory_proposal_is_one_message_and_status_fits_edit() -> None:
     from assistant.channels.telegram.formatter import format_markdown_for_telegram
-    from assistant.core.confirmation import MEMORY_BODY_MAX_CHARS, build_memory_update_draft
+    from assistant.extensions.first_party.memory import (
+        MEMORY_BODY_MAX_UTF16,
+        build_memory_update_draft,
+    )
     from assistant.memory.write.models import MemoryUpdateIntent
 
     adapter, handler = _adapter(), _Handler()
     service = _service(handler)
-    body = "Ж" * MEMORY_BODY_MAX_CHARS
+    body = "Ж" * MEMORY_BODY_MAX_UTF16
     intent = MemoryUpdateIntent.model_validate(
         {
             "intent_id": "i",

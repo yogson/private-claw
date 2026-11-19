@@ -130,11 +130,13 @@ def _ordered_recent_turn_ids(
 ) -> set[str]:
     """Return the set of the last ``keep_recent_turns`` turn_ids in sequence order.
 
-    Synthetic turns (``compaction-*`` summaries) never count toward the kept
-    window. Records without a turn_id are ignored.
+    Synthetic turns (``compaction-*`` summaries, ``confirmation-<id>`` resolutions)
+    never count toward the kept window. Resolution turns stored after the first kept
+    turn are kept with it. Records without a turn_id are ignored.
     """
     if keep_recent_turns <= 0:
         return set()
+    confirmation_turn_ids = {r.turn_id for r in chat_records if is_confirmation_record(r)}
     ordered: list[str] = []
     seen: set[str] = set()
     for r in sorted(chat_records, key=lambda x: x.sequence):
@@ -143,7 +145,11 @@ def _ordered_recent_turn_ids(
             continue
         seen.add(tid)
         ordered.append(tid)
-    return set(ordered[-keep_recent_turns:])
+    real = [tid for tid in ordered if tid not in confirmation_turn_ids]
+    if not real:
+        return set()
+    first_kept = ordered.index(real[-keep_recent_turns:][0])
+    return set(ordered[first_kept:])
 
 
 class Orchestrator:
@@ -381,7 +387,7 @@ class Orchestrator:
             user_id=user_id,
             vocabulary_store=self._vocabulary_store,
             confirmation_requester=self._build_confirmation_requester(
-                session_id, created_confirmations
+                session_id, created_confirmations, user_id
             ),
             capability_edit_service=self._capability_edit_service,
         )
@@ -697,22 +703,28 @@ class Orchestrator:
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         compaction_notifier: Callable[[], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
-        user_text = neutralize_confirmation_marker(extract_user_text(event))
+        user_text = extract_user_text(event)
         attachments = gather_attachments(event)
         attachment_context = format_attachment_context(attachments)
-        user_content = (user_text + attachment_context).strip() or _PLACEHOLDER_EMPTY
+        # Neutralized once all user-controlled text (incl. attachment file names) is in.
+        user_content = (
+            neutralize_confirmation_marker((user_text + attachment_context).strip())
+            or _PLACEHOLDER_EMPTY
+        )
 
         turn_id = event.event_id
         session_id = event.session_id
         trace_id = event.trace_id
 
         raw_text = extract_raw_text_for_multimodal(event)
-        if raw_text:
-            raw_text = neutralize_confirmation_marker(raw_text)
         content_blocks = await build_user_content_blocks(
             raw_text, attachments, self._attachment_downloader, trace_id
         )
         if content_blocks is not None:
+            for block in content_blocks:
+                # Text blocks carry the user's text, file names and text-file content.
+                if block.get("type") == "text":
+                    block["text"] = neutralize_confirmation_marker(block["text"])
             user_message = LLMMessage(
                 role=MessageRole.USER, content="", content_blocks=content_blocks
             )
@@ -797,7 +809,7 @@ class Orchestrator:
             reset_trace_id(token)
 
     def _build_confirmation_requester(
-        self, session_id: str, created: list[ConfirmationRequest] | None
+        self, session_id: str, created: list[ConfirmationRequest] | None, user_id: str | None
     ) -> Callable[[ConfirmationDraft], Awaitable[ConfirmationRequestResult]] | None:
         service = self._confirmations
         if service is None:
@@ -817,7 +829,7 @@ class Orchestrator:
                     f"Tool {draft.origin_tool_name!r} requested a confirmation but is not in "
                     "CONFIRMATION_TOOL_NAMES (assistant.core.confirmation.history)"
                 )
-            outcome = await service.request(session_id, draft)
+            outcome = await service.request(session_id, draft, user_id=user_id)
             if outcome.created and outcome.request is not None and created is not None:
                 created.append(outcome.request)
             return outcome
@@ -1017,8 +1029,14 @@ class Orchestrator:
             return None
         # Need enough turns to both summarize AND keep verbatim. Otherwise
         # the kept-window swallows everything and compaction is a no-op.
+        # Synthetic confirmation-resolution turns are not conversation turns.
+        confirmation_turn_ids = {r.turn_id for r in records if is_confirmation_record(r)}
         turn_ids = {
-            r.turn_id for r in records if r.turn_id and not r.turn_id.startswith("compaction-")
+            r.turn_id
+            for r in records
+            if r.turn_id
+            and not r.turn_id.startswith("compaction-")
+            and r.turn_id not in confirmation_turn_ids
         }
         required = (
             self._compaction_config.min_turns_before_compact

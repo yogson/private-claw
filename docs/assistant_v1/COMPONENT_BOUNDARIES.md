@@ -57,6 +57,8 @@ This document is normative for boundary governance across the `docs/assistant_v1
   - context assembly policy and token budgeting,
   - integration choreography across memory/capabilities/subagents,
   - user-confirmation lifecycle (request, dedupe, expiry, resolve, history record) for all confirmation kinds.
+    The `memory_update` kind's draft and handler live with the memory extension
+    (`extensions/first_party/memory/confirmation.py`) and are registered with the service at startup.
 - Must not own:
   - direct tool/shell/filesystem side effects,
   - HTTP transport contracts,

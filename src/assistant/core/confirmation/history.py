@@ -10,6 +10,8 @@ summarizes or keeps it like any other turn.
 """
 
 import json
+import re
+import unicodedata
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Protocol
@@ -48,6 +50,10 @@ CONFIRMATION_TOOL_NAMES: frozenset[str] = frozenset(
 )
 # What the marker becomes in user-typed text, so a user cannot forge a resolution.
 _NEUTRALIZED_MARKER = "[[user-typed: CONFIRMATION_RESOLVED]]"
+# The marker and the near-miss spellings a model reads the same way, matched on the
+# normalized view of the text (_normalized_view): any case, any separator (or none)
+# between the words, whitespace inside the brackets.
+_MARKER_VARIANT_RE = re.compile(r"\[\s*\[\s*confirmation[\W_]*resolved\s*\]\s*\]")
 
 
 def is_confirmation_record(record: SessionRecord) -> bool:
@@ -84,8 +90,38 @@ def unresolved_pending_ids(records: Iterable[SessionRecord]) -> list[str]:
 
 
 def neutralize_confirmation_marker(text: str) -> str:
-    """Defuse the resolution marker in text that did not come from the recorder."""
-    return text.replace(CONFIRMATION_RESOLVED_MARKER, _NEUTRALIZED_MARKER)
+    """Defuse the resolution marker in text that did not come from the recorder.
+
+    Also catches near-miss spellings (``[[confirmation resolved]]``, full-width or
+    zero-width characters, ...). Only the matched spans are rewritten; the rest of the
+    text is kept as is.
+    """
+    normalized, origin = _normalized_view(text)
+    parts: list[str] = []
+    position = 0
+    for match in _MARKER_VARIANT_RE.finditer(normalized):
+        start, end = origin[match.start()], origin[match.end() - 1] + 1
+        parts += [text[position:start], _NEUTRALIZED_MARKER]
+        position = end
+    if not parts:
+        return text
+    return "".join(parts) + text[position:]
+
+
+def _normalized_view(text: str) -> tuple[str, list[int]]:
+    """``text`` NFKC-normalized and casefolded per character, without format characters
+    (zero-width, bidi marks, soft hyphens), plus the source index of each character."""
+    if text.isascii():
+        return text.lower(), list(range(len(text)))
+    chars: list[str] = []
+    origin: list[int] = []
+    for index, char in enumerate(text):
+        if unicodedata.category(char) == "Cf":
+            continue
+        for normalized in unicodedata.normalize("NFKC", char).casefold():
+            chars.append(normalized)
+            origin.append(index)
+    return "".join(chars), origin
 
 
 class ConfirmationRecorderInterface(Protocol):

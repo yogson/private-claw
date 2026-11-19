@@ -1,8 +1,9 @@
 """
-Component ID: CMP_CORE_CONFIRMATION_SERVICE
+Component ID: CMP_TOOL_RUNTIME_REGISTRY
 
 Memory-update confirmation kind: draft building (user-facing summary, dedupe key)
-and the handler that applies an approved intent through the memory writer.
+and the handler that applies an approved intent through the memory writer. Registered
+with the generic ConfirmationService (core.confirmation) at startup.
 """
 
 import asyncio
@@ -13,6 +14,7 @@ from assistant.core.confirmation.models import (
     ConfirmationDraft,
     ConfirmationOutcome,
     ConfirmationRequest,
+    utf16_len,
 )
 from assistant.memory.interfaces import MemoryWriterInterface
 from assistant.memory.write.models import MemoryUpdateAction, MemoryUpdateIntent, WriteStatus
@@ -23,8 +25,9 @@ _APPLIED_STATUSES = frozenset(
     {WriteStatus.WRITTEN, WriteStatus.UPDATED, WriteStatus.DELETED, WriteStatus.TOUCHED}
 )
 # The user must see exactly what is saved: longer bodies are rejected at propose
-# time (memory_body_length_error) instead of being shown truncated.
-MEMORY_BODY_MAX_CHARS = 2500
+# time (memory_body_length_error) instead of being shown truncated. Measured in UTF-16
+# code units, as Telegram counts its message limit (an emoji is 2 units).
+MEMORY_BODY_MAX_UTF16 = 2500
 _REASON_MAX_CHARS = 300
 _MEMORY_ID_MAX_CHARS = 200
 
@@ -32,11 +35,13 @@ _MEMORY_ID_MAX_CHARS = 200
 def memory_body_length_error(intent: MemoryUpdateIntent) -> str | None:
     """Reason to reject a proposal whose body cannot be shown in full, else None."""
     body = intent.candidate.body_markdown.strip() if intent.candidate else ""
-    if intent.action != MemoryUpdateAction.UPSERT or len(body) <= MEMORY_BODY_MAX_CHARS:
+    size = utf16_len(body)
+    if intent.action != MemoryUpdateAction.UPSERT or size <= MEMORY_BODY_MAX_UTF16:
         return None
     return (
-        f"memory body is {len(body)} chars; at most {MEMORY_BODY_MAX_CHARS} can be shown to the "
-        "user for confirmation. Shorten it or split it into several smaller memories."
+        f"memory body is {size} UTF-16 units (emoji count as 2); at most "
+        f"{MEMORY_BODY_MAX_UTF16} can be shown to the user for confirmation. Shorten it or "
+        "split it into several smaller memories."
     )
 
 
@@ -61,11 +66,11 @@ def memory_update_summary(intent: MemoryUpdateIntent) -> str:
         lines.append(f"Memory ID: {_clip(intent.memory_id, _MEMORY_ID_MAX_CHARS)}")
     body = intent.candidate.body_markdown.strip() if intent.candidate else ""
     if intent.action == MemoryUpdateAction.UPSERT and body:
-        if len(body) > MEMORY_BODY_MAX_CHARS:
+        if len(body) > MEMORY_BODY_MAX_UTF16:
             # Normally rejected at propose time; never hide that text is missing.
             body = (
-                body[:MEMORY_BODY_MAX_CHARS]
-                + f"\n… [truncated: {MEMORY_BODY_MAX_CHARS} of {len(body)} chars shown,"
+                body[:MEMORY_BODY_MAX_UTF16]
+                + f"\n… [truncated: {MEMORY_BODY_MAX_UTF16} of {len(body)} chars shown,"
                 " the full text will be saved]"
             )
         lines.append("")

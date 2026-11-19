@@ -34,7 +34,6 @@ from assistant.core.confirmation import (
     CapabilityEditHandler,
     ConfirmationHandlerRegistry,
     ConfirmationService,
-    MemoryUpdateHandler,
     SessionConfirmationRecorder,
 )
 from assistant.core.orchestrator.service import Orchestrator
@@ -45,6 +44,7 @@ from assistant.core.session_context import (
     SessionCapabilityContextService,
     SessionModelContextService,
 )
+from assistant.extensions.first_party.memory import MemoryUpdateHandler
 from assistant.extensions.language_learning import VocabularyStore
 from assistant.extensions.mcp.toolsets import mcp_toolsets
 from assistant.memory.mem0 import Mem0MemoryWriteService, Mem0RetrievalService

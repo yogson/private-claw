@@ -98,6 +98,23 @@ def _resolve_entrypoint(entrypoint: str) -> object:
     return obj
 
 
+def is_tool_factory(entrypoint: object) -> bool:
+    """True if the entrypoint is a factory that returns a Tool (or None) to be called.
+
+    Factories signal this by having a return annotation of `Tool | None` or `Any | None`.
+    """
+    hints: dict[str, Any] = {}
+    with suppress(Exception):
+        hints = get_type_hints(entrypoint)
+    return_hint = hints.get("return")
+    return return_hint is not None and (
+        hasattr(return_hint, "__args__")
+        and any(
+            getattr(a, "__name__", None) == "Tool" or a is type(None) for a in return_hint.__args__
+        )
+    )
+
+
 def collect_enabled_mcp_server_ids(active: ActiveCapabilities) -> list[str]:
     """MCP server ids granted by the active capabilities."""
     definitions, enabled = active
@@ -159,20 +176,7 @@ def get_agent_tools(config: RuntimeConfig, active: ActiveCapabilities) -> Sequen
                 error=str(exc),
             )
             continue
-        # If the entrypoint is a factory (returns a Tool or None), call it.
-        # Factories signal this by having a return annotation of `Tool | None` or `Any | None`.
-        hints: dict[str, Any] = {}
-        with suppress(Exception):
-            hints = get_type_hints(resolved)
-        return_hint = hints.get("return")
-        is_factory = return_hint is not None and (
-            hasattr(return_hint, "__args__")
-            and any(
-                getattr(a, "__name__", None) == "Tool" or a is type(None)
-                for a in return_hint.__args__
-            )
-        )
-        if is_factory:
+        if is_tool_factory(resolved):
             tool_instance = resolved()
             if tool_instance is None:
                 logger.info(
