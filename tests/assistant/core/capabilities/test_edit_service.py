@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -1265,3 +1266,126 @@ async def test_unexpected_exception_after_validation_is_a_failed_outcome(
     assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
     assert "RuntimeError" in outcome.detail and _SECRET not in outcome.detail
     assert _manifest(config_dir).read_text() == EDITABLE
+
+
+# ---------------------------------------------------------------------------
+# S11: YAML alias graphs never expand (catalog load and all read paths)
+# ---------------------------------------------------------------------------
+
+
+def _alias_chain(levels: int, refs: int = 10) -> str:
+    """Reviewer repro S11: < 700 bytes, ``refs ** levels`` values once expanded."""
+    lines = [
+        "capability_id: editable",
+        "self_edit: true",
+        "prompt: hi",
+        "claude_code_settings:",
+        "  mcp_servers:",
+        "    s:",
+        "      x0: &a0 [lol]",
+    ]
+    lines += [
+        f"      x{i}: &a{i} [" + ", ".join([f"*a{i - 1}"] * refs) + "]"
+        for i in range(1, levels + 1)
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("levels", [7, 10])
+def test_alias_chain_is_rejected_at_parse_without_expanding(levels: int) -> None:
+    text = _alias_chain(levels)
+    assert len(text.encode()) < 800
+    start = time.perf_counter()
+    with pytest.raises(ManifestParseError) as info:
+        parse_capability_manifest("editable.yaml", text.encode())
+    assert time.perf_counter() - start < 1.0
+    assert "more than 100000 values once YAML aliases are expanded" in info.value.messages[0]
+
+
+def test_wide_alias_fan_out_is_checked_once_per_distinct_node() -> None:
+    # Without identity memoisation the bound alone would still visit fan-out x 100 000
+    # nodes (here 400 x 99 000) before refusing; with it, each container is walked once.
+    lines = [
+        "capability_id: editable",
+        "self_edit: true",
+        "prompt: hi",
+        "claude_code_settings:",
+        "  mcp_servers:",
+        "    s:",
+        "      x1: &a1 [" + ", ".join(["1"] * 990) + "]",
+        "      x2: &a2 [" + ", ".join(["*a1"] * 99) + "]",
+        "      x3: [" + ", ".join(["*a2"] * 400) + "]",
+    ]
+    start = time.perf_counter()
+    with pytest.raises(ManifestParseError) as info:
+        parse_capability_manifest("editable.yaml", ("\n".join(lines) + "\n").encode())
+    assert time.perf_counter() - start < 1.0
+    assert "s.x3: more than 100000 values" in info.value.messages[0]
+
+
+def test_small_alias_use_still_loads() -> None:
+    definition = parse_capability_manifest("editable.yaml", _alias_chain(3).encode())
+    settings = definition.claude_code_settings
+    assert settings is not None and len(settings.mcp_servers["s"]["x3"]) == 10
+
+
+def test_recursive_alias_is_rejected() -> None:
+    text = (
+        "capability_id: editable\nself_edit: true\nprompt: hi\nclaude_code_settings:\n"
+        "  mcp_servers:\n    s:\n      x: &a [1, {y: *a}]\n"
+    )
+    start = time.perf_counter()
+    with pytest.raises(ManifestParseError) as info:
+        parse_capability_manifest("editable.yaml", text.encode())
+    assert time.perf_counter() - start < 1.0
+    assert "refers to itself" in info.value.messages[0]
+
+
+@pytest.mark.parametrize("levels", [3, 10])
+async def test_alias_chain_on_disk_keeps_reload_and_all_four_tools_prompt(
+    service: CapabilityEditService, catalog: CapabilityCatalog, config_dir: Path, levels: int
+) -> None:
+    from unittest.mock import MagicMock
+
+    from assistant.agent.tools.capability_edit import (
+        capability_history,
+        capability_propose_edit,
+        capability_propose_rollback,
+        capability_read,
+    )
+    from assistant.agent.tools.deps import TurnDeps
+
+    await _apply(service, _propose(service), "c1")  # a history entry for the rollback
+    history_id = service.history("editable")[0].history_id
+    _manifest(config_dir).write_text(_alias_chain(levels))
+    ctx = MagicMock()
+    ctx.tool_call_id, ctx.tool_name = "tc", "capability_propose_edit"
+
+    async def requester(_draft: Any) -> Any:
+        raise AssertionError("nothing may be proposed")
+
+    ctx.deps = TurnDeps(confirmation_requester=requester, capability_edit_service=service)
+    start = time.perf_counter()
+    catalog.reload("test")
+    results = [
+        capability_read(ctx, "editable"),
+        capability_history(ctx, "editable"),
+        await capability_propose_edit(
+            ctx,
+            capability_id="editable",
+            old_string="hi",
+            new_string="ho",
+            reason="r",
+            base_sha256="0" * 64,
+        ),
+        await capability_propose_rollback(
+            ctx, capability_id="editable", history_id=history_id, reason="r", base_sha256="0" * 64
+        ),
+    ]
+    assert time.perf_counter() - start < 2.0
+    read, history, edit, rollback = results
+    assert history["status"] == "ok"
+    for result in (read, edit, rollback):
+        assert result["status"] == STATUS_NOT_EDITABLE
+        # 3 levels parse (and are refused by the alias rule); 10 levels fail the bound.
+        assert ("YAML aliases" in result["reason"]) or ("once YAML aliases" in result["reason"])

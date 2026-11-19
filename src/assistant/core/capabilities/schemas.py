@@ -87,35 +87,78 @@ class ClaudeCodePermissions(BaseModel):
     deny: list[str] = Field(default_factory=list)
 
 
-def check_json_native(value: object) -> None:
+# Expanded size bound of free-form MCP server settings (every container and scalar
+# counted once per reference). Real settings have a few dozen nodes; a YAML alias chain
+# of < 700 bytes can expand to billions, which ``json.dumps`` (sub-agent launch) and any
+# naive walk would try to materialise.
+MAX_JSON_NODES = 100_000
+
+
+def check_json_native(value: object, *, max_nodes: int = MAX_JSON_NODES) -> None:
     """Raise ``ValueError`` unless ``value`` is plain JSON: dicts with string keys, lists,
-    strings, ints, finite floats, booleans and null.
+    strings, ints, finite floats, booleans and null, with at most ``max_nodes`` nodes
+    once expanded and no cycles.
 
     MCP server settings are handed to the Claude Code CLI as ``json.dumps`` output. YAML
     can also produce dates, bytes (``!!binary``), sets (``!!set``), ``.nan`` / ``.inf``
     and non-string keys, which either crash ``json.dumps`` when a sub-agent starts or
-    become invalid / silently converted JSON. Iterative, so deep nesting cannot overflow.
+    become invalid / silently converted JSON.
+
+    ``yaml.safe_load`` shares the object of an anchor between all its aliases, and an
+    alias can even point to its own ancestor (a cycle). The walk is iterative (deep
+    nesting cannot overflow) and memoised by object identity: each distinct container is
+    checked once, so its cost is linear in the size of the YAML document, and the
+    expanded size is computed from the memo without expanding anything.
     """
-    stack: list[tuple[object, str]] = [(value, "")]
+    sizes: dict[int, int] = {}  # id of a checked container -> its expanded node count
+    on_path: set[int] = set()  # containers entered but not finished (ancestors)
+    stack: list[tuple[object, str, bool]] = [(value, "", False)]
     while stack:
-        item, path = stack.pop()
+        item, path, done = stack.pop()
+        if not isinstance(item, dict | list):
+            _check_json_scalar(item, path)
+            continue
+        key = id(item)
+        children = list(item.values()) if isinstance(item, dict) else item
+        if done:
+            on_path.discard(key)
+            total = 1 + sum(sizes.get(id(c), 1) for c in children)
+            if total > max_nodes:
+                raise ValueError(
+                    f"{path or 'value'}: more than {max_nodes} values once YAML aliases are "
+                    "expanded; MCP server settings must be small plain JSON"
+                )
+            sizes[key] = total
+            continue
+        if key in sizes:
+            continue  # shared through an alias and already checked
+        if key in on_path:
+            raise ValueError(
+                f"{path or 'value'}: refers to itself (recursive YAML alias); MCP server "
+                "settings must be plain JSON"
+            )
+        on_path.add(key)
+        stack.append((item, path, True))
         if isinstance(item, dict):
-            for key, sub in item.items():
-                if not isinstance(key, str):
+            for sub_key, sub in item.items():
+                if not isinstance(sub_key, str):
                     raise ValueError(
-                        f"{path or 'value'}: key of type {type(key).__name__}; MCP server "
+                        f"{path or 'value'}: key of type {type(sub_key).__name__}; MCP server "
                         "settings must be plain JSON (string keys only)"
                     )
-                stack.append((sub, f"{path}.{key}" if path else key))
-        elif isinstance(item, list):
-            stack.extend((sub, f"{path}[{i}]") for i, sub in enumerate(item))
-        elif isinstance(item, float) and not math.isfinite(item):
-            raise ValueError(f"{path or 'value'}: {item} is not valid JSON")
-        elif item is not None and not isinstance(item, str | int | float):  # bool is an int
-            raise ValueError(
-                f"{path or 'value'}: value of type {type(item).__name__}; MCP server settings "
-                "must be plain JSON (strings, numbers, booleans, null, lists, mappings)"
-            )
+                stack.append((sub, f"{path}.{sub_key}" if path else sub_key, False))
+        else:
+            stack.extend((sub, f"{path}[{i}]", False) for i, sub in enumerate(item))
+
+
+def _check_json_scalar(item: object, path: str) -> None:
+    if isinstance(item, float) and not math.isfinite(item):
+        raise ValueError(f"{path or 'value'}: {item} is not valid JSON")
+    if item is not None and not isinstance(item, str | int | float):  # bool is an int
+        raise ValueError(
+            f"{path or 'value'}: value of type {type(item).__name__}; MCP server settings "
+            "must be plain JSON (strings, numbers, booleans, null, lists, mappings)"
+        )
 
 
 class ClaudeCodeSettings(BaseModel):

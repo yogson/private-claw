@@ -422,7 +422,17 @@ on PyYAML's non-recursive event stream before composing); a larger file on disk 
 exception class, and the four tools never let an exception fail the turn.
 `claude_code_settings.mcp_servers` must be plain JSON (string keys, strings, numbers,
 booleans, null, lists, mappings; no dates, `!!binary`, `!!set`, `.nan` / `.inf`), because
-it is passed to Claude Code as `json.dumps` output; the schema rejects anything else. YAML
+it is passed to Claude Code as `json.dumps` output; the schema rejects anything else. This
+check (`check_json_native`) runs on every catalog load and reload, for every manifest (not
+only agent-editable ones), and is linear in the size of the YAML document. `yaml.safe_load`
+shares one object between an anchor and all its aliases, so the walk memoises containers
+by identity and visits each one once. It rejects a value that refers to itself (a recursive
+alias) and one with more than 100 000 nodes once aliases are expanded (`MAX_JSON_NODES`),
+which `json.dumps` would otherwise materialise at sub-agent launch. A < 800-byte alias chain
+(`x{i}: &a{i} [*a{i-1} ×10]`, 7–10 levels) is refused in about 1 ms instead of stalling the
+catalog and every capability tool. Aliases are still accepted in the manifests themselves
+(only agent-edited manifests refuse them, step 5 above), and every manifest in `config/` and
+`config.local/` loads unchanged. YAML
 errors are reported as class and line / column only (`[a.yaml] YAML parse error:
 ScannerError (line 7, column 31)`), never with PyYAML's message or source excerpt: that
 excerpt may quote a secret, possibly of a manifest the agent cannot read, and the message
