@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 
-.PHONY: start stop format lint install sync test
+.PHONY: start stop up down status format lint install sync test
 
 install:
 	uv sync --all-extras
@@ -22,6 +22,11 @@ stop:
 	else \
 		echo "No process listening on port 8000."; \
 	fi
+
+# Extra instances from <ASSISTANT_CONFIG_DIR>/instances.yaml (see docs/DEVELOPMENT.md).
+# The main instance stays on start/stop. Optional: NAME=<instance>.
+up down status:
+	.venv/bin/python -m assistant.launcher $@ $(NAME)
 
 format:
 	uv run ruff format src/ tests/

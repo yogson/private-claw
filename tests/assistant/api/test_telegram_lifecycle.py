@@ -1203,3 +1203,19 @@ async def test_handler_compact_command(enabled: bool, outcome: object, expected:
         mock_orchestrator.compact_session.assert_awaited_once_with("tg:123", "trace-compact", "123")
     else:
         mock_orchestrator.compact_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_system_started_names_the_instance() -> None:
+    """With instance_name set, the startup message names the instance."""
+    from assistant.api.lifespan import _notify_system_started
+    from assistant.core.session_context import ActiveSessionContextService
+
+    ctx = ActiveSessionContextService()
+    ctx.set_active_session("telegram:111", "tg:111:aaa")
+    mock_adapter = AsyncMock()
+
+    await _notify_system_started(mock_adapter, ctx, instance_name="research")
+
+    response = mock_adapter.send_response.call_args.args[0]
+    assert response.text == "System started (research)."

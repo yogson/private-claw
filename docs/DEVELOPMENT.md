@@ -8,6 +8,7 @@
 ```bash
 # Start development
 make start                  # Start API service
+make up / status / down     # Extra instances, one Telegram bot each (see "Parallel instances")
 
 # Incremental quality checks (run these often!)
 make format                 # Auto-format code (instant)
@@ -15,6 +16,126 @@ make lint                   # Linting and type checking
 ```
 
 **💡 Pro tip**: Run `make format lint` after editing a few files to catch issues early!
+
+
+## Parallel instances (one Telegram bot each)
+
+Run several assistant instances side by side, for example one per workstream. Each
+instance has its own Telegram bot. All of them run the same code from the same checkout
+and `.venv` and share one config dir (the active `ASSISTANT_CONFIG_DIR`, e.g.
+`config.local/`). This is not strict isolation; see "What is shared" below.
+
+The **main instance does not change**: `make start` / `make stop` (port 8000, `./data`,
+token in `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`). The launcher only manages the extra
+instances and never touches the main one.
+
+### Add a bot
+
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather): `/newbot`, pick a name and a
+   username, and copy the token. Use one new bot per instance. Never reuse the main bot.
+2. Put the token in `.env` (or your shell env) under a name that does **not** start with
+   `ASSISTANT_`, e.g. `TG_BOT_TOKEN_RESEARCH=123456:ABC...`. `ASSISTANT_*` names are read by
+   the app as config overrides (`ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN_X` would be an unknown
+   field and silently ignored), so the launcher rejects them.
+3. Add the instance to `<ASSISTANT_CONFIG_DIR>/instances.yaml`. Copy
+   `config/instances.example.yaml` there first. The file is gitignored.
+
+```yaml
+instances:
+  research:
+    port: 8001                          # unique, free, not 8000
+    token_env: TG_BOT_TOKEN_RESEARCH    # variable name, never the token itself
+    # data_dir: data/instances/research # default: data/instances/<name>
+    # instance_name: research           # label in logs / "System started (research)."
+    # agent_node: false                 # agent_node ingress, off by default
+    # env:                              # optional extra non-secret overrides
+    #   ASSISTANT_MEMORY_DEFAULT_USER_ID: research
+```
+
+The allowlist comes from the shared `channel.telegram.yaml`, so the same users can use
+every bot. Extra instances always bind `127.0.0.1`.
+
+### Commands
+
+```bash
+make up                  # start every extra instance (detached)
+make up NAME=research    # start one
+make status [NAME=...]   # name, port, running/stopped/stale, PID, /health/live, token var, paths
+make down [NAME=...]     # stop all extra instances (or one); the main instance keeps running
+```
+
+`make up` first checks **all** instances and starts **none** if any check fails:
+- the token variable is missing or empty, or its name starts with `ASSISTANT_`;
+- two instances share a token, or an instance uses the main instance's token;
+- a port is used twice, is already taken, or is 8000;
+- two instances share a data dir, or one uses the main data dir (`./data`).
+
+Instances that are already running are skipped. Tokens are looked up in the process env
+first, then in `.env`. `make status` prints token variable names, never token values.
+
+Each instance runs `uvicorn assistant.api.main:app --host 127.0.0.1 --port <port>` with
+the repo as working dir and these env overrides (the existing `ASSISTANT_<DOMAIN>_<FIELD>`
+mechanism; they show up as `env_override` in `/admin/config/effective`):
+
+| Variable | Value |
+|---|---|
+| `ASSISTANT_CONFIG_DIR` | the shared config dir |
+| `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN` | the value of `token_env` |
+| `ASSISTANT_APP_DATA_ROOT` | the instance data dir |
+| `ASSISTANT_APP_INSTANCE_NAME` | `instance_name` (default: the instance name) |
+| `ASSISTANT_AGENT_NODE_ENABLED` | `false`, unless `agent_node: true` |
+| `LOGFIRE_SERVICE_NAME` | `private-claw-<name>` |
+| `env:` entries | as given |
+
+`make down` sends SIGTERM to the PID in the PID file, but only if `ps` still shows this
+instance's uvicorn on its port, so a reused PID is never killed. It waits up to 30 s for
+a graceful shutdown, then sends SIGKILL. There is no autostart and no restart-on-crash:
+run `make status` after a reboot.
+
+### What is per instance
+
+Everything under the instance's data dir (`data/instances/<name>/` by default): sessions,
+tasks and task logs, delegations, the idempotency ledger, locks, the active session /
+model / capability context, usage archive, verbose state, vocabulary, memory artifacts,
+the agent_node store, app logs (`logs/assistant-*.log`), the uvicorn log
+(`logs/uvicorn-<date>.log`) and the PID file (`run/uvicorn.pid`). The bot (and therefore
+which chats it serves), the port, and the "System started" message (sent through the
+instance's own bot to the chats in its own data dir) are per instance too.
+
+A data dir must never be used by two live processes: on startup an instance marks the
+running delegations in its store as failed, so a second process on the same data dir
+would kill the first one's delegations. The launcher enforces separate data dirs.
+
+### What is shared
+
+- **Config dir**, including approved `capability_edit`s: an edit approved in any instance
+  changes every instance (each picks it up on its next turn). The edit lock is per process,
+  so approving edits to the same manifest in two instances at the same moment can race.
+  `POST /admin/config/apply` writes the shared YAML files. It writes only the files' own
+  keys plus the payload; env-derived values that are not in the payload are never written.
+  The admin UI form, however, is pre-filled with effective values (env overrides included)
+  and submits them all, so saving a form section on an instance with env overrides (e.g.
+  `ASSISTANT_MEMORY_DEFAULT_USER_ID`) writes those values to the shared config. Save config
+  through the admin UI of the main instance, not an extra one.
+- **Mem0**: `memory.default_user_id` is shared, so memories from one workstream are visible
+  in all of them. For separate memories set `ASSISTANT_MEMORY_DEFAULT_USER_ID` under `env:`.
+- **`~/.claude/settings.json`**: every instance writes it at startup and on capability
+  changes. With one shared config the content is the same; if an instance overrides
+  `ASSISTANT_CAPABILITIES_*`, the last writer wins.
+- **Admin login**: the same `ASSISTANT_ADMIN_TOKEN` everywhere. Browser cookies are not
+  scoped by port, so logging in on one port logs you in on all of them.
+- **Delegation token caps** are computed per instance, so the effective global cap is
+  N × `delegation_global_token_cap`.
+- Code, `.venv`, prompts. Each instance is a full app process with its own sub-agents.
+
+### Telegram routing and 409 Conflict
+
+Telegram delivers a bot's updates to whoever polls that bot's token, so routing is per
+token: each instance answers only through its own bot. Telegram allows one `getUpdates`
+consumer per token. If two processes poll the same token (e.g. an instance started by
+hand with the main token), Telegram returns 409 Conflict, both lose updates, and the app
+logs `telegram.polling.conflict` at error level while it keeps backing off. Stop one of
+the processes. `make up` refuses duplicate tokens, including the main one.
 
 
 ## Software Architecture Principles

@@ -12,7 +12,7 @@ from typing import Any
 
 import structlog
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+from aiogram.exceptions import TelegramAPIError, TelegramConflictError, TelegramNetworkError
 from aiogram.types import MenuButtonCommands, Update
 
 from assistant.channels.telegram.adapter import TelegramAdapter
@@ -118,15 +118,27 @@ async def run_polling(
                 )
             except asyncio.CancelledError:
                 break
+            except TelegramConflictError as exc:
+                # 409: Telegram allows one getUpdates consumer per bot token.
+                logger.error(
+                    "telegram.polling.conflict",
+                    error=str(exc),
+                    backoff_seconds=backoff,
+                    hint=(
+                        "another process is polling this bot token (e.g. a second "
+                        "instance started with the same token); stop it or give this "
+                        "instance its own bot token"
+                    ),
+                )
+                backoff = await _backoff_wait(stop, backoff)
+                continue
             except (TelegramAPIError, TelegramNetworkError) as exc:
                 logger.warning(
                     "telegram.polling.get_updates_error",
                     error=str(exc),
                     backoff_seconds=backoff,
                 )
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(stop.wait()), timeout=backoff)
-                backoff = min(backoff * _BACKOFF_FACTOR, _BACKOFF_MAX_SECONDS)
+                backoff = await _backoff_wait(stop, backoff)
                 continue
 
             backoff = _BACKOFF_MIN_SECONDS
@@ -177,6 +189,13 @@ async def run_polling(
             await asyncio.gather(*pending, return_exceptions=True)
         await bot.session.close()
         logger.info("telegram.polling.stopped")
+
+
+async def _backoff_wait(stop: asyncio.Event, backoff: float) -> float:
+    """Sleep ``backoff`` seconds (or until ``stop`` is set); return the next backoff."""
+    with suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(stop.wait()), timeout=backoff)
+    return min(backoff * _BACKOFF_FACTOR, _BACKOFF_MAX_SECONDS)
 
 
 async def _configure_bot_commands_menu(bot: Bot) -> None:

@@ -1,0 +1,19 @@
+# Extra assistant instances for `make up / down / status` (see docs/DEVELOPMENT.md).
+# Copy to <ASSISTANT_CONFIG_DIR>/instances.yaml (e.g. config.local/instances.yaml).
+# The main instance is NOT listed here: it stays on `make start` / `make stop`
+# (port 8000, ./data, token from ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN).
+#
+# Tokens never go in this file: token_env names a variable in .env or the shell env.
+# Every instance needs its own bot token, port and data dir. Extra instances bind 127.0.0.1.
+instances:
+  research:                               # name: [a-z][a-z0-9_-]{0,31}
+    port: 8001                            # not 8000, unique, free
+    token_env: TG_BOT_TOKEN_RESEARCH      # must not start with ASSISTANT_
+    # data_dir: data/instances/research   # default: data/instances/<name>
+    # instance_name: research             # label in logs / "System started (...)"; default: name
+    # agent_node: false                   # default: agent_node ingress off
+    # env:                                # optional extra non-secret overrides
+    #   ASSISTANT_MEMORY_DEFAULT_USER_ID: research
+  writing:
+    port: 8002
+    token_env: TG_BOT_TOKEN_WRITING

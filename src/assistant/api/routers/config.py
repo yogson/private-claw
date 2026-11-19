@@ -13,7 +13,6 @@ from pydantic import BaseModel, ValidationError
 
 from assistant.api.deps import AdminAuthDep, RuntimeConfigDep, update_runtime_config_domain
 from assistant.core.config.loader import ConfigLoader, resolve_config_dir
-from assistant.core.config.schemas import RuntimeConfig
 
 router = APIRouter(prefix="/admin/config", tags=["admin-config"])
 
@@ -112,12 +111,28 @@ def _domain_schema(domain: str) -> type[BaseModel] | None:
     return mapping.get(domain)
 
 
-def _current_domain_dict(runtime_config: RuntimeConfig, domain: str) -> dict[str, Any]:
-    domain_obj = getattr(runtime_config, domain, None)
-    if domain_obj is None:
-        return {}
-    result: dict[str, Any] = domain_obj.model_dump()
-    return result
+def _read_domain_file_or_raise(loader: ConfigLoader, domain: str) -> dict[str, Any]:
+    """Return the domain's own YAML keys (no env overrides); {} if the file is absent."""
+    raw = loader.read_domain_file(domain)
+    if raw is not None:
+        return raw
+    filename = _FILENAME_MAP.get(domain)
+    if filename is not None and (resolve_config_dir() / filename).exists():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cannot read existing config file {filename}; fix it on disk first.",
+        )
+    return {}
+
+
+def _file_value(raw: dict[str, Any], schema_cls: type[BaseModel] | None, key: str) -> Any:
+    """Value of ``key`` as stored in the file, or the schema default when the file omits it."""
+    if key in raw:
+        return raw[key]
+    field = schema_cls.model_fields.get(key) if schema_cls is not None else None
+    if field is None or field.is_required():
+        return None
+    return field.get_default(call_default_factory=True)
 
 
 @router.get(
@@ -172,8 +187,14 @@ async def diff_config(
     runtime_config: RuntimeConfigDep,
     body: ValidateRequest,
 ) -> DiffResponse:
-    """Returns changed keys between current domain config and proposed payload."""
-    current = _current_domain_dict(runtime_config, body.domain)
+    """Returns changed keys between the domain's YAML file and the proposed payload.
+
+    ``current`` is the value stored in the file (or the schema default), not the live
+    value: env overrides are never written, so they are not part of the diff either.
+    """
+    del runtime_config  # kept for API compatibility; the diff is computed against the file
+    raw = _read_domain_file_or_raise(ConfigLoader(), body.domain)
+    schema_cls = _domain_schema(body.domain)
     allowed = _ALLOWLISTED_KEYS.get(body.domain, set())
     changes: list[DiffEntry] = []
     blocked: list[str] = []
@@ -182,7 +203,7 @@ async def diff_config(
         if key not in allowed:
             blocked.append(key)
             continue
-        current_val = current.get(key)
+        current_val = _file_value(raw, schema_cls, key)
         if current_val != proposed_val:
             changes.append(DiffEntry(key=key, current=current_val, proposed=proposed_val))
 
@@ -202,8 +223,13 @@ async def apply_config(
     """Applies allowlisted config changes to the YAML file after validation.
 
     Requires confirm=true. Non-allowlisted keys are silently ignored.
-    After a successful disk write, reloads the domain into the live runtime config.
+    The payload is merged into the file's own keys (read from disk), never into the
+    live config, so env-only overrides (e.g. ``ASSISTANT_APP_DATA_ROOT`` or the bot
+    token) are not persisted to the shared YAML. The result is validated with the
+    current env overrides applied. After a successful disk write, reloads the domain
+    into the live runtime config.
     """
+    del runtime_config  # kept for API compatibility; the merge base is the file on disk
     if not body.confirm:
         return ApplyResponse(
             applied=False,
@@ -218,15 +244,16 @@ async def apply_config(
         )
 
     allowed = _ALLOWLISTED_KEYS.get(body.domain, set())
-    current = _current_domain_dict(runtime_config, body.domain)
     filtered = {k: v for k, v in body.payload.items() if k in allowed}
 
     if not filtered:
         return ApplyResponse(applied=False, message="No allowlisted keys in payload.")
 
-    merged = {**current, **filtered}
+    loader = ConfigLoader()
+    file_data = _read_domain_file_or_raise(loader, body.domain)
+    merged = {**file_data, **filtered}
     try:
-        schema_cls(**merged)
+        schema_cls(**loader.apply_domain_env_overrides(body.domain, merged))
     except ValidationError as exc:
         errors = [f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors()]
         raise HTTPException(
@@ -252,7 +279,7 @@ async def apply_config(
 
     # Reload the updated domain from disk+env and update live runtime state.
     live_reloaded = False
-    new_domain_obj = ConfigLoader().reload_domain(body.domain)
+    new_domain_obj = loader.reload_domain(body.domain)
     if new_domain_obj is not None:
         update_runtime_config_domain(body.domain, new_domain_obj)
         live_reloaded = True
