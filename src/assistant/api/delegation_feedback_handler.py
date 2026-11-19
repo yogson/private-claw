@@ -9,7 +9,12 @@ from assistant.api.confirmation_handler import (
 )
 from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
 from assistant.core.confirmation import ConfirmationService
-from assistant.core.events.models import EventSource, EventType, OrchestratorEvent
+from assistant.core.events.models import (
+    SYSTEM_USER_ID,
+    EventSource,
+    EventType,
+    OrchestratorEvent,
+)
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import TaskRecord
 from assistant.subagents.coordinator import DelegationCoordinator
@@ -56,7 +61,7 @@ def _build_delegation_feedback_handler(
             event_type=EventType.SYSTEM_CONTROL_EVENT,
             source=EventSource.SYSTEM,
             session_id=session_id,
-            user_id=str(task.metadata.get("requested_by_user_id") or "system"),
+            user_id=str(task.metadata.get("requested_by_user_id") or SYSTEM_USER_ID),
             created_at=datetime.now(UTC),
             trace_id=trace_id,
             text="[[DELEGATION_COMPLETED]]\n" + json.dumps(payload, separators=(",", ":")),

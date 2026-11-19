@@ -23,6 +23,10 @@ class EventType(StrEnum):
     FILL_BLANKS_RESULTS = "fill_blanks_results"
 
 
+# user_id of events produced by the system on no user's behalf (no known requester).
+SYSTEM_USER_ID = "system"
+
+
 class EventSource(StrEnum):
     TELEGRAM = "telegram"
     SCHEDULER = "scheduler"

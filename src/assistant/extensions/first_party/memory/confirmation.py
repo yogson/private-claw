@@ -66,11 +66,14 @@ def memory_update_summary(intent: MemoryUpdateIntent) -> str:
         lines.append(f"Memory ID: {_clip(intent.memory_id, _MEMORY_ID_MAX_CHARS)}")
     body = intent.candidate.body_markdown.strip() if intent.candidate else ""
     if intent.action == MemoryUpdateAction.UPSERT and body:
-        if len(body) > MEMORY_BODY_MAX_UTF16:
-            # Normally rejected at propose time; never hide that text is missing.
+        size = utf16_len(body)
+        if size > MEMORY_BODY_MAX_UTF16:
+            # Normally rejected at propose time; never hide that text is missing. Cut in
+            # UTF-16 units; "ignore" drops a surrogate pair split by the cut.
+            shown = body.encode("utf-16-le", "surrogatepass")[: MEMORY_BODY_MAX_UTF16 * 2]
             body = (
-                body[:MEMORY_BODY_MAX_UTF16]
-                + f"\n… [truncated: {MEMORY_BODY_MAX_UTF16} of {len(body)} chars shown,"
+                shown.decode("utf-16-le", "ignore")
+                + f"\n… [truncated: {MEMORY_BODY_MAX_UTF16} of {size} UTF-16 units shown,"
                 " the full text will be saved]"
             )
         lines.append("")
@@ -97,7 +100,7 @@ def memory_update_dedupe_key(intent: MemoryUpdateIntent) -> str:
         ],
         ensure_ascii=False,
     )
-    return hashlib.sha256(material.encode()).hexdigest()[:32]
+    return hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()[:32]
 
 
 class MemoryUpdateHandler:

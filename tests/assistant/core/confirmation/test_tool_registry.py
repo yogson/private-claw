@@ -28,9 +28,23 @@ TOOLS_YAML = SRC_ROOT.parents[1] / "config" / "tools.yaml"
 REQUESTER_ATTR = "confirmation_requester"
 
 
+MODULE_LEVEL = "<module-level>"
+
+
+def _is_deps_expr(node: ast.expr) -> bool:
+    """``deps``, ``ctx`` or ``<x>.deps``: where a tool would read the requester from."""
+    return (isinstance(node, ast.Name) and node.id in {"deps", "ctx"}) or (
+        isinstance(node, ast.Attribute) and node.attr == "deps"
+    )
+
+
 def _reads_requester(node: ast.AST) -> bool:
-    """True if ``node`` reads ``<x>.confirmation_requester`` or
-    ``getattr(<x>, "confirmation_requester", ...)``."""
+    """True if ``node`` reads ``<x>.confirmation_requester``, or
+    ``getattr(<x>, "confirmation_requester", ...)``, or ``getattr(<deps>, <non-literal>)``.
+
+    A non-literal attribute name on the deps cannot be resolved statically, so it counts
+    as a read: it fails loudly instead of being silently skipped.
+    """
     for sub in ast.walk(node):
         if isinstance(sub, ast.Attribute) and sub.attr == REQUESTER_ATTR:
             return True
@@ -39,25 +53,33 @@ def _reads_requester(node: ast.AST) -> bool:
             and isinstance(sub.func, ast.Name)
             and sub.func.id == "getattr"
             and len(sub.args) >= 2
-            and isinstance(sub.args[1], ast.Constant)
-            and sub.args[1].value == REQUESTER_ATTR
         ):
-            return True
+            name = sub.args[1]
+            if isinstance(name, ast.Constant):
+                if name.value == REQUESTER_ATTR:
+                    return True
+            elif _is_deps_expr(sub.args[0]):
+                return True
     return False
 
 
 def _requester_users(tree: ast.Module) -> set[str]:
-    """Top-level functions and (``Class.method``) methods in ``tree`` that read the requester."""
+    """Functions and (``Class.method``) methods in ``tree`` that read the requester.
+
+    A read outside any function (module or class body, e.g. a lambda assigned to a name)
+    is reported as ``MODULE_LEVEL``, which is never a registered tool.
+    """
     users: set[str] = set()
 
     def visit(body: list[ast.stmt], prefix: str) -> None:
         for node in body:
             if isinstance(node, ast.ClassDef):
                 visit(node.body, f"{prefix}{node.name}.")
-            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _reads_requester(
-                node
-            ):
-                users.add(prefix + node.name)
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                if _reads_requester(node):
+                    users.add(prefix + node.name)
+            elif _reads_requester(node):
+                users.add(prefix + MODULE_LEVEL)
 
     visit(tree.body, "")
     return users
@@ -71,10 +93,7 @@ def _module_requester_uses() -> dict[str, set[str]]:
     """
     uses: dict[str, set[str]] = {}
     for path in sorted(SRC_ROOT.rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        if REQUESTER_ATTR not in source:
-            continue
-        tree = ast.parse(source)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         if not _reads_requester(tree):
             continue
         module = ".".join(path.relative_to(SRC_ROOT.parent).with_suffix("").parts)
@@ -206,6 +225,14 @@ def test_registry_has_no_stale_names() -> None:
             {"C.D.m"},
         ),
         ("x = 1\n", set()),
+        # Module-level and class-body reads are not attributed to any tool.
+        ("t = lambda ctx: ctx.deps.confirmation_requester\n", {MODULE_LEVEL}),
+        ("class C:\n    t = lambda ctx: ctx.deps.confirmation_requester\n", {f"C.{MODULE_LEVEL}"}),
+        ("r = getattr(deps, 'confirmation_requester')\n", {MODULE_LEVEL}),
+        # A non-literal attribute name on the deps cannot be checked: flagged, not skipped.
+        ("def t(ctx):\n    return getattr(ctx.deps, NAME)\n", {"t"}),
+        ("def t(deps, n):\n    return getattr(deps, n, None)\n", {"t"}),
+        ("def t(o, n):\n    return getattr(o, n, None)\n", set()),
     ],
 )
 def test_requester_user_detection(source: str, expected: set[str]) -> None:
