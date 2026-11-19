@@ -13,7 +13,7 @@ from assistant.agent.tools.registry import (
     collect_enabled_tool_ids,
 )
 from assistant.core.capabilities.claude_code_settings import collect_claude_code_mcp_servers
-from assistant.core.capabilities.resolver import resolve_policy
+from assistant.core.capabilities.resolver import resolve_effective_capabilities, resolve_policy
 from assistant.core.capabilities.schemas import (
     CapabilityDefinition,
     CapabilityToolBinding,
@@ -121,7 +121,10 @@ def test_denied_parent_children_excluded_from_tool_params(
 
 
 def test_denied_parent_children_excluded_from_prompt(denied_parent_config: RuntimeConfig) -> None:
-    prompt = _compose_system_prompt(active_for(denied_parent_config, _DENIED_PARENT_DEFS))
+    effective = resolve_effective_capabilities(
+        denied_parent_config.capabilities, _DENIED_PARENT_DEFS
+    )
+    prompt = _compose_system_prompt(_DENIED_PARENT_DEFS, effective)
     assert "PROMPT-base" in prompt
     assert "PROMPT-shared" in prompt
     for cap_id in ("parent", "child", "grandchild"):

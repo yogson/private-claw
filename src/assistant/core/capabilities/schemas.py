@@ -15,6 +15,9 @@ from assistant.core.config.schemas import CommandAllowlistEntry
 # catalog shares one parsed instance across snapshots, turns and adapters.
 _MANIFEST_MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True)
 
+# One line in the system prompt's capability index and in the Telegram /capabilities list.
+DESCRIPTION_MAX_CHARS = 160
+
 
 def _coerce_command_allowlist(v: object) -> list[CommandAllowlistEntry]:
     if not isinstance(v, list):
@@ -105,6 +108,12 @@ class CapabilityDefinition(BaseModel):
     model_config = _MANIFEST_MODEL_CONFIG
 
     capability_id: str
+    # One-line summary (<= 160 chars, no newlines) shown in the loadable-capability index
+    # of the system prompt and in the Telegram /capabilities picker.
+    description: str = ""
+    # Opt-in: list the capability in the index so the agent can activate it for the
+    # session with capability_load. Never implicit.
+    loadable: bool = False
     prompt: str = ""
     tools: list[CapabilityToolBinding] = Field(default_factory=list)
     tool_overrides: dict[str, CapabilityToolOverride] = Field(default_factory=dict)
@@ -112,6 +121,18 @@ class CapabilityDefinition(BaseModel):
     nested_capabilities: list[str] = Field(default_factory=list)
     # Whole MCP servers (ids from config/mcp_servers.yaml) whose tools this capability grants.
     mcp_servers: list[str] = Field(default_factory=list)
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, v: str) -> str:
+        v = v.strip()
+        if "\n" in v or "\r" in v:
+            raise ValueError("description must be a single line")
+        if len(v) > DESCRIPTION_MAX_CHARS:
+            raise ValueError(
+                f"description must be at most {DESCRIPTION_MAX_CHARS} characters (got {len(v)})"
+            )
+        return v
 
     def get_effective_tool_overrides(self, tool_id: str) -> dict[str, Any]:
         """Merge tool_overrides[tool_id] with any inline params from tools list."""

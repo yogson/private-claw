@@ -150,3 +150,14 @@ tools:
   - tool_id: start_fill_blanks_exercise
     entrypoint: assistant.extensions.language_learning.tools.start_fill_blanks_exercise:start_fill_blanks_exercise
     enabled: true
+
+  # Session-scoped capability loading. Not bound by any capability: exposed implicitly
+  # whenever a session has a loadable capability to load or a loaded one to unload.
+  # enabled: false here disables dynamic loading (no index in the system prompt).
+  - tool_id: capability_load
+    entrypoint: assistant.agent.tools.capability_loading:capability_load
+    enabled: true
+
+  - tool_id: capability_unload
+    entrypoint: assistant.agent.tools.capability_loading:capability_unload
+    enabled: true

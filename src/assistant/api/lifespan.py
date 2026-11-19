@@ -153,6 +153,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             default_model_id=runtime_config.model.default_model_id,
             capability_catalog=capability_catalog,
             default_capabilities=runtime_config.capabilities.enabled_capabilities,
+            denied_capabilities=runtime_config.capabilities.denied_capabilities,
             capability_context=capability_context,
             session_factory=session_factory,
         )
@@ -190,6 +191,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             vocabulary_store=vocabulary_store,
             capability_catalog=capability_catalog,
             confirmation_service=confirmations,
+            capability_context=capability_context,
         )
         delegation_coordinator.set_completion_callback(
             _build_delegation_feedback_handler(orchestrator, adapter, confirmations)
@@ -235,8 +237,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # lifetime (stdio servers are spawned here, not per turn). Runs in the background so a
     # slow or dead server never delays startup; a failed server is retried lazily with
     # backoff by the first turn that needs it. Servers only reachable through per-session
-    # capability overrides connect on first use. Started right before the try/finally that
-    # cancels it, so no failed init step above can leave a spawned stdio server orphaned.
+    # capability overrides or session-loaded capabilities connect on first use. Started
+    # right before the try/finally that cancels it, so no failed init step above can leave
+    # a spawned stdio server orphaned.
     mcp_start_task = asyncio.create_task(
         mcp_toolsets.start(
             runtime_config.mcp_servers,

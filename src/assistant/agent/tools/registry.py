@@ -8,8 +8,11 @@ Tool registration for Pydantic AI agent. Capability-first activation model:
 - config/capabilities/*.yaml: each capability declares which tools it activates.
   assistant = baseline; add-on capabilities (e.g. deploy, github-ops) extend the set.
 - Runtime availability: tool is exposed only if BOTH (1) enabled in tools.yaml AND
-  (2) listed and enabled in at least one active capability (enabled_capabilities,
-  excluding denied_capabilities).
+  (2) listed and enabled in at least one active capability (enabled_capabilities or the
+  session override, plus the session's loaded capabilities, excluding denied_capabilities).
+- capability_load / capability_unload are not bound by any capability: they are added
+  implicitly whenever the session has something to load (non-empty index) or to unload,
+  so no capability can unload the tool that loads capabilities.
 """
 
 from collections.abc import Mapping, Sequence
@@ -20,11 +23,11 @@ from typing import Any, cast, get_type_hints
 import structlog
 from pydantic_ai import Tool
 from pydantic_ai.tools import ToolFuncEither
-from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.toolsets import AbstractToolset, CombinedToolset, FunctionToolset
 
 from assistant.agent.deps import TurnDeps
 from assistant.core.capabilities.loader import collect_mcp_server_ids
-from assistant.core.capabilities.resolver import resolve_policy
+from assistant.core.capabilities.resolver import resolve_effective_capabilities, resolve_policy
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import RuntimeConfig
@@ -37,6 +40,33 @@ type AgentTool = Tool[TurnDeps] | ToolFuncEither[TurnDeps, ...]
 # Capability definitions of one snapshot plus the policy's active ids (nested expanded,
 # denied removed, missing manifests dropped) — see :func:`active_capabilities_for`.
 type ActiveCapabilities = tuple[Mapping[str, CapabilityDefinition], list[str]]
+
+CAPABILITY_LOAD_TOOL_ID = "capability_load"
+CAPABILITY_UNLOAD_TOOL_ID = "capability_unload"
+CAPABILITY_LOADING_TOOL_IDS = frozenset({CAPABILITY_LOAD_TOOL_ID, CAPABILITY_UNLOAD_TOOL_ID})
+
+
+def capability_loading_available(config: RuntimeConfig) -> bool:
+    """True when sessions may load capabilities: a positive limit and capability_load on.
+
+    tools.yaml stays the kill switch: with capability_load disabled (or missing) there is
+    no index in the prompt and no capability_load tool.
+    """
+    if config.capabilities.max_loaded_capabilities <= 0:
+        return False
+    return any(t.tool_id == CAPABILITY_LOAD_TOOL_ID and t.enabled for t in config.tools.tools)
+
+
+def capability_loading_tool_ids(
+    config: RuntimeConfig, definitions: Mapping[str, CapabilityDefinition]
+) -> set[str]:
+    """capability_load/unload when there is something to load or unload, else nothing."""
+    if not capability_loading_available(config):
+        return set()
+    effective = resolve_effective_capabilities(config.capabilities, definitions)
+    if effective.index or effective.loaded:
+        return set(CAPABILITY_LOADING_TOOL_IDS)
+    return set()
 
 
 def active_capabilities_for(
@@ -136,7 +166,9 @@ def get_agent_tools(config: RuntimeConfig, active: ActiveCapabilities) -> Sequen
 
     MCP servers are not tools here; see :func:`get_agent_mcp_toolsets`.
     """
-    first_party_ids = collect_enabled_tool_ids(active)
+    first_party_ids = collect_enabled_tool_ids(active) | capability_loading_tool_ids(
+        config, active[0]
+    )
     tool_defs = {t.tool_id: t for t in config.tools.tools if t.enabled}
 
     tools: list[AgentTool] = []
@@ -194,3 +226,45 @@ def get_agent_tools(config: RuntimeConfig, active: ActiveCapabilities) -> Sequen
                 )
             )
     return tools
+
+
+def agent_tool_name(tool: AgentTool) -> str:
+    """The model-facing name of a first-party tool (``Tool.name`` or the function name)."""
+    if isinstance(tool, Tool):
+        return tool.name
+    return str(getattr(tool, "__name__", ""))
+
+
+def build_incremental_toolset(
+    turn_config: RuntimeConfig,
+    current_config: RuntimeConfig,
+    snapshot: CapabilitySnapshot,
+) -> tuple[AbstractToolset[Any] | None, list[str], list[str]]:
+    """Tools of ``current_config`` that the adapter built from ``turn_config`` lacks.
+
+    Used when capability_load runs mid-turn: the turn's adapter (prompt + tools) is fixed,
+    so the newly activated capabilities' first-party tools and MCP servers are exposed on
+    the next model request through a per-run-step dynamic toolset. Tools and servers the
+    adapter already has are skipped (no duplicate tool names). Returns
+    ``(toolset or None, new first-party tool names, new MCP server ids)``.
+    """
+    turn_active = active_capabilities_for(turn_config, snapshot)
+    current_active = active_capabilities_for(current_config, snapshot)
+    existing = {agent_tool_name(t) for t in get_agent_tools(turn_config, turn_active)}
+    new_tools = [
+        t
+        for t in get_agent_tools(current_config, current_active)
+        if agent_tool_name(t) not in existing
+    ]
+    existing_servers = set(collect_enabled_mcp_server_ids(turn_active))
+    new_server_ids = [
+        sid for sid in collect_enabled_mcp_server_ids(current_active) if sid not in existing_servers
+    ]
+    toolsets: list[AbstractToolset[Any]] = []
+    if new_tools:
+        toolsets.append(FunctionToolset[TurnDeps](list(new_tools), max_retries=0))
+    toolsets.extend(mcp_toolsets.toolsets_for(current_config.mcp_servers, new_server_ids))
+    if not toolsets:
+        return None, [], []
+    toolset: AbstractToolset[Any] = toolsets[0] if len(toolsets) == 1 else CombinedToolset(toolsets)
+    return toolset, sorted(agent_tool_name(t) for t in new_tools), new_server_ids

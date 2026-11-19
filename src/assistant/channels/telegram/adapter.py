@@ -104,6 +104,7 @@ class TelegramAdapter:
         capability_catalog: CapabilityCatalogInterface | None = None,
         default_capabilities: list[str] | None = None,
         capability_context: SessionCapabilityContextInterface | None = None,
+        denied_capabilities: list[str] | None = None,
         session_factory: SessionContextFactory | None = None,
     ) -> None:
         self._config = config
@@ -117,6 +118,7 @@ class TelegramAdapter:
         self._model_allowlist = model_allowlist or []
         self._default_model_id = default_model_id or ""
         self._default_capabilities: list[str] = list(default_capabilities or [])
+        self._denied_capabilities: list[str] = list(denied_capabilities or [])
         secret = config.session_resume_hmac_secret or config.bot_token
         self._model_select: ModelSelectService | None = None
         if self._model_allowlist and secret:
@@ -598,11 +600,16 @@ class TelegramAdapter:
             chat_id=chat_id,
             trace_id=trace_id,
             enabled_capabilities=enabled,
+            loaded_capabilities=self._capability_context.get_loaded_capabilities(session_id),
+            denied_capabilities=self._denied_capabilities,
         )
 
     def handle_capabilities_callback(self, event: NormalizedEvent) -> str | None:
         """
         Process a signed capability-select callback and toggle the capability for the chat.
+
+        A capability in the session's loaded set (capability_load) is unloaded; any other
+        capability is toggled in the per-session override.
 
         Returns the toggled capability_id on success, None if invalid.
         """
@@ -619,7 +626,19 @@ class TelegramAdapter:
             )
             return None
         session_id = event.session_id
-        if session_id:
+        loaded = self._capability_context.get_loaded_capabilities(session_id) if session_id else []
+        if session_id and capability_id in loaded:
+            remaining = [c for c in loaded if c != capability_id]
+            self._capability_context.set_loaded_capabilities(session_id, remaining)
+            logger.info(
+                "telegram.adapter.capability_select.unloaded",
+                chat_id=chat_id,
+                session_id=session_id,
+                capability_id=capability_id,
+                loaded_capabilities=remaining,
+                trace_id=event.trace_id,
+            )
+        elif session_id:
             stored = self._capability_context.get_capabilities(session_id)
             current = list(stored if stored is not None else self._default_capabilities)
             if capability_id in current:
@@ -724,6 +743,7 @@ class TelegramAdapter:
         cleared = await self._session_store.clear_session(event.session_id)
         if cleared:
             self.clear_capabilities_override(event.session_id)
+            self._capability_context.set_loaded_capabilities(event.session_id, [])
         logger.info(
             "telegram.adapter.session_reset",
             session_id=event.session_id,

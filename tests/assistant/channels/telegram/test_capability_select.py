@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
@@ -33,6 +33,7 @@ from assistant.channels.telegram.models import (
 from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.config.schemas import TelegramChannelConfig
+from assistant.core.session_context import SessionCapabilityContextService
 from tests.assistant.capability_helpers import StaticCatalog, snapshot_of
 
 _SECRET = "test-hmac-secret"
@@ -319,3 +320,69 @@ class TestAdapterCapabilitySelect:
     def test_get_capabilities_override_returns_none_for_empty_session_id(self) -> None:
         adapter = self._make_adapter()
         assert adapter.get_capabilities_override("") is None
+
+
+_LOADABLE_DEFS: dict[str, CapabilityDefinition] = {
+    "web_search": CapabilityDefinition(capability_id="web_search", prompt="Search the web."),
+    "notes": CapabilityDefinition(
+        capability_id="notes", loadable=True, description="Apple_Notes *read*", prompt="N"
+    ),
+    "deploy": CapabilityDefinition(capability_id="deploy", loadable=True, prompt="D"),
+    "plain": CapabilityDefinition(capability_id="plain", prompt="P"),
+}
+
+
+class TestLoadedCapabilitiesInPicker:
+    def _adapter(self, context: SessionCapabilityContextService) -> TelegramAdapter:
+        config = TelegramChannelConfig(
+            enabled=True,
+            bot_token="12345:token",
+            allowlist=[_CHAT_ID],
+            session_resume_hmac_secret=_SECRET,
+        )
+        return TelegramAdapter(
+            config,
+            session_store=MagicMock(),
+            capability_catalog=StaticCatalog(snapshot_of(_LOADABLE_DEFS)),
+            default_capabilities=["web_search"],
+            denied_capabilities=["deploy"],
+            capability_context=context,
+        )
+
+    @pytest.mark.asyncio
+    async def test_menu_marks_loaded_and_inactive_loaded_capabilities(self) -> None:
+        context = SessionCapabilityContextService()
+        context.set_loaded_capabilities("tg:1", ["notes", "deploy", "plain", "gone"])
+        resp = await self._adapter(context).build_capabilities_menu_response(_CHAT_ID, "tg:1", "t")
+        lines = resp.text.splitlines()
+        assert "`notes` ✓ (loaded) — Apple\\_Notes \\*read\\*" in "\n".join(lines)
+        assert any("`deploy` (loaded, inactive: denied)" in line for line in lines)
+        assert any("`plain` (loaded, inactive: not loadable)" in line for line in lines)
+        # A loaded id whose manifest is gone is still listed, so it can be unloaded.
+        assert any("`gone` (loaded, inactive: missing)" in line for line in lines)
+        assert any("`web_search` ✓" in line for line in lines)
+        assert any(a.callback_id == "capability:gone" for a in resp.actions)
+
+    def test_pressing_a_loaded_capability_unloads_it(self) -> None:
+        context = SessionCapabilityContextService()
+        session_id = f"tg:{_CHAT_ID}"
+        context.set_loaded_capabilities(session_id, ["notes", "plain"])
+        adapter = self._adapter(context)
+        event = _make_event(callback_data=_forge_capability_callback("notes", _CHAT_ID, _SECRET))
+
+        assert adapter.handle_capabilities_callback(event) == "notes"
+
+        assert context.get_loaded_capabilities(session_id) == ["plain"]
+        assert context.get_capabilities(session_id) is None  # the override is untouched
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_the_loaded_set(self) -> None:
+        context = SessionCapabilityContextService()
+        session_id = f"tg:{_CHAT_ID}"
+        context.set_loaded_capabilities(session_id, ["notes"])
+        adapter = self._adapter(context)
+        adapter._session_store.clear_session = AsyncMock(return_value=True)  # type: ignore[union-attr]
+
+        assert await adapter.reset_session_context(_make_event(text="/reset")) is True
+
+        assert context.get_loaded_capabilities(session_id) == []

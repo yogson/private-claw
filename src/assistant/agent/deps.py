@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic_ai.toolsets import AbstractToolset
+
 from assistant.core.confirmation.models import ConfirmationDraft, ConfirmationRequestResult
 
 # Hard cap on check_subagent_status/read_subagent_log calls for the same
@@ -58,6 +60,16 @@ class TurnDeps:
         Callable[[ConfirmationDraft], Awaitable[ConfirmationRequestResult]] | None
     ) = None
     """Optional async callback that registers a user confirmation for the current session."""
+    capability_load_handler: Callable[[str, str], dict[str, Any]] | None = None
+    """Optional callback (capability_id, reason) -> result dict; persists a session load."""
+    capability_unload_handler: Callable[[str], dict[str, Any]] | None = None
+    """Optional callback capability_id -> result dict; removes a session-loaded capability."""
+    loaded_toolset: AbstractToolset[Any] | None = None
+    """Mutable: tools of capabilities loaded during this turn (set by the load handler).
+
+    The adapter exposes it through a per-run-step dynamic toolset, so these tools are
+    callable from the next model request of the same turn.
+    """
 
 
 def consume_subagent_poll_budget(deps: TurnDeps, task_id: str) -> bool:

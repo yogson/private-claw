@@ -80,6 +80,11 @@ denied_capabilities: []
 
 Capability definition schema (`config/capabilities/*.yaml`):
 - `capability_id`: stable identifier (e.g. `assistant`, `omnichem-deploy`).
+- `description`: optional one-line summary (stripped, at most 160 characters, no newlines),
+  shown in the loadable-capability index of the system prompt and in the Telegram
+  `/capabilities` picker.
+- `loadable`: bool, default `false`. Opt-in: lists the capability in the index so a session
+  can activate it with `capability_load` (see "Dynamic Activation Model"). Never implicit.
 - `prompt`: optional system prompt fragment appended for this capability.
 - `tools`: list of `{tool_id, enabled, params_override}` bindings.
 - `tool_overrides`: optional per-tool param overrides keyed by tool_id.
@@ -109,7 +114,9 @@ Resolution flow:
    `resolve_active_capabilities(enabled, denied, snapshot.definitions)`
    (`core/capabilities/resolver.py`), used by every consumer (system prompt, tools, tool
    params, mismatch check, MCP toolsets, sub-agent MCP servers, `~/.claude/settings.json`):
-   - start from `enabled_capabilities` (or the per-session override), in order,
+   - start from `enabled_capabilities` (or the per-session override), in order, followed
+     by the session's loaded capabilities (`capability_load`) in load order, see
+     `resolve_effective_capabilities` and "Dynamic Activation Model",
    - expand `nested_capabilities` depth-first, cycle-safe, children right after their parent,
    - never include **or descend into** a capability listed in `denied_capabilities`: the
      children of a denied capability are active only if they are enabled explicitly or
@@ -133,7 +140,7 @@ Parameter merge semantics:
 - Within one capability:
   - inline `tools[].params_override` is applied first,
   - `tool_overrides[tool_id]` is applied after it (therefore wins on key conflicts).
-- If multiple capabilities override the same tool/key, later capabilities in `enabled_capabilities` win.
+- If multiple capabilities override the same tool/key, later capabilities in the resolved active order win (`enabled_capabilities` order, then session-loaded capabilities in load order).
 
 List handling:
 - `command_allowlist` is replaced by override value (not deep-merged item-by-item).
@@ -149,7 +156,11 @@ Skill manifest schema requirements:
 
 Capability policy schema (`config/capabilities.yaml`):
 - `enabled_capabilities`: list of capability IDs to enable (must have a manifest in `config/capabilities/*.yaml`).
-- `denied_capabilities`: list of capability IDs to block (overrides enabled).
+- `denied_capabilities`: list of capability IDs to block (overrides enabled and session-loaded).
+- `max_loaded_capabilities`: int >= 0, default 5. How many capabilities one session may add
+  with `capability_load`; `0` disables dynamic loading (no index, no load tools).
+- `session_loaded_capabilities` is a runtime-only field of the same model (the orchestrator
+  fills it per turn from the session state); bootstrap rejects it in `capabilities.yaml`.
 
 MCP server registry schema requirements (`config/mcp_servers.yaml`):
 - `id`: stable identifier (letters, digits, `_`, `-`); it prefixes the tool names (`mcp_<id>_<tool>`).
@@ -213,7 +224,8 @@ edit tools are all picked up the same way, without a restart.
 Validation and last-known-good (LKG):
 - Per file: YAML parse, dict shape and the strict `CapabilityDefinition` schema.
 - Cross-file (on the whole candidate): duplicate `capability_id`, `nested_capabilities`
-  refer to known ids, and (validator from bootstrap) the active set's tool bindings exist
+  refer to known ids, and (validator from bootstrap) the tool bindings of the active set and
+  of every non-denied `loadable` capability (with its nested children) exist
   and are enabled in `tools.yaml`, do not use the reserved `mcp_` prefix and their
   entrypoints resolve (`core/capabilities/validation.py`, shared by bootstrap and reload).
 - **Any** blocking issue rejects the reload as a whole: the previous snapshot (same
@@ -247,13 +259,22 @@ Validation and last-known-good (LKG):
 One snapshot per turn: the orchestrator calls `refresh()` once and passes that snapshot to
 the tool-mismatch check, `TurnAdapterCache.get_or_build(config, snapshot)` (system prompt +
 tools) and `build_tool_runtime_params(config, snapshot)`. Delegation feedback turns use the
-same path. The turn's `prompt_trace` records `capabilities.revision`, the active ids and the
-`manifest_sha256` of each active capability.
+same path. The turn's `prompt_trace` records `capabilities.revision`, `base` (resolved base
+ids), `loaded` (effective session-loaded ids at turn start), `active`, the `manifest_sha256`
+of each active capability and, when dynamic loading is on, the `index`. Stored loaded ids
+that did not take effect are listed in `loaded_ignored` (`id -> reason`), and
+`loading_events` lists the turn's `capability_load` / `capability_unload` calls (`loaded`,
+`unloaded`, `load_rejected`, `unload_rejected`, with status / activated / deactivated ids
+and the model's `reason`).
 
 Adapter cache and prompt:
-- `TurnAdapterCache` key: `(frozenset(enabled), frozenset(denied), snapshot.revision)`. A
-  new revision builds new adapters (new prompt and tools) and evicts all adapters of older
-  revisions; the cache is also LRU-bounded (16 entries).
+- `TurnAdapterCache` key: `(frozenset(enabled), loaded, frozenset(denied),
+  snapshot.revision)`, where `loaded` is the tuple of the session's *effective* loaded ids
+  in load order (ignored ids and ids already active through the base set are left out). Two
+  sessions share an adapter only if their effective sets are identical; per-session state
+  is passed per run in `TurnDeps`, never stored in the adapter. A new revision builds new
+  adapters (new prompt and tools) and evicts all adapters of older revisions; the cache is
+  also LRU-bounded (16 entries).
 - The system prompt is composed from the snapshot only and is byte-stable for a revision,
   so the Anthropic instruction cache keeps hitting. The current date is **not** part of it:
   it is a dynamic pydantic-ai instruction evaluated on every run, sent as a separate block
@@ -262,10 +283,12 @@ Adapter cache and prompt:
 Derived state follows revisions:
 - The Telegram `/capabilities` picker reads the catalog on every render.
 - Sub-agent MCP servers (`claude_code_settings.mcp_servers` of the default policy's active
-  set) are recomputed and handed to both Claude Code backends on every new revision
+  set; per-session overrides and session-loaded capabilities do not contribute) are
+  recomputed and handed to both Claude Code backends on every new revision
   (`SubagentMcpServersSync`); tasks already running keep their servers.
 - `~/.claude/settings.json` is applied once at startup and then re-applied only when a
   revision changes the `claude_code_settings` of the default policy's active capabilities
+  (session-loaded capabilities never write it)
   (`ClaudeCodeSettingsSync`, created in `api/lifespan.py`). The sync records only a
   successful apply, so a write skipped at startup or later is retried with the next
   revision even if that revision leaves `claude_code_settings` unchanged. The merge semantics are unchanged: if no active capability
@@ -287,6 +310,16 @@ Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
 ## Dynamic Activation Model (Normative)
 
 The system must separate **runtime registry availability** from **model-visible tool context**.
+
+Implementation status:
+- **D2, agent-driven loading: implemented** (see "Session Capability Loading (D2)" below).
+  The system prompt carries a compact index of loadable capabilities; the agent activates
+  one for the session with `capability_load`. Gates: the human `loadable: true` opt-in, the
+  policy's `denied_capabilities` and `max_loaded_capabilities`.
+- **D3, automatic relevance-based shortlisting: planned.** The flow below (candidates from
+  intent signals, ranking, per-turn descriptor injection without a tool call) and the
+  "Catalog Query Contract" are not implemented yet; D2's `description` field, index and
+  resolver are their building blocks.
 
 - Runtime registry may discover and validate all manifests at startup.
 - The model must not receive all tool definitions by default.
@@ -313,6 +346,104 @@ For MCP-backed capabilities, steps 2-4 must additionally enforce:
 - server connectivity and health checks,
 - tool-level allowlisting from MCP mapping config,
 - risk-class confirmation gates before descriptor injection.
+
+### Session Capability Loading (D2)
+
+Manifests opt in with `loadable: true` (plus a one-line `description`). Per turn the
+orchestrator builds the effective set (`core/capabilities/resolver.py`,
+`resolve_effective_capabilities`):
+
+```
+base   = per-session /capabilities override if set, else enabled_capabilities
+loaded = the session's capability_load set, in load order
+active = resolve_active_capabilities(base ++ loaded, denied)
+index  = sorted(loadable capabilities that are neither active nor denied)
+```
+
+- `denied_capabilities` always wins: a denied capability is never indexed or loadable, and
+  its nested children are not activated through it.
+- Loading `A` activates `A`'s nested children through the resolver. Children are only
+  indexed if they are `loadable` themselves.
+- A stored loaded id that is denied, has no manifest, is no longer `loadable` (live reload)
+  or exceeds `max_loaded_capabilities` does not take effect. The orchestrator logs a
+  `capability.loaded_ignored` warning on each turn, the id stays in the stored set, and
+  `/capabilities` shows it as inactive. It takes effect again once the reason is gone.
+
+System prompt layout (`agent/system_prompt_builder.py`):
+
+```
+<base prompt>
+<prompts of base capabilities, sorted>
+<prompts of loaded capabilities and their nested children, in load order>
+## Loadable capabilities
+Call capability_load(capability_id, reason) when a request needs one of these:
+- <id> — <description>
+Loaded for this session: <ids>. Call capability_unload(capability_id) when ...   (if any)
+```
+
+Loading therefore leaves the base prefix byte-identical. The index is sorted by id, holds no
+tool definitions, and is omitted when it is empty or dynamic loading is off
+(`max_loaded_capabilities: 0`, or `capability_load` disabled or missing in `tools.yaml`).
+
+Tools (`agent/tools/capability_loading.py`, registered in `tools.yaml`). No capability binds
+them; they are added implicitly whenever the session's index or loaded set is non-empty, so
+no capability can unload the tool that loads capabilities. `tools.yaml` `enabled: false` is
+the kill switch.
+
+- `capability_load(capability_id, reason)` validates the request against the turn's snapshot
+  (`core/capabilities/session_loading.py`, `decide_load`). The checks run in this order:
+  `denied`, `unknown`, `already_active` (base, nested or loaded), `not_loadable`,
+  `limit_reached`. On success the id is persisted for the session, and the result is
+  `{status: "loaded", capability_id, activated, prompt, tools, mcp_servers,
+  tools_available: "next_step", note}`. `prompt` holds the instructions of the newly
+  activated capabilities, so the model can follow them in the same turn.
+- **Same-turn availability:** the new first-party tools and MCP servers are callable from the
+  **next model request of the same turn**. Each adapter has a pydantic-ai per-run-step
+  `DynamicToolset` that reads `TurnDeps.loaded_toolset`. The load handler fills it with the
+  tools the turn's adapter lacks; tools it already has are skipped, so names never clash.
+  Tool params for these new tools are added to the turn's `tool_runtime_params`. From the
+  **next turn** the capability's prompt is part of the system prompt and its tools are part
+  of the (cached) adapter.
+- `capability_unload(capability_id)` removes an id from the session's loaded set
+  (`decide_unload`): `{status: "unloaded", deactivated, note}`. Rejections are
+  `base_capability` (part of the base set) and `not_loaded` (never loaded, or only active
+  as the nested child of a loaded capability). Tools that are already available stay
+  callable until the end of the turn; from the next turn they are gone, together with
+  nested children that were active only through the unloaded capability.
+- No user confirmation: loading only activates capabilities a human marked `loadable` and the
+  policy allows.
+- Structured logs: `capability.loaded`, `capability.unloaded`, `capability.load_rejected`,
+  `capability.unload_rejected`, `capability.loaded_ignored`. The model's `reason` is kept
+  out of the logs; it is recorded in the turn's `prompt_trace.capabilities.loading_events`.
+
+Persistence (`core/session_context/capability_context.py`):
+- The loaded set is a per-session map in `SessionCapabilityContextService`
+  (`data/runtime/active_capability_context.json`). It is keyed by `session_id` next to the
+  `/capabilities` override, but independent of it: changing the override keeps the loaded
+  set. The file format stays version 2 with the optional keys `loaded` / `loaded_timestamps`,
+  so older readers ignore them.
+- It is not derived from message history, so compaction and the replay budget cannot lose
+  it, and it survives restarts. A new session (`/new`) starts empty; `/reset` clears it.
+- Eviction: an entry is pruned after `max_age_days` (30) without a turn. Every turn
+  refreshes its timestamp, writing at most once a day, so a session that is in use keeps
+  its loaded set.
+- Telegram `/capabilities` lists loaded capabilities as `✓ (loaded)`, or
+  `(loaded, inactive: denied | missing | not loadable | over limit)`. Pressing a loaded
+  capability unloads it, and a loaded id whose manifest is gone stays listed so it can be
+  removed. The picker also shows each capability's `description`.
+
+Interplay:
+- The tool-mismatch check runs on the effective set, so tools of loaded capabilities count
+  as active; `capability_load`/`capability_unload` themselves are ignored by it. If the
+  model unloads a capability right after using its tools, the next turn is blocked by the
+  usual mismatch warning, as with any capability that is switched off.
+- Live reload: each turn re-resolves the stored set against the turn's snapshot, so a
+  capability that is deleted, denied or unflagged drops out (with the warning above) and the
+  index updates on the next turn.
+- Not yet per session: `claude_code_settings` (`~/.claude/settings.json`) and sub-agent MCP
+  servers still follow the default policy only. A loaded capability's
+  `claude_code_settings` are ignored. Making them per session would need per-task MCP and
+  settings for delegations (follow-up).
 
 ## Catalog Query Contract
 

@@ -1,7 +1,8 @@
 """
 Component ID: CMP_CORE_AGENT_ORCHESTRATOR
 
-Per-chat capability override storage for Telegram sessions.
+Per-session capability state for Telegram sessions: the ``/capabilities`` override and the
+set of capabilities added with ``capability_load``.
 """
 
 import json
@@ -13,8 +14,13 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Version 2 plus the optional "loaded" / "loaded_timestamps" maps; older readers of version 2
+# ignore the extra keys, so the format stays readable after a downgrade.
 _STORAGE_VERSION = 2
 _DEFAULT_MAX_AGE_DAYS = 30
+# A session's loaded set is kept while the session is used: every turn refreshes its
+# timestamp, but writes the file at most this often.
+_LOADED_TOUCH_INTERVAL = timedelta(days=1)
 
 
 class SessionCapabilityContextInterface(Protocol):
@@ -29,6 +35,15 @@ class SessionCapabilityContextInterface(Protocol):
     def clear_capabilities(self, context_id: str) -> None:
         """Remove capability override for the given context."""
 
+    def get_loaded_capabilities(self, session_id: str) -> list[str]:
+        """Return the capabilities loaded with capability_load, in load order."""
+
+    def set_loaded_capabilities(self, session_id: str, capabilities: list[str]) -> None:
+        """Replace the loaded set of ``session_id`` (an empty list clears it)."""
+
+    def touch_loaded_capabilities(self, session_id: str) -> None:
+        """Mark the loaded set of ``session_id`` as in use (keeps it from being pruned)."""
+
 
 class SessionCapabilityContextService:
     """Persisted per-chat capability override storage.
@@ -41,6 +56,12 @@ class SessionCapabilityContextService:
     last set more than ``max_age_days`` days ago is evicted on the next save.
     This prevents the JSON store from growing without bound in long-running
     deployments (one entry per session, never previously evicted).
+
+    The loaded set (``capability_load``) is a separate map keyed by session id with its own
+    timestamps. It is independent of the override (changing the override keeps it) and is
+    pruned after ``max_age_days`` without a turn: :meth:`touch_loaded_capabilities` runs on
+    every turn, so a session that is still in use keeps its loaded set. A new session id
+    starts empty. It is not derived from message history, so compaction cannot lose it.
     """
 
     def __init__(
@@ -52,6 +73,8 @@ class SessionCapabilityContextService:
         self._max_age_days = max_age_days
         self._capability_overrides: dict[str, list[str]] = {}
         self._timestamps: dict[str, str] = {}
+        self._loaded: dict[str, list[str]] = {}
+        self._loaded_timestamps: dict[str, str] = {}
         self._load()
 
     def get_capabilities(self, context_id: str) -> list[str] | None:
@@ -79,6 +102,38 @@ class SessionCapabilityContextService:
         self._timestamps.pop(normalized, None)
         self._save()
 
+    def get_loaded_capabilities(self, session_id: str) -> list[str]:
+        """Return a copy of the loaded set of *session_id* (empty when none)."""
+        return list(self._loaded.get(session_id.strip(), ()))
+
+    def set_loaded_capabilities(self, session_id: str, capabilities: list[str]) -> None:
+        """Persist *capabilities* (deduplicated, order kept) as the loaded set."""
+        normalized = session_id.strip()
+        if not normalized:
+            return
+        clean = list(dict.fromkeys(c.strip() for c in capabilities if c.strip()))
+        if clean:
+            self._loaded[normalized] = clean
+            self._loaded_timestamps[normalized] = datetime.now(UTC).isoformat()
+        elif normalized in self._loaded:
+            self._loaded.pop(normalized, None)
+            self._loaded_timestamps.pop(normalized, None)
+        else:
+            return
+        self._save()
+
+    def touch_loaded_capabilities(self, session_id: str) -> None:
+        """Refresh the loaded set's timestamp; writes only if it is older than a day."""
+        normalized = session_id.strip()
+        if normalized not in self._loaded:
+            return
+        now = datetime.now(UTC)
+        last = _parse_timestamp(self._loaded_timestamps.get(normalized, ""))
+        if last is not None and now - last < _LOADED_TOUCH_INTERVAL:
+            return
+        self._loaded_timestamps[normalized] = now.isoformat()
+        self._save()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -99,6 +154,9 @@ class SessionCapabilityContextService:
         if raw.get("__version") == _STORAGE_VERSION:
             contexts = raw.get("contexts", {})
             timestamps = raw.get("timestamps", {})
+            self._loaded, self._loaded_timestamps = _parse_string_lists(
+                raw.get("loaded", {}), raw.get("loaded_timestamps", {})
+            )
         else:
             # Migrate from old flat-dict format.  Assign the current time to all
             # entries so nothing is immediately pruned on the first upgraded load.
@@ -134,28 +192,20 @@ class SessionCapabilityContextService:
 
     def _prune_stale_entries(self) -> None:
         """Remove entries whose last-set timestamp is older than ``max_age_days`` days."""
-        if not self._capability_overrides:
-            return
         cutoff = datetime.now(UTC) - timedelta(days=self._max_age_days)
-        stale: list[str] = []
-        for ctx_id in list(self._capability_overrides):
-            ts_str = self._timestamps.get(ctx_id, "")
-            try:
-                ts = datetime.fromisoformat(ts_str)
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=UTC)
-                if ts < cutoff:
-                    stale.append(ctx_id)
-            except (ValueError, TypeError):
-                # Unparseable or missing timestamp — treat the entry as stale.
-                stale.append(ctx_id)
+        stale = _stale_keys(self._capability_overrides, self._timestamps, cutoff)
         for ctx_id in stale:
             self._capability_overrides.pop(ctx_id, None)
             self._timestamps.pop(ctx_id, None)
-        if stale:
+        stale_loaded = _stale_keys(self._loaded, self._loaded_timestamps, cutoff)
+        for session_id in stale_loaded:
+            self._loaded.pop(session_id, None)
+            self._loaded_timestamps.pop(session_id, None)
+        if stale or stale_loaded:
             logger.info(
                 "capability_context.pruned_stale_entries",
                 count=len(stale),
+                loaded_count=len(stale_loaded),
                 max_age_days=self._max_age_days,
             )
 
@@ -169,6 +219,8 @@ class SessionCapabilityContextService:
                 "__version": _STORAGE_VERSION,
                 "contexts": self._capability_overrides,
                 "timestamps": self._timestamps,
+                "loaded": self._loaded,
+                "loaded_timestamps": self._loaded_timestamps,
             }
             encoded = json.dumps(payload)
             tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -176,3 +228,47 @@ class SessionCapabilityContextService:
             tmp_path.replace(path)
         except OSError:
             logger.warning("capability_context.save_failed", path=str(path))
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+
+
+def _stale_keys(
+    entries: dict[str, list[str]], timestamps: dict[str, str], cutoff: datetime
+) -> list[str]:
+    """Keys whose timestamp is older than ``cutoff``; a missing/unparseable one is stale."""
+    stale: list[str] = []
+    for key in entries:
+        ts = _parse_timestamp(timestamps.get(key, ""))
+        if ts is None or ts < cutoff:
+            stale.append(key)
+    return stale
+
+
+def _parse_string_lists(
+    raw_entries: object, raw_timestamps: object
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Validate a persisted ``{key: [str, ...]}`` map and its ``{key: iso-ts}`` timestamps."""
+    if not isinstance(raw_entries, dict):
+        return {}, {}
+    timestamps = raw_timestamps if isinstance(raw_timestamps, dict) else {}
+    entries: dict[str, list[str]] = {}
+    entry_ts: dict[str, str] = {}
+    for key, values in raw_entries.items():
+        if not isinstance(key, str) or not key.strip() or not isinstance(values, list):
+            continue
+        clean = list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
+        if not clean:
+            continue
+        entries[key.strip()] = clean
+        ts = timestamps.get(key, "")
+        if isinstance(ts, str) and ts:
+            entry_ts[key.strip()] = ts
+    return entries, entry_ts

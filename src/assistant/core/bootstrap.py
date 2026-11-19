@@ -95,6 +95,11 @@ def bootstrap_with_catalog(
         raise SystemExit(str(exc)) from exc
 
     policy = runtime_config.capabilities
+    if policy.session_loaded_capabilities:
+        raise SystemExit(
+            "capabilities.yaml: session_loaded_capabilities is runtime-only (filled per session "
+            "by capability_load); use enabled_capabilities instead"
+        )
     try:
         # The same cross-file validator rejects broken reloads at runtime.
         catalog = CapabilityCatalog(
@@ -110,8 +115,11 @@ def bootstrap_with_catalog(
             f"Enabled capability '{cap_id}' has no manifest in config/capabilities/*.yaml"
         ) from None
 
+    # Loadable capabilities can be activated by any session, so their MCP servers are
+    # checked like the enabled ones.
+    loadable = sorted(cap_id for cap_id, d in definitions.items() if d.loadable)
     active = resolve_active_capabilities(
-        policy.enabled_capabilities, policy.denied_capabilities, definitions
+        [*policy.enabled_capabilities, *loadable], policy.denied_capabilities, definitions
     )
     _validate_mcp_capabilities(runtime_config, definitions, active)
     _validate_delegation_defaults(runtime_config, runtime_config.tools.tools)

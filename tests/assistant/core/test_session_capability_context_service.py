@@ -2,7 +2,10 @@
 Unit tests for SessionCapabilityContextService.
 """
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from assistant.core.session_context import SessionCapabilityContextService
 
@@ -123,3 +126,120 @@ def test_multiple_contexts_persisted(tmp_path: Path) -> None:
     assert restarted.get_capabilities("telegram:111") == ["cap_x"]
     assert restarted.get_capabilities("telegram:222") == ["cap_y", "cap_z"]
     assert restarted.get_capabilities("telegram:333") is None
+
+
+# --- session-loaded capabilities (capability_load) ------------------------------------
+
+
+def test_loaded_set_defaults_to_empty() -> None:
+    assert SessionCapabilityContextService().get_loaded_capabilities("tg:1:a") == []
+
+
+def test_loaded_set_roundtrips_and_survives_restart(tmp_path: Path) -> None:
+    path = tmp_path / "capability_context.json"
+    first = SessionCapabilityContextService(path)
+    first.set_loaded_capabilities("tg:1:a", ["notes", "deploy", "notes"])
+    first.set_capabilities("tg:1:a", ["assistant"])
+
+    restarted = SessionCapabilityContextService(path)
+    assert restarted.get_loaded_capabilities("tg:1:a") == ["notes", "deploy"]
+    assert restarted.get_capabilities("tg:1:a") == ["assistant"]
+    assert restarted.get_loaded_capabilities("tg:1:other") == []
+
+
+def test_loaded_set_is_independent_of_the_override(tmp_path: Path) -> None:
+    service = SessionCapabilityContextService(tmp_path / "ctx.json")
+    service.set_loaded_capabilities("tg:1:a", ["notes"])
+    service.set_capabilities("tg:1:a", ["assistant", "extra"])
+    service.clear_capabilities("tg:1:a")
+    assert service.get_loaded_capabilities("tg:1:a") == ["notes"]
+
+
+def test_clearing_the_loaded_set_is_persisted(tmp_path: Path) -> None:
+    path = tmp_path / "ctx.json"
+    service = SessionCapabilityContextService(path)
+    service.set_loaded_capabilities("tg:1:a", ["notes"])
+    service.set_loaded_capabilities("tg:1:a", [])
+    assert SessionCapabilityContextService(path).get_loaded_capabilities("tg:1:a") == []
+    assert "tg:1:a" not in json.loads(path.read_text())["loaded"]
+
+
+def test_returned_loaded_list_is_a_copy() -> None:
+    service = SessionCapabilityContextService()
+    service.set_loaded_capabilities("tg:1:a", ["notes"])
+    service.get_loaded_capabilities("tg:1:a").append("mutated")
+    assert service.get_loaded_capabilities("tg:1:a") == ["notes"]
+
+
+def _write_loaded(path: Path, loaded_ts: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "__version": 2,
+                "contexts": {},
+                "timestamps": {},
+                "loaded": {"tg:1:a": ["notes"]},
+                "loaded_timestamps": {"tg:1:a": loaded_ts},
+            }
+        )
+    )
+
+
+def test_stale_loaded_set_is_pruned(tmp_path: Path) -> None:
+    path = tmp_path / "ctx.json"
+    _write_loaded(path, (datetime.now(UTC) - timedelta(days=31)).isoformat())
+    assert SessionCapabilityContextService(path).get_loaded_capabilities("tg:1:a") == []
+
+
+def test_touch_keeps_an_in_use_loaded_set_from_being_pruned(tmp_path: Path) -> None:
+    path = tmp_path / "ctx.json"
+    _write_loaded(path, (datetime.now(UTC) - timedelta(days=29)).isoformat())
+    service = SessionCapabilityContextService(path)
+    service.touch_loaded_capabilities("tg:1:a")  # a turn of the session
+    with patch(
+        "assistant.core.session_context.capability_context.datetime",
+        wraps=datetime,
+    ) as fake_dt:
+        fake_dt.now.return_value = datetime.now(UTC) + timedelta(days=5)
+        restarted = SessionCapabilityContextService(path)
+    assert restarted.get_loaded_capabilities("tg:1:a") == ["notes"]
+
+
+def test_touch_writes_at_most_once_a_day(tmp_path: Path) -> None:
+    path = tmp_path / "ctx.json"
+    service = SessionCapabilityContextService(path)
+    service.set_loaded_capabilities("tg:1:a", ["notes"])
+    before = path.read_text()
+    service.touch_loaded_capabilities("tg:1:a")
+    assert path.read_text() == before
+
+
+def test_file_without_loaded_keys_still_loads(tmp_path: Path) -> None:
+    """Files written before capability_load existed have no "loaded" map."""
+    path = tmp_path / "ctx.json"
+    now = datetime.now(UTC).isoformat()
+    path.write_text(
+        json.dumps({"__version": 2, "contexts": {"c": ["a"]}, "timestamps": {"c": now}})
+    )
+    service = SessionCapabilityContextService(path)
+    assert service.get_capabilities("c") == ["a"]
+    assert service.get_loaded_capabilities("c") == []
+
+
+def test_malformed_loaded_entries_are_skipped(tmp_path: Path) -> None:
+    path = tmp_path / "ctx.json"
+    now = datetime.now(UTC).isoformat()
+    path.write_text(
+        json.dumps(
+            {
+                "__version": 2,
+                "contexts": {},
+                "timestamps": {},
+                "loaded": {"ok": ["notes", 3, " "], "bad": "notes", "": ["x"]},
+                "loaded_timestamps": {"ok": now},
+            }
+        )
+    )
+    service = SessionCapabilityContextService(path)
+    assert service.get_loaded_capabilities("ok") == ["notes"]
+    assert service.get_loaded_capabilities("bad") == []

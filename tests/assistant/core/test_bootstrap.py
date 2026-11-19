@@ -242,3 +242,31 @@ def test_bootstrap_fails_when_delegation_default_model_not_allowlisted(
     (config_dir / "tools.yaml").write_text(yaml.dump(tools_data))
     with pytest.raises(SystemExit, match="delegation_default_model_id"):
         bootstrap(config_dir)
+
+
+def test_bootstrap_rejects_session_loaded_capabilities_in_policy_file(config_dir: Path) -> None:
+    (config_dir / "capabilities.yaml").write_text(
+        yaml.dump(
+            {"enabled_capabilities": ["assistant"], "session_loaded_capabilities": ["assistant"]}
+        )
+    )
+    with pytest.raises(SystemExit, match="runtime-only"):
+        bootstrap(config_dir)
+
+
+def test_bootstrap_fails_when_loadable_capability_references_missing_tool(
+    config_dir: Path,
+) -> None:
+    """A loadable capability can be activated by any session, so it is validated up front."""
+    (config_dir / "capabilities" / "notes.yaml").write_text(
+        yaml.dump(
+            {
+                "capability_id": "notes",
+                "loadable": True,
+                "description": "Notes",
+                "tools": [{"tool_id": "no_such_tool"}],
+            }
+        )
+    )
+    with pytest.raises(SystemExit, match="no_such_tool"):
+        bootstrap(config_dir)

@@ -192,6 +192,12 @@ class CapabilitiesPolicyConfig(BaseModel):
 
     enabled_capabilities: list[str] = Field(default_factory=list)
     denied_capabilities: list[str] = Field(default_factory=list)
+    # Upper bound of capabilities one session may add with capability_load; 0 disables
+    # dynamic loading (no index in the prompt, no capability_load/unload tools).
+    max_loaded_capabilities: int = Field(default=5, ge=0)
+    # Runtime only, never read from capabilities.yaml (bootstrap rejects it there): the
+    # orchestrator fills it per turn with the session's capability_load set, in load order.
+    session_loaded_capabilities: list[str] = Field(default_factory=list)
 
 
 class McpServerEntry(BaseModel):

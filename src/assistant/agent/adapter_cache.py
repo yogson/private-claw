@@ -14,12 +14,14 @@ from collections import OrderedDict
 import structlog
 
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
+from assistant.core.capabilities.resolver import resolve_effective_capabilities
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import RuntimeConfig
 
 logger = structlog.get_logger(__name__)
 
-type AdapterCacheKey = tuple[frozenset[str], frozenset[str], int]
+# (enabled, effective session-loaded ids in load order, denied, snapshot revision)
+type AdapterCacheKey = tuple[frozenset[str], tuple[str, ...], frozenset[str], int]
 
 DEFAULT_MAX_ADAPTERS = 16
 
@@ -27,11 +29,15 @@ DEFAULT_MAX_ADAPTERS = 16
 class TurnAdapterCache:
     """Cache of :class:`PydanticAITurnAdapter` instances.
 
-    The key is ``(frozenset(enabled), frozenset(denied), snapshot.revision)``: the raw
-    (unexpanded) policy plus the capability snapshot revision. The same policy against
-    the same revision always resolves to the same prompt and tools, so such configs share
-    an entry; a manifest change (new revision) or a different ``denied`` list builds a
-    new adapter.
+    The key is ``(frozenset(enabled), loaded, frozenset(denied), snapshot.revision)``: the
+    raw (unexpanded) base policy, the session's *effective* loaded capabilities (in load
+    order, which fixes the prompt layout; stored ids that are ignored or already active
+    through the base set are left out), and the capability snapshot revision. The same
+    effective set against the same revision always resolves to the same prompt and tools,
+    so such configs share an entry, and sessions with different loaded sets never share
+    one; a manifest change (new revision), a load/unload or a different ``denied`` list
+    builds (or reuses) another adapter. Per-session state never lives in the adapter: it is
+    passed per run through ``TurnDeps``.
 
     Memory stays bounded: when a newer revision is first requested, all adapters of
     older revisions are evicted, and the cache never holds more than ``max_size``
@@ -106,7 +112,8 @@ class TurnAdapterCache:
         logger.info(
             "adapter_cache.miss",
             capability_key=sorted(key[0]),
-            denied_key=sorted(key[1]),
+            loaded_key=list(key[1]),
+            denied_key=sorted(key[2]),
             revision=snapshot.revision,
             cache_size=len(self._cache),
         )
@@ -127,7 +134,7 @@ class TurnAdapterCache:
     # ------------------------------------------------------------------
 
     def _evict_older_than(self, revision: int) -> None:
-        stale = [key for key in self._cache if key[2] < revision]
+        stale = [key for key in self._cache if key[3] < revision]
         for key in stale:
             del self._cache[key]
         logger.info(
@@ -150,8 +157,13 @@ class TurnAdapterCache:
     def _make_key(config: RuntimeConfig, snapshot: CapabilitySnapshot) -> AdapterCacheKey:
         """Derive a stable, hashable cache key from the raw policy and the revision."""
         policy = config.capabilities
+        loaded: tuple[str, ...] = ()
+        if policy.session_loaded_capabilities:
+            effective = resolve_effective_capabilities(policy, snapshot.definitions)
+            loaded = tuple(effective.loaded)
         return (
             frozenset(policy.enabled_capabilities),
+            loaded,
             frozenset(policy.denied_capabilities),
             snapshot.revision,
         )

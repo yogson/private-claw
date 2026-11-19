@@ -8,3 +8,6 @@ enabled_capabilities:
   - delegation_coding
   - language_learning
 denied_capabilities: []
+# Capabilities a session may add on demand with capability_load (manifests with
+# loadable: true, listed in the system prompt's index). 0 disables dynamic loading.
+max_loaded_capabilities: 5

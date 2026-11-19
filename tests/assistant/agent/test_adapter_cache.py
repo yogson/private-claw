@@ -118,10 +118,10 @@ class TestTurnAdapterCache:
         assert adapter_ab is adapter_ba
         assert cache.size == 1
 
-    def test_make_key_includes_enabled_denied_and_revision(self) -> None:
+    def test_make_key_includes_enabled_loaded_denied_and_revision(self) -> None:
         config = _make_config(["b", "a", "c"], denied=["c"])
         key = TurnAdapterCache._make_key(config, _snap(7))
-        assert key == (frozenset({"a", "b", "c"}), frozenset({"c"}), 7)
+        assert key == (frozenset({"a", "b", "c"}), (), frozenset({"c"}), 7)
 
     def test_different_denied_lists_get_different_adapters(
         self, mock_adapter_cls: MagicMock

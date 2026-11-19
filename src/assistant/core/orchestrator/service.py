@@ -25,10 +25,16 @@ from assistant.agent.pydantic_ai_agent import (
     _new_messages_to_session_records,
 )
 from assistant.agent.tools import build_tool_runtime_params
-from assistant.agent.tools.registry import active_capabilities_for, collect_enabled_tool_ids
+from assistant.agent.tools.registry import (
+    CAPABILITY_LOADING_TOOL_IDS,
+    active_capabilities_for,
+    capability_loading_available,
+    collect_enabled_tool_ids,
+)
 from assistant.agent.webapp_button_extractor import _extract_pending_webapp_buttons
 from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
+from assistant.core.capabilities.resolver import resolve_effective_capabilities
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
 from assistant.core.confirmation import (
@@ -40,6 +46,7 @@ from assistant.core.confirmation import (
 )
 from assistant.core.events.models import AttachmentMeta, OrchestratorEvent
 from assistant.core.orchestrator.attachments import AttachmentDownloaderInterface
+from assistant.core.orchestrator.capability_loading import TurnCapabilityLoader, log_ignored_loaded
 from assistant.core.orchestrator.compaction import ChatCompactionService
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.models import OrchestratorResult
@@ -60,6 +67,10 @@ from assistant.core.orchestrator.persistence import (
 )
 from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.core.session.factory import SessionContextFactory
+from assistant.core.session_context.capability_context import (
+    SessionCapabilityContextInterface,
+    SessionCapabilityContextService,
+)
 from assistant.extensions.mcp.toolsets import is_mcp_tool_name
 from assistant.memory.interfaces import MemoryRetrievalInterface
 from assistant.memory.retrieval.models import RetrievalQuery
@@ -165,6 +176,7 @@ class Orchestrator:
         usage_service: Any | None = None,
         capability_catalog: CapabilityCatalogInterface | None = None,
         confirmation_service: ConfirmationService | None = None,
+        capability_context: SessionCapabilityContextInterface | None = None,
     ) -> None:
         self._store = store
         self._confirmations = confirmation_service
@@ -182,6 +194,15 @@ class Orchestrator:
             capability_catalog
             if capability_catalog is not None
             else CapabilityCatalog(config.config_dir)
+        )
+        # Per-session capability state: the session's capability_load set is read here at
+        # every turn start and written by the capability_load/unload handlers. The app
+        # passes the persisted service shared with the Telegram /capabilities picker; the
+        # fallback is in-memory (tests, ad-hoc embedding).
+        self._capability_context: SessionCapabilityContextInterface = (
+            capability_context
+            if capability_context is not None
+            else SessionCapabilityContextService()
         )
         self._session_factory = session_factory
         self._session_traces = SessionTraceManager()
@@ -378,6 +399,16 @@ class Orchestrator:
                 session_id, created_confirmations
             ),
         )
+        capability_loader: TurnCapabilityLoader | None = None
+        if capability_loading_available(cfg):
+            capability_loader = TurnCapabilityLoader(
+                session_id=session_id,
+                turn_config=cfg,
+                snapshot=snapshot,
+                store=self._capability_context,
+                deps=deps,
+            )
+            capability_loader.attach()
         try:
             response_text, new_msgs, usage = await adapter.run_turn(
                 messages=msg_dicts,
@@ -586,14 +617,24 @@ class Orchestrator:
             raise
         prompt_trace: dict[str, Any] | None = None
         if self._config.model.prompt_trace_enabled:
-            active_ids = active_capabilities_for(cfg, snapshot)[1]
+            effective = resolve_effective_capabilities(cfg.capabilities, snapshot.definitions)
+            active_ids = effective.active
+            capabilities_trace: dict[str, Any] = {
+                "revision": snapshot.revision,
+                "base": effective.base,
+                "loaded": effective.loaded,
+                "active": active_ids,
+                "manifest_sha256": snapshot.file_hashes(active_ids),
+            }
+            if effective.ignored_loaded:
+                capabilities_trace["loaded_ignored"] = dict(effective.ignored_loaded)
+            if capability_loader is not None:
+                capabilities_trace["index"] = effective.index
+                if capability_loader.events:
+                    capabilities_trace["loading_events"] = capability_loader.events
             prompt_trace = {
                 "system_prompt": adapter.system_prompt,
-                "capabilities": {
-                    "revision": snapshot.revision,
-                    "active": active_ids,
-                    "manifest_sha256": snapshot.file_hashes(active_ids),
-                },
+                "capabilities": capabilities_trace,
                 "user_prompt": {
                     "content": current_user_message.content,
                     "content_blocks": current_user_message.content_blocks,
@@ -712,18 +753,11 @@ class Orchestrator:
         else:
             user_message = LLMMessage(role=MessageRole.USER, content=user_content)
 
-        effective_config: RuntimeConfig | None = None
-        if event.capabilities_override is not None:
-            modified_caps = CapabilitiesPolicyConfig(
-                enabled_capabilities=event.capabilities_override,
-                denied_capabilities=self._config.capabilities.denied_capabilities,
-            )
-            effective_config = self._config.model_copy(update={"capabilities": modified_caps})
-
         # Exactly one capability snapshot per turn: the mismatch check, the adapter (system
         # prompt + tools) and the tool runtime params all see the same manifest revision.
         # A broken manifest on disk never raises here; the catalog keeps the last-known-good.
         capability_snapshot = self._capability_catalog.refresh()
+        effective_config = self._effective_config(event, capability_snapshot)
 
         token = set_trace_id(trace_id)
         try:
@@ -786,6 +820,35 @@ class Orchestrator:
                 return result
         finally:
             reset_trace_id(token)
+
+    def _effective_config(
+        self, event: OrchestratorEvent, snapshot: CapabilitySnapshot
+    ) -> RuntimeConfig | None:
+        """The turn's config: base policy (override or enabled) + the session's loaded set.
+
+        Returns None when neither applies, so the turn runs on the default config (and the
+        pre-warmed default adapter).
+        """
+        loaded = self._capability_context.get_loaded_capabilities(event.session_id)
+        if loaded:
+            self._capability_context.touch_loaded_capabilities(event.session_id)
+        if event.capabilities_override is None and not loaded:
+            return None
+        base = self._config.capabilities
+        policy = CapabilitiesPolicyConfig(
+            enabled_capabilities=(
+                event.capabilities_override
+                if event.capabilities_override is not None
+                else base.enabled_capabilities
+            ),
+            denied_capabilities=base.denied_capabilities,
+            max_loaded_capabilities=base.max_loaded_capabilities,
+            session_loaded_capabilities=loaded,
+        )
+        if loaded:
+            effective = resolve_effective_capabilities(policy, snapshot.definitions)
+            log_ignored_loaded(event.session_id, effective, snapshot.revision)
+        return self._config.model_copy(update={"capabilities": policy})
 
     def _build_confirmation_requester(
         self, session_id: str, created: list[ConfirmationRequest] | None
@@ -881,7 +944,9 @@ class Orchestrator:
 
         MCP tools (``mcp_<server>_<tool>``, see ``is_mcp_tool_name``) are excluded from
         the comparison: they are discovered from the servers at runtime and are not
-        listed as tool ids.
+        listed as tool ids. So are capability_load/unload, which come and go with the
+        loadable-capability index. ``config`` is the turn's effective config, so tools of
+        session-loaded capabilities count as active.
 
         Returns ``None`` when no mismatch is detected (common path).
         """
@@ -905,7 +970,9 @@ class Orchestrator:
             ):
                 tool_name = record.payload.get("tool_name", "")
                 if tool_name and not (
-                    is_mcp_tool_name(tool_name) or tool_name.startswith(_LEGACY_MCP_TOOL_PREFIXES)
+                    is_mcp_tool_name(tool_name)
+                    or tool_name.startswith(_LEGACY_MCP_TOOL_PREFIXES)
+                    or tool_name in CAPABILITY_LOADING_TOOL_IDS
                 ):
                     historical_tools.add(tool_name)
 

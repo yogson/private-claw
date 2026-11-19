@@ -98,3 +98,19 @@ def test_catalog_reload_rejects_bad_binding_and_allows_deleting_enabled(tmp_path
     assert snap.revision == 2  # deleting an enabled manifest is allowed at runtime...
     assert set(snap.definitions) == {"a"}
     assert [i.kind for i in snap.errors] == ["warning"]  # ...but reported
+
+
+def test_loadable_capabilities_are_validated_even_when_not_enabled() -> None:
+    """A session can activate a loadable capability at any time, so it is checked up front."""
+    loadable = CapabilityDefinition(
+        capability_id="b", loadable=True, tools=[CapabilityToolBinding(tool_id="ghost")]
+    )
+    msgs = _messages(_config(["a"]), {"a": _cap("a", "ok"), "b": loadable})
+    assert any("'b' references tool 'ghost'" in m for m in msgs)
+
+
+def test_denied_loadable_capability_is_not_validated() -> None:
+    loadable = CapabilityDefinition(
+        capability_id="b", loadable=True, tools=[CapabilityToolBinding(tool_id="ghost")]
+    )
+    assert _messages(_config(["a"], denied=["b"]), {"a": _cap("a", "ok"), "b": loadable}) == []

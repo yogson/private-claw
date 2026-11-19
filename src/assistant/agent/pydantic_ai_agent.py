@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from pydantic_ai.toolsets import AbstractToolset, DynamicToolset
 
 from assistant.agent.ask_question_extractor import _extract_pending_ask_question
 from assistant.agent.constants import ASK_QUESTION_TOOL_NAME
@@ -33,7 +34,8 @@ from assistant.agent.message_converters import (
 from assistant.agent.session_record_builder import _new_messages_to_session_records
 from assistant.agent.system_prompt_builder import _compose_system_prompt, current_date_instruction
 from assistant.agent.tools import TurnDeps, get_agent_mcp_toolsets, get_agent_tools
-from assistant.agent.tools.registry import ActiveCapabilities, active_capabilities_for
+from assistant.agent.tools.registry import ActiveCapabilities, capability_loading_available
+from assistant.core.capabilities.resolver import resolve_effective_capabilities
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.extensions.first_party.memory import normalize_candidate_for_upsert
@@ -161,6 +163,11 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _turn_loaded_toolset(ctx: RunContext[TurnDeps]) -> AbstractToolset[Any] | None:
+    """Tools of capabilities loaded during the current turn (see TurnDeps.loaded_toolset)."""
+    return getattr(ctx.deps, "loaded_toolset", None)
+
+
 def _create_agent(
     model_id: str,
     system_prompt: str,
@@ -172,7 +179,14 @@ def _create_agent(
 
     ``instructions`` is evaluated on every run (a dynamic instruction placed after the
     cached static system prompt), so per-turn facts never go stale in a cached adapter.
+    The trailing per-run-step dynamic toolset exposes tools of capabilities loaded with
+    capability_load during the run; it reads only the run's own deps, so a cached adapter
+    shared by several sessions never leaks one session's loads into another.
     """
+    toolsets: list[AbstractToolset[TurnDeps]] = [
+        *get_agent_mcp_toolsets(config, active),
+        DynamicToolset(_turn_loaded_toolset, per_run_step=True, id="turn_loaded_capabilities"),
+    ]
     return Agent(
         model_id,
         deps_type=TurnDeps,
@@ -181,7 +195,7 @@ def _create_agent(
         # tools: keep at 0 to prevent loops; output: allow 1 validation retry
         retries={"tools": 0, "output": 1},
         tools=get_agent_tools(config, active),
-        toolsets=get_agent_mcp_toolsets(config, active),
+        toolsets=toolsets,
     )
 
 
@@ -208,10 +222,13 @@ class PydanticAITurnAdapter:
                 "PydanticAITurnAdapter requires config and a capability snapshot "
                 "for capability-gated tools"
             )
-        active = active_capabilities_for(config, snapshot)
+        effective = resolve_effective_capabilities(config.capabilities, snapshot.definitions)
+        active: ActiveCapabilities = (snapshot.definitions, effective.active)
         self._clock = clock
         self._revision = snapshot.revision
-        self._system_prompt = _compose_system_prompt(active)
+        self._system_prompt = _compose_system_prompt(
+            snapshot.definitions, effective, index_enabled=capability_loading_available(config)
+        )
         self._agent = _create_agent(
             model_id, self._system_prompt, config, active, instructions=self._date_instruction
         )

@@ -10,6 +10,7 @@ removed or broken on disk show up without a restart.
 
 import re
 import uuid
+from collections.abc import Mapping
 
 from assistant.channels.telegram.capability_select_callbacks import (
     sign_capability_callback,
@@ -17,7 +18,9 @@ from assistant.channels.telegram.capability_select_callbacks import (
 )
 from assistant.channels.telegram.models import ActionButton, ChannelResponse, MessageType
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
+from assistant.core.capabilities.resolver import resolve_effective_capabilities
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
+from assistant.core.config.schemas import CapabilitiesPolicyConfig
 
 _BUTTON_LABEL_MAX = 64
 _MAX_ERRORS_SHOWN = 3
@@ -25,6 +28,12 @@ _ERROR_MAX_CHARS = 200
 _LOCATION_RE = re.compile(r"line (\d+), column (\d+)")
 # An absolute POSIX path; group 1 is its last component (the file name).
 _ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~/:-])/(?:[^\s/'\"`]+/)*([^\s/'\"`]+)")
+_INACTIVE_LABELS = {
+    "denied": "denied",
+    "unknown": "missing",
+    "not_loadable": "not loadable",
+    "limit_reached": "over limit",
+}
 
 
 class CapabilitySelectService:
@@ -50,13 +59,19 @@ class CapabilitySelectService:
         chat_id: int,
         trace_id: str,
         enabled_capabilities: list[str],
+        loaded_capabilities: list[str] | None = None,
+        denied_capabilities: list[str] | None = None,
     ) -> ChannelResponse:
         """
         Build an interactive ChannelResponse with inline buttons for capability selection.
 
         Each button carries a chat-scoped, timestamped signed payload.
-        Enabled capabilities are marked with a checkmark (✓). When the latest manifest
-        reload failed, a warning lists the errors and the revision still in use.
+        Enabled capabilities are marked with a checkmark (✓); capabilities the agent loaded
+        for the session (capability_load) are marked "loaded" (pressing the button unloads
+        them), or "loaded, inactive: <reason>" when they no longer take effect (denied,
+        manifest missing or no longer loadable). Descriptions are listed in the text. When
+        the latest manifest reload failed, a warning lists the errors and the revision
+        still in use.
         """
         snapshot = self._catalog.refresh()
         definitions = snapshot.definitions
@@ -71,11 +86,29 @@ class CapabilitySelectService:
             )
 
         enabled_set = set(enabled_capabilities)
+        loaded = list(dict.fromkeys(loaded_capabilities or []))
+        # The limit is enforced when loading; the picker only reports why a stored id is
+        # inactive, so every stored id is allowed here.
+        effective = resolve_effective_capabilities(
+            CapabilitiesPolicyConfig(
+                enabled_capabilities=enabled_capabilities,
+                denied_capabilities=denied_capabilities or [],
+                max_loaded_capabilities=len(loaded),
+                session_loaded_capabilities=loaded,
+            ),
+            definitions,
+        )
         lines = [*_error_lines(snapshot), "*Select capabilities for this session:*\n"]
         actions: list[ActionButton] = []
-        for i, cap_id in enumerate(sorted(definitions), 1):
-            marker = " ✓" if cap_id in enabled_set else ""
-            lines.append(f"{i}. `{cap_id}`{marker}")
+        for i, cap_id in enumerate(sorted({*definitions, *loaded}), 1):
+            marker = _marker(cap_id, enabled_set, loaded, effective.ignored_loaded)
+            definition = definitions.get(cap_id)
+            description = (
+                f" — {_escape_markdown(definition.description)}"
+                if definition is not None and definition.description
+                else ""
+            )
+            lines.append(f"{i}. `{cap_id}`{marker}{description}")
             button_label = f"{i}. {cap_id}{marker}"
             actions.append(
                 ActionButton(
@@ -110,6 +143,20 @@ class CapabilitySelectService:
             expected_chat_id=expected_chat_id,
             secret=self._secret,
         )
+
+
+def _escape_markdown(text: str) -> str:
+    # Telegram legacy Markdown: a stray _, *, ` or [ in free text breaks the whole message.
+    return re.sub(r"([_*`\[])", r"\\\1", text)
+
+
+def _marker(cap_id: str, enabled: set[str], loaded: list[str], ignored: Mapping[str, str]) -> str:
+    if cap_id in loaded:
+        reason = ignored.get(cap_id)
+        if reason is not None:
+            return f" (loaded, inactive: {_INACTIVE_LABELS.get(reason, reason)})"
+        return " ✓ (loaded)"
+    return " ✓" if cap_id in enabled else ""
 
 
 def _error_lines(snapshot: CapabilitySnapshot) -> list[str]:

@@ -48,9 +48,11 @@ def validate_policy_bindings(
     definitions: Mapping[str, CapabilityDefinition],
     resolve_entrypoint: EntrypointResolver | None = None,
 ) -> list[CapabilityLoadIssue]:
-    """Validate the policy's active capabilities against tools.yaml.
+    """Validate the policy's active and loadable capabilities against tools.yaml.
 
-    Bindings of the active set (enabled, nested expanded, denied removed) must reference
+    Bindings of the active set (enabled, nested expanded, denied removed) and of every
+    non-denied ``loadable`` capability (which a session may activate with capability_load,
+    together with its nested children) must reference
     tools that exist and are enabled in tools.yaml and must not use the reserved
     ``mcp_`` prefix; with ``resolve_entrypoint`` their entrypoints must resolve to
     callables. Enabled capabilities without a manifest are reported as non-blocking
@@ -64,8 +66,9 @@ def validate_policy_bindings(
         )
         for cap_id in find_missing_capabilities(policy.enabled_capabilities, definitions)
     ]
+    loadable = sorted(cap_id for cap_id, d in definitions.items() if d.loadable)
     active = resolve_active_capabilities(
-        policy.enabled_capabilities, policy.denied_capabilities, definitions
+        [*policy.enabled_capabilities, *loadable], policy.denied_capabilities, definitions
     )
     catalog = {t.tool_id: t for t in runtime_config.tools.tools}
     enabled_tools = {t.tool_id for t in runtime_config.tools.tools if t.enabled}
