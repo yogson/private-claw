@@ -82,6 +82,7 @@ class TestCapabilityContext:
         assert ctx < system < user < objective.index("--- Environment ---")
         assert metadata["capabilities"] == ["widgets"]
         assert "do not modify the main checkout" in objective
+        assert metadata["backend_params"]["mcp_capabilities"] == ["widgets"]
 
     async def test_many_capabilities_and_nested_are_included_once(self, env: Env) -> None:
         _use(
@@ -136,3 +137,4 @@ class TestCapabilityContext:
         objective, metadata = await _objective(env)
         assert "Project context" not in objective
         assert metadata["capabilities"] == []
+        assert metadata["backend_params"]["mcp_capabilities"] == []

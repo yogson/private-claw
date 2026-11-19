@@ -419,6 +419,12 @@ class AgentNodeService:
                         "backend_params": {
                             "directory": workdir,
                             "permission_mode": self.config.permission_mode,
+                            # Exactly the MCP servers of the repo's capabilities (none
+                            # for a job without a repo), resolved by the backend at run
+                            # time so server secrets never land in the task record.
+                            "mcp_capabilities": list(
+                                repo_cfg.capabilities if repo_cfg is not None else []
+                            ),
                         },
                         "tool_params": self._tool_params(run_seconds),
                         "task_metadata": {

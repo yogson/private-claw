@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from assistant.core.bootstrap import bootstrap_with_catalog
 from assistant.core.capabilities import ClaudeCodeSettingsSync, SubagentMcpServersSync
 from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.resolver import resolve_policy
+from assistant.core.capabilities.subagent_mcp import SubagentMcp, build_subagent_mcp
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.core.confirmation import (
     ConfirmationHandlerRegistry,
@@ -77,6 +78,15 @@ def _build_delegation_coordinator(
     )
     subagent_mcp_sync(capability_catalog.current())
     capability_catalog.subscribe(subagent_mcp_sync)
+
+    def _resolve_run_mcp(capability_ids: Sequence[str]) -> SubagentMcp:
+        # Live snapshot: a capability reload applies to runs started from now on.
+        return build_subagent_mcp(
+            capability_ids, capability_catalog.current().definitions, runtime_config.mcp_servers
+        )
+
+    claude_code_backend.set_mcp_resolver(_resolve_run_mcp)
+    claude_code_streaming_backend.set_mcp_resolver(_resolve_run_mcp)
     return DelegationCoordinator(
         store=store,
         config=runtime_config,

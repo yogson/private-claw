@@ -728,3 +728,39 @@ async def test_bypass_mode_still_allows_tool_requests() -> None:
     context = ToolPermissionContext(signal=None, suggestions=[])
     result = await opts.can_use_tool("Bash", {"command": "ls"}, context)
     assert isinstance(result, PermissionResultAllow)
+
+
+@pytest.mark.asyncio
+async def test_named_capabilities_get_resolved_servers_and_tool_filter_hook() -> None:
+    from assistant.core.capabilities.subagent_mcp import McpToolFilter, SubagentMcp
+
+    captured: list[Any] = []
+
+    async def _fake_query(
+        *, prompt: Any, options: Any, transport: Any = None
+    ) -> AsyncGenerator[Any, None]:
+        captured.append(options)
+        yield _make_result_msg(result="done")
+
+    resolved = SubagentMcp(
+        servers={"fin": {"type": "stdio", "command": "/bin/fin", "args": []}},
+        tool_filters={"fin": McpToolFilter(include=frozenset({"rate"}))},
+    )
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter(mcp_servers={"global": {"type": "sse"}})
+        adapter.set_mcp_resolver(lambda ids: resolved)
+        await adapter.execute(_make_request(backend_params={"mcp_capabilities": ["fin_cap"]}))
+
+    opts = captured[0]
+    assert opts.mcp_servers == resolved.servers
+    (matcher,) = opts.hooks["PreToolUse"]
+    hook = matcher.hooks[0]
+    denied = await hook({"tool_name": "mcp__fin__other"}, None, None)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert await hook({"tool_name": "mcp__fin__rate"}, None, None) == {}
+
+
+@pytest.mark.asyncio
+async def test_runs_without_named_capabilities_keep_global_servers() -> None:
+    opts = await _capture_options({})
+    assert opts.hooks == {"PreToolUse": []}
