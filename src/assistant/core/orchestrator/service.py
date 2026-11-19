@@ -130,11 +130,13 @@ def _ordered_recent_turn_ids(
 ) -> set[str]:
     """Return the set of the last ``keep_recent_turns`` turn_ids in sequence order.
 
-    Synthetic turns (``compaction-*`` summaries) never count toward the kept
-    window. Records without a turn_id are ignored.
+    Synthetic turns (``compaction-*`` summaries, ``confirmation-<id>`` resolutions)
+    never count toward the kept window. Resolution turns stored after the first kept
+    turn are kept with it. Records without a turn_id are ignored.
     """
     if keep_recent_turns <= 0:
         return set()
+    confirmation_turn_ids = {r.turn_id for r in chat_records if is_confirmation_record(r)}
     ordered: list[str] = []
     seen: set[str] = set()
     for r in sorted(chat_records, key=lambda x: x.sequence):
@@ -143,7 +145,11 @@ def _ordered_recent_turn_ids(
             continue
         seen.add(tid)
         ordered.append(tid)
-    return set(ordered[-keep_recent_turns:])
+    real = [tid for tid in ordered if tid not in confirmation_turn_ids]
+    if not real:
+        return set()
+    first_kept = ordered.index(real[-keep_recent_turns:][0])
+    return set(ordered[first_kept:])
 
 
 class Orchestrator:
@@ -1023,8 +1029,14 @@ class Orchestrator:
             return None
         # Need enough turns to both summarize AND keep verbatim. Otherwise
         # the kept-window swallows everything and compaction is a no-op.
+        # Synthetic confirmation-resolution turns are not conversation turns.
+        confirmation_turn_ids = {r.turn_id for r in records if is_confirmation_record(r)}
         turn_ids = {
-            r.turn_id for r in records if r.turn_id and not r.turn_id.startswith("compaction-")
+            r.turn_id
+            for r in records
+            if r.turn_id
+            and not r.turn_id.startswith("compaction-")
+            and r.turn_id not in confirmation_turn_ids
         }
         required = (
             self._compaction_config.min_turns_before_compact

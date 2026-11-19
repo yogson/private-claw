@@ -184,7 +184,9 @@ Rules:
 - Every final state (approved, rejected, expired, failed/not delivered) is appended to the session as its own complete
   synthetic turn (`turn_id = confirmation-<id>`, USER_MESSAGE + TURN_TERMINAL) with content
   `[[CONFIRMATION_RESOLVED]] {"confirmation_id","kind","status","summary","detail","origin_tool_call_id"}`.
-  It is replayed and compacted like any other turn. No agent turn is triggered by a resolution.
+  It is replayed and compacted like any other turn, except that it does not count toward `keep_recent_turns` or
+  `min_turns_before_compact`: a resolution stored after the first kept turn is kept with it, older ones are
+  summarized. No agent turn is triggered by a resolution.
   Only these synthetic records keep the marker. In user-controlled text (history and the current turn, including
   attachment file names and text-file content) it is rewritten to `[[user-typed: CONFIRMATION_RESOLVED]]`, so a user
   cannot forge an outcome. Matching is done after NFKC normalization and casefolding, with format characters
