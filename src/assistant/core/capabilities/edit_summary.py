@@ -9,9 +9,15 @@ before and after definitions, so string shorthands such as ``command_allowlist: 
 show up with their effective defaults). Every changed leaf gets its own line with the
 concrete before → after values; lists of entries are matched by their identity field
 (``tool_id``, ``id``, ``command_pattern``, ``name``), lists of strings show the items
-added (``+``) and removed (``−``). Long values are cut with an explicit
-``(+N chars hidden)`` marker. Values under MCP ``env``/``headers`` and secret-looking keys
-are masked: only the key names are shown.
+added (``+``) and removed (``−``) element by element. Values under MCP ``env``/``headers``
+and secret-looking keys are masked: only the key names are shown.
+
+Values on ``⚠`` lines are never cut. A changed string longer than ``VALUE_MAX_CHARS`` is
+shown as a diff excerpt: a little of the unchanged context around the differing segment,
+and the removed / added segments in full (``…"ctx"[−"old"][+"new"]"ctx"…``). A ⚠ value
+(or differing segment, or key) longer than ``SENSITIVE_VALUE_MAX_CHARS`` cannot be shown
+in full, so :class:`SensitiveValueTooLongError` is raised and the proposal is refused.
+Non-sensitive values are cut with an explicit ``(+N chars hidden)`` marker.
 
 Every top-level field except ``prompt`` is security-sensitive (tools, overrides, MCP
 servers, nested capabilities, Claude Code settings, and any field added later): its lines
@@ -42,7 +48,14 @@ SENSITIVE_WARNING = (
 NO_CHANGES_TEXT = "No manifest fields change (comments or formatting only)."
 REASON_MAX_CHARS = 300
 EXCERPT_MAX_CHARS = 300
+# Changed strings up to this length are shown whole (before → after); longer ones as a
+# diff excerpt. Non-sensitive values are cut at this length.
 VALUE_MAX_CHARS = 120
+# ⚠ values, differing segments and keys are shown in full up to this length; longer ones
+# make the proposal fail (they would have to be cut, which could hide the change).
+SENSITIVE_VALUE_MAX_CHARS = 400
+# Unchanged chars shown on each side of the differing segment of a long changed string.
+DIFF_CONTEXT_CHARS = 20
 MASKED = "<hidden>"
 _NON_SENSITIVE_FIELDS = frozenset({"prompt"})
 _IDENTITY_FIELDS = ("tool_id", "id", "command_pattern", "name")
@@ -51,7 +64,6 @@ _SECRET_KEY_RE = re.compile(
     r"token|secret|passw|api[_-]?key|auth|credential|cookie|private[_-]?key", re.I
 )
 _PLAIN_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
-_KEY_MAX_CHARS = 80
 # Control, format (bidi controls, zero-width), surrogate, private-use, unassigned, and
 # line / paragraph separators.
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
@@ -68,6 +80,19 @@ class SummaryTooLargeError(Exception):
             f"({max_units} UTF-16 units)"
         )
         self.sensitive_changes = sensitive_changes
+
+
+class SensitiveValueTooLongError(Exception):
+    """A security-sensitive value (or its changed segment) is too long to show in full."""
+
+    def __init__(self, path: str, chars: int, limit: int = SENSITIVE_VALUE_MAX_CHARS) -> None:
+        super().__init__(
+            f"security-sensitive value at {path} needs {chars} chars to show in full "
+            f"(limit {limit})"
+        )
+        self.path = path
+        self.chars = chars
+        self.limit = limit
 
 
 @dataclass(frozen=True)
@@ -265,8 +290,15 @@ def _join(path: str, key: Any) -> str:
 
 
 def _key(key: Any) -> str:
+    """A path component; every key is on a ⚠ line, so a key that cannot be shown in full
+    refuses the proposal."""
     text = str(key)
-    return text if _PLAIN_KEY_RE.fullmatch(text) else quote(text, _KEY_MAX_CHARS)
+    if _PLAIN_KEY_RE.fullmatch(text) and len(text) <= SENSITIVE_VALUE_MAX_CHARS:
+        return text
+    rendered = f'"{escape(text)}"'
+    if len(rendered) > SENSITIVE_VALUE_MAX_CHARS:
+        raise SensitiveValueTooLongError(f"key {rendered[:40]}…", len(rendered))
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +308,16 @@ def _key(key: Any) -> str:
 
 def _render(change: _Change) -> str:
     prefix = _SENSITIVE_PREFIX if change.sensitive else _PLAIN_PREFIX
-    fmt = _masked if change.masked else _value
+    strict = change.sensitive
+
+    def fmt(value: Any) -> str:
+        return MASKED if change.masked else _value(value, change.path, strict=strict)
+
     if change.kind == "changed":
-        body = f"{fmt(change.old)} → {fmt(change.new)}"
+        if not change.masked and isinstance(change.old, str) and isinstance(change.new, str):
+            body = _string_change(change.old, change.new, change.path, strict=strict)
+        else:
+            body = f"{fmt(change.old)} → {fmt(change.new)}"
     elif change.kind in ("added", "item_added"):
         body = f"+ {fmt(change.new)}"
     elif change.kind == "item_removed":
@@ -293,8 +332,49 @@ def _render(change: _Change) -> str:
     return f"{prefix}{change.path}: {body}"
 
 
-def _masked(_value: Any) -> str:
-    return MASKED
+def _string_change(old: str, new: str, path: str, *, strict: bool) -> str:
+    """``"old" → "new"``, or for long values a diff excerpt that always shows the whole
+    differing segment (a cut at a fixed length could make both sides look identical)."""
+    escaped_old, escaped_new = escape(old), escape(new)
+    if len(escaped_old) <= VALUE_MAX_CHARS and len(escaped_new) <= VALUE_MAX_CHARS:
+        return f'"{escaped_old}" → "{escaped_new}"'
+    prefix = _common_prefix_len(old, new)
+    suffix = _common_prefix_len(old[prefix:][::-1], new[prefix:][::-1])
+    old_mid, new_mid = old[prefix : len(old) - suffix], new[prefix : len(new) - suffix]
+    head, tail = old[:prefix], old[len(old) - suffix :]
+    parts: list[str] = []
+    if head:
+        ellipsis = "…" if len(head) > DIFF_CONTEXT_CHARS else ""
+        parts.append(f'{ellipsis}"{escape(head[-DIFF_CONTEXT_CHARS:])}"')
+    if old_mid:
+        parts.append(f"[−{_segment(old_mid, path, strict=strict)}]")
+    if new_mid:
+        parts.append(f"[+{_segment(new_mid, path, strict=strict)}]")
+    if tail:
+        ellipsis = "…" if len(tail) > DIFF_CONTEXT_CHARS else ""
+        parts.append(f'"{escape(tail[:DIFF_CONTEXT_CHARS])}"{ellipsis}')
+    return f"edited ({len(old)} → {len(new)} chars): {''.join(parts)}"
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    limit = min(len(a), len(b))
+    index = 0
+    while index < limit and a[index] == b[index]:
+        index += 1
+    return index
+
+
+def _segment(text: str, path: str, *, strict: bool) -> str:
+    return _checked(f'"{escape(text)}"', path, strict=strict)
+
+
+def _checked(rendered: str, path: str, *, strict: bool) -> str:
+    """``rendered`` in full; a ⚠ value that does not fit is refused, a plain one is cut."""
+    if strict:
+        if len(rendered) > SENSITIVE_VALUE_MAX_CHARS:
+            raise SensitiveValueTooLongError(path, len(rendered))
+        return rendered
+    return clip(rendered, VALUE_MAX_CHARS)
 
 
 def _prompt_lines(old: str, new: str) -> list[str]:
@@ -322,24 +402,24 @@ def _prompt_lines(old: str, new: str) -> list[str]:
     return result
 
 
-def _value(value: Any) -> str:
-    if isinstance(value, str):
-        return quote(value, VALUE_MAX_CHARS)
+def _value(value: Any, path: str, *, strict: bool) -> str:
     if isinstance(value, bool) or value is None:
         return json.dumps(value)
     if isinstance(value, int | float):
         return str(value)
-    if isinstance(value, dict | list) and not value:
-        return json.dumps(value)
-    return clip(inline(json.dumps(value, ensure_ascii=False, sort_keys=True)), VALUE_MAX_CHARS)
+    return _checked(_literal(value), path, strict=strict)
 
 
-def quote(text: str, limit: int) -> str:
-    """``text`` as a double-quoted single-line literal, cut at ``limit`` chars."""
-    escaped = escape(text)
-    if len(escaped) <= limit:
-        return f'"{escaped}"'
-    return f'"{escaped[:limit]}…" (+{len(escaped) - limit} chars hidden)'
+def _literal(value: Any) -> str:
+    """One-line, unambiguous rendering of a JSON value (strings quoted and escaped)."""
+    if isinstance(value, str):
+        return f'"{escape(value)}"'
+    if isinstance(value, dict):
+        items = (f"{_literal(str(k))}: {_literal(v)}" for k, v in sorted(value.items()))
+        return "{" + ", ".join(items) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_literal(v) for v in value) + "]"
+    return escape(json.dumps(value))
 
 
 def clip(text: str, limit: int) -> str:

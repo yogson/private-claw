@@ -417,6 +417,35 @@ def test_proposal_whose_sensitive_changes_do_not_fit_is_refused(
     assert "security-sensitive field changes" in err.reason and "smaller edits" in err.reason
 
 
+def _with_args_pattern(config_dir: Path, pattern: str) -> None:
+    _manifest(config_dir).write_text(
+        EDITABLE
+        + "tool_overrides:\n  shell_execute_allowlisted:\n    command_allowlist:\n"
+        + f"      - {{id: git, command_pattern: git, allowed_args_pattern: '{pattern}'}}\n"
+    )
+
+
+def test_long_pattern_widened_at_the_tail_shows_the_widening(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    # Reviewer repro B3: both sides used to render as the same 120-char prefix.
+    long = "^(" + "a" * 130 + ")$"
+    _with_args_pattern(config_dir, long)
+    proposal = _propose(service, f"'{long}'", f"'{long}|.*'")
+    assert '[git].allowed_args_pattern: edited (134 → 137 chars): …"' in proposal.summary
+    assert proposal.summary.splitlines()[-1].endswith(')$"[+"|.*"]')
+
+
+def test_sensitive_change_too_long_to_show_in_full_is_refused(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    _with_args_pattern(config_dir, "^status$")
+    err = _error(_propose, service, "'^status$'", f"'^({'b' * 500})$'")
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "command_allowlist[git].allowed_args_pattern needs 504 chars" in err.reason
+    assert "smaller edit" in err.reason
+
+
 # ---------------------------------------------------------------------------
 # apply
 # ---------------------------------------------------------------------------

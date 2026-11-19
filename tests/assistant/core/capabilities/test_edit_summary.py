@@ -6,7 +6,9 @@ import pytest
 
 from assistant.core.capabilities.edit_summary import (
     NO_CHANGES_TEXT,
+    SENSITIVE_VALUE_MAX_CHARS,
     SENSITIVE_WARNING,
+    SensitiveValueTooLongError,
     SummaryTooLargeError,
     capability_change_summary,
     utf16_len,
@@ -216,9 +218,127 @@ def test_sensitive_lines_come_before_the_prompt() -> None:
     assert text.index("⚠ mcp_servers") < text.index("• prompt")
 
 
-def test_long_values_say_how_much_is_hidden() -> None:
-    text = _summary(_allowlist(), _allowlist(allowed_args_pattern="a" * 500))
-    assert '"' + "a" * 120 + '…" (+380 chars hidden)' in text
+def test_long_sensitive_value_is_shown_in_full() -> None:
+    value = "a" * 300 + "|.*"
+    text = _summary(_cap(), _allowlist(allowed_args_pattern=value))
+    assert f'{_GIT}.allowed_args_pattern: + "{value}"' in text
+    assert "hidden" not in text
+
+
+# --- B3: a long ⚠ value never hides the part that changed ------------------------
+
+_LONG = "^(" + "a" * 130 + ")$"
+
+
+def _body(text: str, path: str) -> str:
+    """The rendered value part of the summary line for ``path``."""
+    (line,) = [line for line in text.splitlines() if line.startswith(f"  {path}: ")]
+    return line[len(f"  {path}: ") :]
+
+
+def test_long_regex_widened_at_the_tail_shows_the_added_part() -> None:
+    text = _summary(
+        _allowlist(allowed_args_pattern=_LONG), _allowlist(allowed_args_pattern=_LONG + "|.*")
+    )
+    body = _body(text, f"{_GIT}.allowed_args_pattern")
+    assert body == f'edited (134 → 137 chars): …"{"a" * 18})$"[+"|.*"]'
+    assert "hidden" not in text
+
+
+def test_long_regex_changed_in_the_middle_shows_both_segments() -> None:
+    old = "^(" + "a" * 70 + "b" + "a" * 70 + ")$"
+    new = "^(" + "a" * 70 + ".*" + "a" * 70 + ")$"
+    text = _summary(_allowlist(allowed_args_pattern=old), _allowlist(allowed_args_pattern=new))
+    body = _body(text, f"{_GIT}.allowed_args_pattern")
+    assert body == (f'edited (145 → 146 chars): …"{"a" * 20}"[−"b"][+".*"]"{"a" * 20}"…')
+
+
+def test_long_values_with_a_change_at_the_start_show_it() -> None:
+    old, new = "x" + _LONG, "y" + _LONG
+    text = _summary(_allowlist(command_pattern=old), _allowlist(command_pattern=new))
+    body = _body(text, f"{_GIT}.command_pattern")
+    assert body == f'edited (135 → 135 chars): [−"x"][+"y"]"^({"a" * 18}"…'
+
+
+def test_short_changed_values_are_shown_whole() -> None:
+    text = _summary(_allowlist(), _allowlist(allowed_args_pattern="^status$|.*"))
+    assert f'{_GIT}.allowed_args_pattern: "^status$" → "^status$|.*"' in text
+
+
+def test_command_pattern_and_args_widening_on_long_values() -> None:
+    long_cmd = "/usr/local/bin/" + "tool-" * 30
+    before = _cap(
+        tool_overrides={
+            "shell_execute_allowlisted": {
+                "command_allowlist": [
+                    {"id": "t", "command_pattern": long_cmd, "allowed_args_pattern": _LONG}
+                ]
+            }
+        },
+        claude_code_settings={
+            "mcp_servers": {"fs": {"command": "x", "args": ["--root", "/srv/" + "d" * 130]}}
+        },
+    )
+    after = _cap(
+        tool_overrides={
+            "shell_execute_allowlisted": {
+                "command_allowlist": [
+                    {"id": "t", "command_pattern": long_cmd + "*", "allowed_args_pattern": ".*"}
+                ]
+            }
+        },
+        claude_code_settings={"mcp_servers": {"fs": {"command": "x", "args": ["--root", "/"]}}},
+    )
+    text = _summary(before, after)
+    entry = "⚠ tool_overrides.shell_execute_allowlisted.command_allowlist[t]"
+    assert _body(text, f"{entry}.command_pattern").endswith('"[+"*"]')
+    assert f'{entry}.allowed_args_pattern: edited (134 → 2 chars): [−"{_LONG}"][+".*"]' in text
+    # args: removed / added elements are listed one by one, each in full.
+    assert '⚠ claude_code_settings.mcp_servers.fs.args: + "/"' in text
+    assert f'⚠ claude_code_settings.mcp_servers.fs.args: − "/srv/{"d" * 130}"' in text
+
+
+def test_command_appended_to_a_long_permission_rule_is_visible() -> None:
+    rule = "Bash(git log " + "a" * 130 + ":*)"
+    before = _cap(claude_code_settings={"permissions": {"allow": [rule]}})
+    after = _cap(claude_code_settings={"permissions": {"allow": [rule + "; rm -rf ~"]}})
+    text = _summary(before, after)
+    assert f'⚠ claude_code_settings.permissions.allow: + "{rule}; rm -rf ~"' in text
+    assert f'⚠ claude_code_settings.permissions.allow: − "{rule}"' in text
+    assert "hidden" not in text
+
+
+def test_too_long_differing_segment_is_refused() -> None:
+    old = "^(" + "a" * 100 + ")$"
+    new = "^(" + "b" * (SENSITIVE_VALUE_MAX_CHARS + 1) + ")$"
+    with pytest.raises(SensitiveValueTooLongError) as info:
+        _summary(_allowlist(allowed_args_pattern=old), _allowlist(allowed_args_pattern=new))
+    assert info.value.path.endswith("command_allowlist[git].allowed_args_pattern")
+    assert info.value.chars == SENSITIVE_VALUE_MAX_CHARS + 3
+
+
+def test_too_long_added_sensitive_value_is_refused() -> None:
+    rule = "Bash(" + "y" * SENSITIVE_VALUE_MAX_CHARS + ")"
+    with pytest.raises(SensitiveValueTooLongError):
+        _summary(_cap(), _cap(claude_code_settings={"permissions": {"allow": [rule]}}))
+
+
+def test_too_long_sensitive_key_is_refused() -> None:
+    name = "s" * SENSITIVE_VALUE_MAX_CHARS + "!"
+    after = _cap(claude_code_settings={"mcp_servers": {name: {"command": "x"}}})
+    with pytest.raises(SensitiveValueTooLongError):
+        _summary(_cap(), after)
+
+
+def test_long_dict_value_after_a_type_change_is_shown_in_full_or_refused() -> None:
+    def server(args: object) -> CapabilityDefinition:
+        return _cap(claude_code_settings={"mcp_servers": {"s": {"command": "x", "args": args}}})
+
+    long_args = {"opt": "v" * 200}
+    text = _summary(server(["--ro"]), server(long_args))
+    assert f'args: ["--ro"] → {{"opt": "{"v" * 200}"}}' in text
+    with pytest.raises(SensitiveValueTooLongError):
+        _summary(server(["--ro"]), server({"opt": "v" * SENSITIVE_VALUE_MAX_CHARS}))
 
 
 def test_identical_manifests_say_no_change() -> None:

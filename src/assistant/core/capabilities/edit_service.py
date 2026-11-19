@@ -48,7 +48,11 @@ from typing import Any
 import structlog
 
 from assistant.core.capabilities.atomic_file import atomic_write_bytes
-from assistant.core.capabilities.edit_summary import SummaryTooLargeError, capability_change_summary
+from assistant.core.capabilities.edit_summary import (
+    SensitiveValueTooLongError,
+    SummaryTooLargeError,
+    capability_change_summary,
+)
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
 from assistant.core.capabilities.manifest_structure import (
@@ -747,6 +751,14 @@ def _summary(**kwargs: Any) -> str:
             STATUS_REJECTED_INVALID,
             f"the change has {exc.sensitive_changes} security-sensitive field changes, too "
             "many to show the user in one confirmation; split it into smaller edits",
+        ) from exc
+    except SensitiveValueTooLongError as exc:
+        raise CapabilityEditError(
+            STATUS_REJECTED_INVALID,
+            f"the security-sensitive change at {exc.path} needs {exc.chars} chars to show the "
+            f"user in full (limit {exc.limit}); it cannot be shortened without hiding part of "
+            "it, so propose a smaller edit (change less of this value at once) or ask the "
+            "user to make the change by hand",
         ) from exc
 
 
