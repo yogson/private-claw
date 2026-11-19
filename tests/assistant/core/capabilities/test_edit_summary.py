@@ -293,6 +293,41 @@ def test_emptying_an_allowlist_is_flagged() -> None:
     )
 
 
+# --- sub-agent permission ceiling (master #47): a capability override can raise it ------
+
+
+def test_raising_the_subagent_permission_mode_is_a_full_sensitive_line() -> None:
+    before = _cap(
+        tool_overrides={
+            "delegate_subagent_task": {"delegation_default_permission_mode": "acceptEdits"}
+        }
+    )
+    after = _cap(
+        tool_overrides={
+            "delegate_subagent_task": {"delegation_default_permission_mode": "bypassPermissions"}
+        }
+    )
+    text = _summary(before, after)
+    assert (
+        "⚠ tool_overrides.delegate_subagent_task.delegation_default_permission_mode: "
+        '"acceptEdits" → "bypassPermissions"'
+    ) in text
+    assert SENSITIVE_WARNING in text
+
+
+def test_added_subagent_permission_mode_shows_the_normalised_value() -> None:
+    # "manual" is an alias the schema normalises to "default": the approver sees the
+    # effective mode, not the spelling in the file.
+    after = _cap(
+        tool_overrides={"delegate_subagent_task": {"delegation_default_permission_mode": "manual"}}
+    )
+    text = _summary(_cap(), after)
+    assert (
+        "⚠ tool_overrides.delegate_subagent_task: (absent) → "
+        '{"delegation_default_permission_mode": "default"}'
+    ) in text
+
+
 def test_added_block_shows_empty_containers_and_nulls() -> None:
     old = {"capability_id": "cap", "claude_code_settings": {"mcp_servers": {}}}
     new = {

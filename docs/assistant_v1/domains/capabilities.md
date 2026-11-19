@@ -527,10 +527,18 @@ History and rollback:
   picks it up.
 
 Known limitation (out of scope by owner decision): sub-agents with direct filesystem
-access (Claude Code tasks with `permission_mode` `bypassPermissions`) can write
-`<config_dir>/capabilities/*.yaml` directly. With live reload such a write takes effect on
-the next turn **without** a confirmation and without a history entry. External edits are
-not backed up by the catalog.
+access can write `<config_dir>/capabilities/*.yaml` directly. That is any Claude Code task
+whose permission mode allows file edits: `acceptEdits`, `auto` (the built-in default of
+`delegation_default_permission_mode`, see [subagents.md](subagents.md)) or
+`bypassPermissions`, including agent-node ingress jobs. With live reload such a write takes
+effect on the next turn **without** a confirmation and without a history entry. External
+edits are not backed up by the catalog.
+
+The sub-agent permission ceiling is itself a capability field
+(`tool_overrides.delegate_subagent_task.delegation_default_permission_mode`), so a
+self-edit proposal can raise it (e.g. to `bypassPermissions`). Like every non-`prompt`
+field it is shown as a full `⚠` line (before → after, the `manual` alias normalised to
+`default`) and applies only after approval.
 
 Operator setup: add the four `capability_*` entries from `config/tools.yaml` to the active
 `tools.yaml`, enable `capability_admin` (policy or nesting), and mark the manifests the

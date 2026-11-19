@@ -29,9 +29,11 @@ handler are thin wrappers around it.
   ``catalog.reload()`` makes the next turn use the new revision. If the catalog rejects the
   result, the previous content is restored.
 
-Known limitation: sub-agents with direct filesystem access (Claude Code with
-``bypassPermissions``) can still write manifests without this flow; live reload then picks
-such a change up without a confirmation. See docs/assistant_v1/domains/capabilities.md.
+Known limitation: sub-agents with direct filesystem access (Claude Code in a permission mode
+that allows file edits: ``acceptEdits``, ``auto`` - the delegation default - or
+``bypassPermissions``; agent-node ingress jobs included) can still write manifests without this
+flow; live reload then picks such a change up without a confirmation. See
+docs/assistant_v1/domains/capabilities.md.
 """
 
 import asyncio
