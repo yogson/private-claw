@@ -150,3 +150,9 @@ def test_defensive_summary_truncation_counts_utf16_units() -> None:
     # A cut that would split a surrogate pair drops the half instead of emitting it.
     split = build_memory_update_draft(_intent(body="a" + "😀" * 1300)).summary_for_user
     assert "a" + "😀" * 1249 + "\n… [truncated: 2500 of 2601" in split
+
+
+def test_dedupe_key_survives_a_lone_surrogate() -> None:
+    key = build_memory_update_draft(_intent(body="a\ud800b")).dedupe_key
+    assert len(key) == 32
+    assert key != build_memory_update_draft(_intent(body="a\ud801b")).dedupe_key

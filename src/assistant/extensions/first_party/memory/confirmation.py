@@ -100,7 +100,7 @@ def memory_update_dedupe_key(intent: MemoryUpdateIntent) -> str:
         ],
         ensure_ascii=False,
     )
-    return hashlib.sha256(material.encode()).hexdigest()[:32]
+    return hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()[:32]
 
 
 class MemoryUpdateHandler:
