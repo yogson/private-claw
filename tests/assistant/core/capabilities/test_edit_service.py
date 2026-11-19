@@ -1,0 +1,558 @@
+"""CapabilityEditService: read, propose (validation, guards), apply, history, rollback."""
+
+import asyncio
+import hashlib
+import json
+import os
+import stat
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+import pytest
+from structlog.testing import capture_logs
+
+from assistant.core.capabilities.catalog import CapabilityCatalog
+from assistant.core.capabilities.edit_service import (
+    HISTORY_DIR_NAME,
+    STATUS_APPLIED,
+    STATUS_BACKUP_FAILED,
+    STATUS_NOT_EDITABLE,
+    STATUS_REJECTED_INVALID,
+    STATUS_RELOAD_REJECTED,
+    STATUS_STALE,
+    STATUS_WRITE_FAILED,
+    CapabilityEditError,
+    CapabilityEditService,
+    EditProposal,
+)
+from assistant.core.capabilities.schemas import CapabilityDefinition
+from assistant.core.capabilities.snapshot import CapabilityLoadIssue
+
+KNOWN_TOOLS = {"memory_search", "tavily_search", "shell_execute_readonly"}
+
+EDITABLE = """\
+# Editable test manifest.
+# This comment must survive every edit byte for byte.
+capability_id: editable
+self_edit: true
+prompt: |
+  Be concise.
+  Answer in English.
+
+tools:
+  - tool_id: memory_search
+    enabled: true   # inline comment
+"""
+LOCKED = "capability_id: locked\nprompt: hi\n"
+FLAG_FALSE = "capability_id: flagfalse\nself_edit: false\nprompt: hi\n"
+
+
+def _tool_validator(
+    definitions: Mapping[str, CapabilityDefinition],
+) -> list[CapabilityLoadIssue]:
+    return [
+        CapabilityLoadIssue("validation", f"'{cid}' references unknown tool '{b.tool_id}'")
+        for cid, d in sorted(definitions.items())
+        for b in d.tools
+        if b.tool_id not in KNOWN_TOOLS
+    ]
+
+
+def _sha(data: bytes | str) -> str:
+    if isinstance(data, str):
+        data = data.encode()
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.fixture()
+def config_dir(tmp_path: Path) -> Path:
+    root = tmp_path / "config.local"
+    caps = root / "capabilities"
+    caps.mkdir(parents=True)
+    (caps / "editable.yaml").write_text(EDITABLE)
+    (caps / "locked.yaml").write_text(LOCKED)
+    (caps / "flagfalse.yaml").write_text(FLAG_FALSE)
+    return root
+
+
+@pytest.fixture()
+def catalog(config_dir: Path) -> CapabilityCatalog:
+    return CapabilityCatalog(config_dir, validator=_tool_validator, min_refresh_interval=0)
+
+
+@pytest.fixture()
+def service(catalog: CapabilityCatalog) -> CapabilityEditService:
+    return CapabilityEditService(catalog)
+
+
+def _manifest(config_dir: Path, name: str = "editable.yaml") -> Path:
+    return config_dir / "capabilities" / name
+
+
+def _propose(
+    service: CapabilityEditService,
+    old: str = "Be concise.",
+    new: str = "Be concise and friendly.",
+    *,
+    cap: str = "editable",
+    base: str | None = None,
+) -> EditProposal:
+    if base is None:
+        base = service.read(cap).base_sha256
+    return service.propose_edit(cap, old, new, "user asked for a friendlier tone", base)
+
+
+def _error(fn: Any, *args: Any, **kwargs: Any) -> CapabilityEditError:
+    with pytest.raises(CapabilityEditError) as info:
+        fn(*args, **kwargs)
+    return info.value
+
+
+async def _apply(service: CapabilityEditService, proposal: EditProposal, cid: str = "c1") -> Any:
+    return await service.apply(
+        proposal.payload, confirmation_id=cid, session_id="tg:1", user_id="u1"
+    )
+
+
+def _history_files(config_dir: Path, cap: str = "editable") -> list[str]:
+    directory = config_dir / HISTORY_DIR_NAME / cap
+    return sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
+
+
+# ---------------------------------------------------------------------------
+# read / editability
+# ---------------------------------------------------------------------------
+
+
+def test_read_returns_raw_text_sha_and_revision(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    view = service.read("editable")
+    assert view.raw_yaml == EDITABLE
+    assert view.base_sha256 == _sha(EDITABLE)
+    assert view.self_edit is True
+    assert view.file == "editable.yaml"
+    assert view.revision == 1
+
+
+@pytest.mark.parametrize("cap", ["locked", "flagfalse", "unknown", "../editable", ".hidden"])
+def test_not_editable_manifests_are_refused(service: CapabilityEditService, cap: str) -> None:
+    assert _error(service.read, cap).status == STATUS_NOT_EDITABLE
+    err = _error(service.propose_edit, cap, "hi", "hello", "r", "0" * 64)
+    assert err.status == STATUS_NOT_EDITABLE
+
+
+def test_editable_ids_lists_only_opted_in_manifests(service: CapabilityEditService) -> None:
+    assert service.editable_ids() == ["editable"]
+
+
+def test_symlink_escaping_the_config_dir_is_not_editable(tmp_path: Path, config_dir: Path) -> None:
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("capability_id: escaped\nself_edit: true\nprompt: x\n")
+    (config_dir / "capabilities" / "escaped.yaml").symlink_to(outside)
+    service = CapabilityEditService(CapabilityCatalog(config_dir, min_refresh_interval=0))
+
+    err = _error(service.read, "escaped")
+    assert err.status == STATUS_NOT_EDITABLE
+    assert "outside the active config dir" in err.reason
+
+
+async def test_symlinked_manifest_is_edited_at_its_target(config_dir: Path) -> None:
+    shared = config_dir / "shared"
+    shared.mkdir()
+    target = shared / "linked.yaml"
+    target.write_text("capability_id: linked\nself_edit: true\nprompt: old text\n")
+    link = config_dir / "capabilities" / "linked.yaml"
+    link.symlink_to(Path("..") / "shared" / "linked.yaml")
+    catalog = CapabilityCatalog(config_dir, min_refresh_interval=0)
+    service = CapabilityEditService(catalog)
+
+    proposal = _propose(service, "old text", "new text", cap="linked")
+    outcome = await _apply(service, proposal)
+
+    assert outcome.ok, outcome.detail
+    assert link.is_symlink()
+    assert target.read_text() == "capability_id: linked\nself_edit: true\nprompt: new text\n"
+    assert catalog.current().get("linked").prompt == "new text"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# proposals: exact match, validation, guards
+# ---------------------------------------------------------------------------
+
+
+def test_valid_proposal_writes_nothing_and_carries_a_summary(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+
+    assert _manifest(config_dir).read_text() == EDITABLE
+    assert not (config_dir / HISTORY_DIR_NAME).exists()
+    payload = proposal.payload
+    assert payload["op"] == "edit"
+    assert payload["base_sha256"] == _sha(EDITABLE)
+    assert payload["new_sha256"] == _sha(
+        EDITABLE.replace("Be concise.", "Be concise and friendly.")
+    )
+    assert payload["base_revision"] == 1
+    assert "editable (editable.yaml)" in proposal.summary
+    assert "prompt:" in proposal.summary and "friendly" in proposal.summary
+
+
+def test_dedupe_key_is_stable_for_the_same_proposal(service: CapabilityEditService) -> None:
+    assert _propose(service).dedupe_key == _propose(service).dedupe_key
+    assert _propose(service).dedupe_key != _propose(service, new="Be brief.").dedupe_key
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        ("", "x", "must not be empty"),
+        ("Be concise.", "Be concise.", "identical"),
+        ("Not in the file", "x", "not found"),
+        ("enabled: true", "enabled: false", "not unique"),  # a second binding is added below
+    ],
+)
+def test_exact_match_rules(
+    service: CapabilityEditService, old: str, new: str, match: str, config_dir: Path
+) -> None:
+    if match == "not unique":
+        _manifest(config_dir).write_text(
+            EDITABLE + "  - tool_id: tavily_search\n    enabled: true\n"
+        )
+    err = _error(_propose, service, old, new)
+    assert err.status == STATUS_REJECTED_INVALID
+    assert match in err.reason
+
+
+def test_empty_reason_is_rejected(service: CapabilityEditService) -> None:
+    base = service.read("editable").base_sha256
+    err = _error(service.propose_edit, "editable", "Be concise.", "Be brief.", "  ", base)
+    assert err.status == STATUS_REJECTED_INVALID
+
+
+def test_stale_base_sha_at_propose(service: CapabilityEditService) -> None:
+    err = _error(_propose, service, "Be concise.", "Be brief.", base="0" * 64)
+    assert err.status == STATUS_STALE
+    assert "capability_read" in err.reason
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        ("prompt: |\n  Be concise.", "prompt: [unclosed", "invalid"),  # YAML error
+        ("tools:\n", "unknown_field: 1\ntools:\n", "extra fields not permitted"),  # schema
+        ("tool_id: memory_search", "tool_id: not_a_tool", "cross-file"),  # unknown tool
+        ("capability_id: editable", "capability_id: renamed", "capability_id must stay"),
+    ],
+)
+def test_invalid_results_are_rejected_at_propose(
+    service: CapabilityEditService, old: str, new: str, match: str
+) -> None:
+    err = _error(_propose, service, old, new)
+    assert err.status == STATUS_REJECTED_INVALID
+    assert match in err.reason
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("self_edit: true", "self_edit: false"),  # flip
+        ("self_edit: true\n", ""),  # delete the line
+        ("true\nprompt", "false\nprompt"),  # overlaps the key line (value only)
+        ("tools:\n", "self_edit: true\ntools:\n"),  # duplicate key
+        ("tools:\n", "tools:\n  # self_edit mention\n"),  # any new self_edit text
+        ("editable\n", "editable "),  # joins the self_edit line to the previous one
+        ("true\n", "true # c\n"),  # rewrites the end of the self_edit line
+    ],
+)
+def test_self_edit_cannot_be_changed(service: CapabilityEditService, old: str, new: str) -> None:
+    err = _error(_propose, service, old, new)
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "self_edit" in err.reason
+
+
+def test_escaped_duplicate_self_edit_key_is_caught_by_the_parsed_check(
+    service: CapabilityEditService,
+) -> None:
+    # The text never says "self_edit", but YAML decodes the escape into a duplicate key
+    # whose last value wins: the parsed result must still have self_edit: true.
+    err = _error(_propose, service, "tools:\n", '"self\\x5fedit": false\ntools:\n')
+    assert err.status == STATUS_REJECTED_INVALID
+    assert "self_edit must stay true" in err.reason
+
+
+# ---------------------------------------------------------------------------
+# apply
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_backs_up_writes_atomically_and_bumps_the_revision(
+    service: CapabilityEditService, catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    path = _manifest(config_dir)
+    os.chmod(path, 0o640)
+    proposal = _propose(service)
+
+    outcome = await _apply(service, proposal)
+
+    assert outcome.ok and outcome.status == STATUS_APPLIED
+    assert "revision 1 → 2" in outcome.detail
+    assert (outcome.revision_before, outcome.revision_after) == (1, 2)
+    expected = EDITABLE.replace("Be concise.", "Be concise and friendly.")
+    assert path.read_text() == expected  # comments and formatting byte-identical
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert catalog.current().revision == 2
+    assert catalog.current().get("editable").prompt.startswith("Be concise and friendly.")  # type: ignore[union-attr]
+
+    files = _history_files(config_dir)
+    assert len(files) == 2 and files[0].endswith(".json") and files[1].endswith(".yaml")
+    backup = config_dir / HISTORY_DIR_NAME / "editable" / files[1]
+    assert backup.read_text() == EDITABLE
+    sidecar = json.loads((backup.with_suffix(".json")).read_text())
+    assert sidecar["history_id"] == backup.stem
+    assert sidecar["sha256"] == _sha(EDITABLE)
+    assert sidecar["new_sha256"] == _sha(expected)
+    assert sidecar["confirmation_id"] == "c1" and sidecar["session_id"] == "tg:1"
+    assert sidecar["user_id"] == "u1" and sidecar["op"] == "edit"
+    assert sidecar["base_revision"] == 1
+    # No temp files left next to the manifest.
+    assert sorted(p.name for p in path.parent.iterdir()) == [
+        "editable.yaml",
+        "flagfalse.yaml",
+        "locked.yaml",
+    ]
+
+
+async def test_apply_logs_audit_events_with_correlation_ids(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    with capture_logs() as logs:
+        await _apply(service, proposal, "c1")
+        await _apply(service, proposal, "c2")  # same base again: stale
+
+    applied = next(e for e in logs if e["event"] == "capability_edit.applied")
+    assert applied["confirmation_id"] == "c1" and applied["session_id"] == "tg:1"
+    assert applied["user_id"] == "u1" and applied["capability_id"] == "editable"
+    assert (applied["revision_before"], applied["revision_after"]) == (1, 2)
+    assert applied["base_sha256"] == _sha(EDITABLE) and applied["history_id"]
+    failed = next(e for e in logs if e["event"] == "capability_edit.failed")
+    assert failed["confirmation_id"] == "c2" and failed["status"] == STATUS_STALE
+    reloaded = next(e for e in logs if e["event"] == "capabilities.reloaded")
+    assert reloaded["reason"] == "capability_edit:c1"
+
+
+async def test_history_is_never_loaded_as_manifests(
+    service: CapabilityEditService, catalog: CapabilityCatalog
+) -> None:
+    await _apply(service, _propose(service))
+    snapshot = catalog.reload("test")
+    assert sorted(snapshot.definitions) == ["editable", "flagfalse", "locked"]
+    assert not snapshot.errors
+
+
+async def test_file_changed_between_proposal_and_approval_is_stale(
+    service: CapabilityEditService, catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    changed = EDITABLE.replace("Answer in English.", "Answer in Greek.")
+    _manifest(config_dir).write_text(changed)
+
+    outcome = await _apply(service, proposal)
+
+    assert not outcome.ok and outcome.status == STATUS_STALE
+    assert "nothing was written" in outcome.detail
+    assert _manifest(config_dir).read_text() == changed
+    assert _history_files(config_dir) == []
+
+
+async def test_self_edit_revoked_between_proposal_and_approval(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    revoked = EDITABLE.replace("self_edit: true", "self_edit: false")
+    _manifest(config_dir).write_text(revoked)
+
+    outcome = await _apply(service, proposal)
+
+    assert not outcome.ok and outcome.status == STATUS_NOT_EDITABLE
+    assert _manifest(config_dir).read_text() == revoked
+    assert _history_files(config_dir) == []
+
+
+async def test_backup_failure_writes_nothing(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    (config_dir / HISTORY_DIR_NAME).write_text("not a directory")
+    outcome = await _apply(service, _propose(service))
+
+    assert not outcome.ok and outcome.status == STATUS_BACKUP_FAILED
+    assert _manifest(config_dir).read_text() == EDITABLE
+
+
+async def test_crash_before_replace_leaves_the_original_intact(
+    service: CapabilityEditService,
+    catalog: CapabilityCatalog,
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal = _propose(service)
+    real_replace = os.replace
+
+    def failing_replace(src: str, dst: str | Path) -> None:
+        if Path(dst).name == "editable.yaml":
+            raise OSError(5, "simulated crash")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    outcome = await _apply(service, proposal)
+
+    assert not outcome.ok and outcome.status == STATUS_WRITE_FAILED
+    assert _manifest(config_dir).read_text() == EDITABLE
+    assert sorted(p.name for p in _manifest(config_dir).parent.iterdir()) == [
+        "editable.yaml",
+        "flagfalse.yaml",
+        "locked.yaml",
+    ]
+    assert _history_files(config_dir) == []  # the backup of a failed write is removed
+    assert catalog.current().revision == 1
+
+
+async def test_reload_rejection_restores_the_previous_content(
+    service: CapabilityEditService, catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    # Another manifest breaks after the proposal: the reload is rejected as a whole.
+    (config_dir / "capabilities" / "broken.yaml").write_text("capability_id: [oops\n")
+
+    outcome = await _apply(service, proposal)
+
+    assert not outcome.ok and outcome.status == STATUS_RELOAD_REJECTED
+    assert "restored" in outcome.detail
+    assert _manifest(config_dir).read_text() == EDITABLE
+    assert catalog.current().revision == 1
+    assert _history_files(config_dir) == []
+
+
+async def test_concurrent_approvals_on_the_same_base_are_serialized(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    first = _propose(service, "Be concise.", "Be brief.")
+    second = _propose(service, "Answer in English.", "Answer in Greek.")
+
+    outcomes = await asyncio.gather(_apply(service, first, "c1"), _apply(service, second, "c2"))
+
+    assert [o.status for o in outcomes] == [STATUS_APPLIED, STATUS_STALE]
+    assert _manifest(config_dir).read_text() == EDITABLE.replace("Be concise.", "Be brief.")
+
+
+async def test_tampered_payload_is_not_applied(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    proposal = _propose(service)
+    payload = {**proposal.payload, "new_string": "Something else."}
+    outcome = await service.apply(payload, confirmation_id="c1", session_id="s", user_id=None)
+
+    assert not outcome.ok and outcome.status == STATUS_REJECTED_INVALID
+    assert _manifest(config_dir).read_text() == EDITABLE
+
+
+# ---------------------------------------------------------------------------
+# history and rollback
+# ---------------------------------------------------------------------------
+
+
+async def test_history_lists_newest_first(service: CapabilityEditService) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    await _apply(service, _propose(service, "Be brief.", "Be short."), "c2")
+
+    entries = service.history("editable")
+
+    assert [e.confirmation_id for e in entries] == ["c2", "c1"]
+    assert entries[1].sha256 == _sha(EDITABLE)
+    assert all(e.op == "edit" and e.reason for e in entries)
+    assert len(service.history("editable", limit=1)) == 1
+
+
+async def test_rollback_restores_a_version_and_backs_up_the_current_one(
+    service: CapabilityEditService, catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    edited = _manifest(config_dir).read_text()
+    original_id = service.history("editable")[0].history_id
+
+    view = service.read("editable")
+    proposal = service.propose_rollback("editable", original_id, "undo", view.base_sha256)
+    assert f"rollback to {original_id}" in proposal.summary
+    assert proposal.payload["op"] == "rollback"
+    assert _manifest(config_dir).read_text() == edited  # proposing writes nothing
+
+    outcome = await _apply(service, proposal, "c2")
+
+    assert outcome.ok, outcome.detail
+    assert _manifest(config_dir).read_text() == EDITABLE
+    assert catalog.current().revision == 3
+    newest = service.history("editable")[0]
+    assert newest.op == "rollback" and newest.sha256 == _sha(edited)
+
+    # Rollback of the rollback brings the edit back.
+    again = service.propose_rollback(
+        "editable", newest.history_id, "redo", service.read("editable").base_sha256
+    )
+    assert (await _apply(service, again, "c3")).ok
+    assert _manifest(config_dir).read_text() == edited
+
+
+async def test_rollback_validation(service: CapabilityEditService, config_dir: Path) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    base = service.read("editable").base_sha256
+    history_id = service.history("editable")[0].history_id
+
+    for bad_id in ("../../editable", "20260101T000000000000Z__deadbeef"):
+        err = _error(service.propose_rollback, "editable", bad_id, "undo", base)
+        assert err.status == STATUS_REJECTED_INVALID
+
+    err = _error(service.propose_rollback, "editable", history_id, "undo", "0" * 64)
+    assert err.status == STATUS_STALE
+
+    backup = config_dir / HISTORY_DIR_NAME / "editable" / f"{history_id}.yaml"
+    backup.write_text(EDITABLE + "# tampered\n")
+    err = _error(service.propose_rollback, "editable", history_id, "undo", base)
+    assert err.status == STATUS_REJECTED_INVALID and "corrupted" in err.reason
+
+
+async def test_rollback_to_a_version_without_self_edit_is_rejected(
+    service: CapabilityEditService, config_dir: Path
+) -> None:
+    await _apply(service, _propose(service, "Be concise.", "Be brief."), "c1")
+    history_id = service.history("editable")[0].history_id
+    entry = config_dir / HISTORY_DIR_NAME / "editable"
+    content = EDITABLE.replace("self_edit: true\n", "")
+    (entry / f"{history_id}.yaml").write_text(content)
+    sidecar = json.loads((entry / f"{history_id}.json").read_text())
+    sidecar["sha256"] = _sha(content)
+    (entry / f"{history_id}.json").write_text(json.dumps(sidecar))
+
+    err = _error(
+        service.propose_rollback,
+        "editable",
+        history_id,
+        "undo",
+        service.read("editable").base_sha256,
+    )
+    assert err.status == STATUS_REJECTED_INVALID and "self_edit" in err.reason
+
+
+async def test_history_is_pruned_to_the_retention(
+    catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    service = CapabilityEditService(catalog, retention=2)
+    texts = ["Be concise.", "One.", "Two.", "Three."]
+    for i, (old, new) in enumerate(zip(texts, texts[1:], strict=False)):
+        assert (await _apply(service, _propose(service, old, new), f"c{i}")).ok
+
+    entries = service.history("editable", limit=10)
+    assert [e.confirmation_id for e in entries] == ["c2", "c1"]
+    assert len(_history_files(config_dir)) == 4  # 2 versions x (yaml + json)

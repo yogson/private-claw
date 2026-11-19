@@ -34,6 +34,8 @@ class AppConfig(BaseModel):
     logfire_token: str = ""
     # How long a user confirmation (e.g. memory update buttons) stays valid.
     confirmation_ttl_seconds: int = Field(default=86400, ge=60)
+    # Versions kept per capability in <config_dir>/.capability_history (agent manifest edits).
+    capability_history_retention: int = Field(default=50, ge=1, le=10000)
 
 
 class TelegramChannelConfig(BaseModel):
