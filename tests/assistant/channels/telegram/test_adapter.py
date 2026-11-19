@@ -94,6 +94,7 @@ class TestConfirmationCallbacks:
         )
         assert "User prefers tea." in response.text
         assert response.ui_kind == "inline_keyboard"
+        assert response.plain_text is True  # what is approved is shown verbatim
         assert [len(a.callback_data) <= 64 for a in response.actions] == [True, True]
         approve = adapter.parse_confirmation_callback(
             _callback_event(response.actions[0].callback_data)

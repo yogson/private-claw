@@ -435,6 +435,9 @@ class TelegramAdapter:
             trace_id=trace_id,
             message_type=MessageType.INTERACTIVE,
             text=render_confirmation_prompt(request),
+            # Verbatim, like the plain-text edit after the press: markdown conversion would
+            # hide characters of what is being approved (e.g. ``__init__``, ``*``).
+            plain_text=True,
             ui_kind="inline_keyboard",
             actions=[
                 ActionButton(

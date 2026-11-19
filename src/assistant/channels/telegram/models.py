@@ -85,6 +85,9 @@ class ChannelResponse(BaseModel):
     message_type: MessageType
     text: str
     parse_mode: str | None = None
+    # Send ``text`` verbatim: no markdown conversion (e.g. confirmation prompts, where the
+    # user must see exactly the text they approve, not a rendering of it).
+    plain_text: bool = False
     ui_kind: str | None = None
     actions: list[ActionButton] = Field(default_factory=list)
     ui_version: str = "1"

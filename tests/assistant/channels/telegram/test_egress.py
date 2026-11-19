@@ -53,6 +53,19 @@ class TestTelegramEgresSend:
         mock_send.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_plain_text_response_is_sent_verbatim(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        response = _make_interactive_response().model_copy(
+            update={"text": "excerpt: Use __init__ and *bold*", "plain_text": True}
+        )
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            assert await egress.send(response, chat_id=123) is True
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["text"] == "excerpt: Use __init__ and *bold*"
+        assert kwargs.get("parse_mode") is None and "entities" not in kwargs
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
     async def test_interactive_send_success(self) -> None:
         egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
         with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:

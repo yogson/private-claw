@@ -74,7 +74,7 @@ class TelegramEgress:
         last_error = ""
         attempts_made = 0
 
-        use_formatting = response.parse_mode is None
+        use_formatting = response.parse_mode is None and not response.plain_text
         if use_formatting:
             formatted_chunks = format_markdown_for_telegram(response.text)
         else:
