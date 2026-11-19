@@ -37,6 +37,7 @@ from assistant.core.confirmation.models import (
 )
 from assistant.core.confirmation.service import (
     DEFAULT_CONFIRMATION_TTL_SECONDS,
+    NOT_DELIVERED_OUTCOME_STATUS,
     ConfirmationService,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "DEFAULT_CONFIRMATION_TTL_SECONDS",
     "MEMORY_BODY_MAX_CHARS",
     "MEMORY_UPDATE_KIND",
+    "NOT_DELIVERED_OUTCOME_STATUS",
     "ConfirmationDecision",
     "ConfirmationDraft",
     "ConfirmationHandlerInterface",

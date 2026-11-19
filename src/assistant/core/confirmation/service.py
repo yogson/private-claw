@@ -49,6 +49,8 @@ _ORPHANED_DETAIL = (
     "was applied. Propose it again if it is still needed."
 )
 UNKNOWN_KIND = "unknown"
+# Outcome status of a request discarded because its buttons never (provably) reached the user.
+NOT_DELIVERED_OUTCOME_STATUS = "not_delivered"
 
 
 def _utc_now() -> datetime:
@@ -161,7 +163,9 @@ class ConfirmationService:
             return
         async with self._lock_for(confirmation_id):
             if request.is_pending:
-                outcome = ConfirmationOutcome(ok=False, status="not_delivered", detail=detail)
+                outcome = ConfirmationOutcome(
+                    ok=False, status=NOT_DELIVERED_OUTCOME_STATUS, detail=detail
+                )
                 await self._finish(request, ConfirmationStatus.FAILED, outcome, record=record)
 
     async def _apply(
