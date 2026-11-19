@@ -65,6 +65,10 @@ class AppConfig(BaseModel):
     # Most messages a capability_edit may use to show a prompt change in full (each part
     # is one Telegram message sent before the buttons); bigger prompt edits are refused.
     capability_edit_max_prompt_parts: int = Field(default=8, ge=1, le=50)
+    # Optional label for this process when several instances share one config dir
+    # (set per instance via ASSISTANT_APP_INSTANCE_NAME). Shown in logs and the
+    # "System started" message; empty keeps the default output.
+    instance_name: str = ""
 
 
 class TelegramChannelConfig(BaseModel):

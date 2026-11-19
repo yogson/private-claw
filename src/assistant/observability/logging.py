@@ -7,6 +7,7 @@ handler. One log file per app run, stored under data_root/logs/.
 
 import logging
 import os
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,20 @@ def _inject_trace_context(
     if trace_id:
         event_dict.setdefault("trace_id", trace_id)
     return event_dict
+
+
+def _instance_processor(
+    instance_name: str,
+) -> Callable[[object, str, dict[str, Any]], dict[str, Any]]:
+    """Return a processor that adds ``instance=<name>`` to every event."""
+
+    def _add_instance(
+        logger: object, method_name: str, event_dict: dict[str, Any]
+    ) -> dict[str, Any]:
+        event_dict.setdefault("instance", instance_name)
+        return event_dict
+
+    return _add_instance
 
 
 def _log_file_path(data_root: str) -> Path:
@@ -59,11 +74,15 @@ def configure_logging(app_config: AppConfig) -> Path:
         with suppress(Exception):
             h.close()
 
+    instance_processors = (
+        [_instance_processor(app_config.instance_name)] if app_config.instance_name else []
+    )
     # Processors for structlog-originated logs (logger is always set)
     structlog_processors = [
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
+        *instance_processors,
         _inject_trace_context,
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
@@ -76,6 +95,7 @@ def configure_logging(app_config: AppConfig) -> Path:
     foreign_pre_chain = [
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
+        *instance_processors,
         _inject_trace_context,
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),

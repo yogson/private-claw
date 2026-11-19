@@ -80,3 +80,18 @@ def test_configure_logging_respects_explicit_trace_id(app_config: AppConfig) -> 
     parsed = json.loads(content.strip())
     assert parsed["trace_id"] == "explicit-trace"
     assert parsed["event"] == "explicit"
+
+
+def test_configure_logging_adds_instance_name_when_set(app_config: AppConfig) -> None:
+    log_path = configure_logging(app_config.model_copy(update={"instance_name": "research"}))
+    structlog.get_logger("test").info("labelled")
+    logging.getLogger("third.party").warning("foreign")
+    lines = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert [line.get("instance") for line in lines] == ["research", "research"]
+
+
+def test_configure_logging_omits_instance_by_default(app_config: AppConfig) -> None:
+    log_path = configure_logging(app_config)
+    structlog.get_logger("test").info("plain")
+    parsed = json.loads(log_path.read_text().strip())
+    assert "instance" not in parsed

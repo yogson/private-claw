@@ -266,7 +266,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async def _dispatch(event: NormalizedEvent) -> ChannelResponse | None:
             return await handler(event)
 
-        await _notify_system_started(adapter, active_session_context)
+        await _notify_system_started(
+            adapter, active_session_context, instance_name=runtime_config.app.instance_name
+        )
 
         polling_task = asyncio.create_task(
             run_polling(
@@ -389,8 +391,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 async def _notify_system_started(
     adapter: TelegramAdapter,
     active_session_context: ActiveSessionContextInterface,
+    *,
+    instance_name: str = "",
 ) -> None:
     """Send 'System started.' to every chat that has an active session.
+
+    With ``instance_name`` set the text names the instance: "System started (<name>)."
 
     Chat IDs are derived from the persisted session context, which maps
     'telegram:<chat_id>' context keys to session IDs.  Unknown or unparseable
@@ -400,6 +406,7 @@ async def _notify_system_started(
     stale ones from previous runs.  No TTL filter is applied, so users whose
     sessions have long since expired will still receive the notification.
     """
+    text = f"System started ({instance_name})." if instance_name else "System started."
     context_ids = active_session_context.list_context_ids()
     for context_id in context_ids:
         # Context IDs for Telegram take the form 'telegram:<chat_id>'
@@ -412,7 +419,7 @@ async def _notify_system_started(
             continue
 
         response = build_text_channel_response(
-            text="System started.",
+            text=text,
             session_id="__system__",
             trace_id=str(uuid.uuid4()),
         )
