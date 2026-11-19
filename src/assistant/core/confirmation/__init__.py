@@ -32,6 +32,9 @@ from assistant.core.confirmation.memory_update import (
     memory_body_length_error,
 )
 from assistant.core.confirmation.models import (
+    ATTACHMENT_PART_MAX_UTF16,
+    ATTACHMENT_TITLE_MAX_UTF16,
+    ConfirmationAttachment,
     ConfirmationDecision,
     ConfirmationDraft,
     ConfirmationOutcome,
@@ -48,6 +51,8 @@ from assistant.core.confirmation.service import (
 )
 
 __all__ = [
+    "ATTACHMENT_PART_MAX_UTF16",
+    "ATTACHMENT_TITLE_MAX_UTF16",
     "CAPABILITY_EDIT_KIND",
     "CONFIRMATION_RESOLVED_MARKER",
     "CONFIRMATION_TOOL_NAMES",
@@ -56,6 +61,7 @@ __all__ = [
     "MEMORY_UPDATE_KIND",
     "NOT_DELIVERED_OUTCOME_STATUS",
     "CapabilityEditHandler",
+    "ConfirmationAttachment",
     "ConfirmationDecision",
     "ConfirmationDraft",
     "ConfirmationHandlerInterface",

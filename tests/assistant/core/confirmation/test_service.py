@@ -3,7 +3,13 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from pydantic import ValidationError
+
 from assistant.core.confirmation import (
+    ATTACHMENT_PART_MAX_UTF16,
+    ATTACHMENT_TITLE_MAX_UTF16,
+    ConfirmationAttachment,
     ConfirmationDecision,
     ConfirmationDraft,
     ConfirmationHandlerRegistry,
@@ -390,3 +396,36 @@ async def test_overlong_summary_is_capped_with_explicit_note() -> None:
     assert req is not None
     assert req.summary_for_user.startswith("s" * SUMMARY_MAX_CHARS)
     assert req.summary_for_user.endswith("[truncated: 50 more chars not shown]")
+
+
+# --- attachments (content shown in full before the buttons) -----------------------
+
+
+def test_attachment_parts_are_bounded_and_never_empty() -> None:
+    ConfirmationAttachment(title="t", parts=["🧠" * (ATTACHMENT_PART_MAX_UTF16 // 2)])
+    for bad in (
+        {"title": "t", "parts": []},
+        {"title": "t", "parts": [" "]},
+        {"title": "t", "parts": ["🧠" * (ATTACHMENT_PART_MAX_UTF16 // 2 + 1)]},
+        {"title": "", "parts": ["p"]},
+        {"title": "a\nb", "parts": ["p"]},
+        {"title": "x" * (ATTACHMENT_TITLE_MAX_UTF16 + 1), "parts": ["p"]},
+    ):
+        with pytest.raises(ValidationError):
+            ConfirmationAttachment(**bad)  # type: ignore[arg-type]
+
+
+async def test_request_keeps_attachments_untruncated() -> None:
+    service = ConfirmationService(ConfirmationHandlerRegistry([]))
+    parts = ["a" * 3700, "b" * 3700, "c"]
+    draft = ConfirmationDraft(
+        kind="capability_edit",
+        payload={},
+        summary_for_user="s" * 5000,
+        dedupe_key="k",
+        attachments=[ConfirmationAttachment(title="Prompt change for x", parts=parts)],
+    )
+    request = (await service.request("tg:1", draft)).request
+    assert request is not None
+    assert request.attachments[0].parts == parts
+    assert "truncated" in request.summary_for_user  # the summary cap does not touch parts

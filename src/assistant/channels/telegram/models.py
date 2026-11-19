@@ -88,6 +88,9 @@ class ChannelResponse(BaseModel):
     # Send ``text`` verbatim: no markdown conversion (e.g. confirmation prompts, where the
     # user must see exactly the text they approve, not a rendering of it).
     plain_text: bool = False
+    # Send the (first chunk of the) message as a reply to this message; the send fails
+    # if that message no longer exists (no unbound fallback).
+    reply_to_message_id: int | None = None
     ui_kind: str | None = None
     actions: list[ActionButton] = Field(default_factory=list)
     ui_version: str = "1"

@@ -74,6 +74,18 @@ the Telegram transport only.
   (for memory: action, memory type, body or target `memory_id`; for `capability_edit`: the field-level change
   summary), and Approve / Reject inline buttons. The prompt is sent as plain text (`ChannelResponse.plain_text`),
   like the edit after the press: no markdown conversion, so the user sees exactly the text they approve.
+- Attachments (e.g. the full prompt diff of a `capability_edit`): every part is sent first, in order, as its own
+  plain-text message headed `<title> — part i/N (confirmation <first 8 hex of the id>)`. Then the button message
+  follows, sent as a Telegram **reply to part 1** (`ChannelResponse.reply_to_message_id`, with
+  `allow_sending_without_reply=False`, so a deleted part 1 fails the send instead of dropping the binding).
+  Parts 2..N reply to part 1 too. The button message adds `📎 Sent in full above: <title> (N parts). This message
+  is a reply to part 1 (confirmation <id>); read every part before deciding.` The agent's own text is sent
+  before all of this and is never a reply, so it cannot pose as a part. The buttons are sent only after every
+  part was delivered with a message id. If a part fails (send error, no id reported, or a rendered part over
+  4096 UTF-16 units, which core bounds make impossible), nothing more is sent for that confirmation. It is
+  discarded as `not_delivered` (`failed`, session slot released), so no buttons exist for it. A failed button
+  send after the parts is handled the same way. On resolve or expiry only the button message is edited; the
+  parts stay as they are.
 - Size: the prompt is cut to 4096 − 300 UTF-16 units with an explicit `… [truncated]` mark, so it is always one
   message. The final edit truncates the base text so `base + status` fits in 4096 and the status line is never lost.
 - Callback payload: `cf:{confirmation_id}:{a|r}:{sig}`; `sig` is HMAC-SHA256 (truncated) over

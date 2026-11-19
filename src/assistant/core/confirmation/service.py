@@ -95,6 +95,7 @@ class ConfirmationService:
             payload=draft.payload,
             summary_for_user=_cap_summary(draft.summary_for_user),
             dedupe_key=draft.dedupe_key,
+            attachments=draft.attachments,
             created_at=now,
             expires_at=now + self._ttl,
         )
