@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.core.config.schemas import (
     AppConfig,
@@ -370,8 +371,150 @@ async def test_tool_default_effort_applied_unless_request_sets_it(
     assert accepted["accepted"] is True
     task = await coordinator.get_task(accepted["task_id"])
     assert task is not None
-    assert task.metadata["backend_params"] == {"directory": "/tmp", "effort": expected_effort}
+    assert task.metadata["backend_params"] == {
+        "directory": "/tmp",
+        "effort": expected_effort,
+        "permission_mode": "auto",
+    }
     await store.shutdown()
+
+
+async def _enqueue_and_get_mode(
+    tmp_path: Path, tool_params: dict[str, Any], backend_params: dict[str, Any]
+) -> str:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store, config=_config(tmp_path), backends=[_FakeBackend()]
+    )
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={
+                "objective": "Implement",
+                "backend_params": backend_params,
+                "tool_params": tool_params,
+            },
+        )
+        assert accepted["accepted"] is True
+        task = await coordinator.get_task(accepted["task_id"])
+        assert task is not None
+        return str(task.metadata["backend_params"]["permission_mode"])
+    finally:
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_params", "backend_params", "expected_mode"),
+    [
+        # Built-in default when nothing is configured.
+        ({}, {}, "auto"),
+        ({"delegation_default_permission_mode": None}, {}, "auto"),
+        # Config-driven default.
+        ({"delegation_default_permission_mode": "acceptEdits"}, {}, "acceptEdits"),
+        (
+            {"delegation_default_permission_mode": "acceptEdits"},
+            {"permission_mode": ""},
+            "acceptEdits",
+        ),
+        # A per-request mode as restrictive as the configured one, or more, wins.
+        ({}, {"permission_mode": "plan"}, "plan"),
+        ({}, {"permission_mode": "auto"}, "auto"),
+        ({}, {"permission_mode": "manual"}, "default"),
+        (
+            {"delegation_default_permission_mode": "acceptEdits"},
+            {"permission_mode": "dontAsk"},
+            "dontAsk",
+        ),
+        (
+            {"delegation_default_permission_mode": "bypassPermissions"},
+            {"permission_mode": "bypassPermissions"},
+            "bypassPermissions",
+        ),
+        (
+            {"delegation_default_permission_mode": "bypassPermissions"},
+            {"permission_mode": "acceptEdits"},
+            "acceptEdits",
+        ),
+    ],
+)
+async def test_permission_mode_resolved_from_request_then_config_then_auto(
+    tmp_path: Path,
+    tool_params: dict[str, Any],
+    backend_params: dict[str, Any],
+    expected_mode: str,
+) -> None:
+    assert await _enqueue_and_get_mode(tmp_path, tool_params, backend_params) == expected_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "requested"),
+    [
+        # Unset config means auto: bypass is above that ceiling.
+        (None, "bypassPermissions"),
+        ("auto", "bypassPermissions"),
+        ("acceptEdits", "bypassPermissions"),
+        ("acceptEdits", "auto"),
+        ("default", "acceptEdits"),
+        ("dontAsk", "default"),
+        ("plan", "dontAsk"),
+        ("plan", "manual"),
+    ],
+)
+async def test_less_restrictive_requested_permission_mode_is_clamped_to_configured(
+    tmp_path: Path, configured: str | None, requested: str
+) -> None:
+    tool_params = {"delegation_default_permission_mode": configured} if configured else {}
+    with capture_logs() as logs:
+        mode = await _enqueue_and_get_mode(tmp_path, tool_params, {"permission_mode": requested})
+    ceiling = configured or "auto"
+    assert mode == ceiling
+    warning = next(e for e in logs if e["event"] == "subagent.permission_mode.clamped")
+    assert warning["log_level"] == "warning"
+    assert warning["ceiling"] == ceiling
+    assert warning["requested"] == ("default" if requested == "manual" else requested)
+    assert warning["task_id"].startswith("dlg-")
+    assert warning["trace_id"] == "trace-1"
+    assert warning["session_id"] == "tg:123"
+
+
+@pytest.mark.asyncio
+async def test_equal_or_more_restrictive_requested_permission_mode_logs_no_clamp(
+    tmp_path: Path,
+) -> None:
+    with capture_logs() as logs:
+        mode = await _enqueue_and_get_mode(
+            tmp_path,
+            {"delegation_default_permission_mode": "auto"},
+            {"permission_mode": "acceptEdits"},
+        )
+    assert mode == "acceptEdits"
+    assert not [e for e in logs if e["event"] == "subagent.permission_mode.clamped"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", ["yolo", "BypassPermissions", "AUTO", "bypass", 42])
+async def test_unknown_requested_permission_mode_falls_back_to_configured_default(
+    tmp_path: Path, requested: object
+) -> None:
+    with capture_logs() as logs:
+        mode = await _enqueue_and_get_mode(
+            tmp_path,
+            {"delegation_default_permission_mode": "dontAsk"},
+            {"permission_mode": requested},
+        )
+    assert mode == "dontAsk"
+    warning = next(e for e in logs if e["event"] == "subagent.permission_mode.unknown")
+    assert warning["requested"] == str(requested)
+    assert warning["fallback"] == "dontAsk"
+    assert warning["task_id"].startswith("dlg-")
+    assert warning["trace_id"] == "trace-1"
+    assert warning["session_id"] == "tg:123"
 
 
 @pytest.mark.asyncio
