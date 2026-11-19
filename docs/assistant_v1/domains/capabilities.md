@@ -423,8 +423,9 @@ History and rollback:
   `config/`). Backups are verbatim copies of the manifests, so they contain whatever the
   manifests contain, including inline `claude_code_settings.mcp_servers.*.env` secrets
   (backup files are created with mode `0600`). When the history dir is inside a git work
-  tree, `CapabilityEditService` logs `capability_edit.history_in_git_work_tree` (warning) at
-  startup: keep the directory ignored and never commit it.
+  tree and `git check-ignore` does not confirm that it is ignored (or git is unavailable),
+  `CapabilityEditService` logs `capability_edit.history_in_git_work_tree` (warning, at most
+  once per process): keep the directory ignored and never commit it.
 - Each entry is the content **before** an applied edit or rollback, so a rollback can itself
   be rolled back. `capability_propose_rollback` validates the entry (well-formed id, sidecar
   hash matches the file) and the restored content (same checks as an edit, including

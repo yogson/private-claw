@@ -38,6 +38,7 @@ import asyncio
 import hashlib
 import json
 import re
+import subprocess
 from collections.abc import Callable, Collection
 from contextlib import suppress
 from dataclasses import asdict, dataclass
@@ -65,6 +66,8 @@ from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 
 logger = structlog.get_logger(__name__)
+# The git work-tree warning is emitted at most once per process.
+_git_warning_emitted = False
 
 HISTORY_DIR_NAME = ".capability_history"
 DEFAULT_HISTORY_RETENTION = 50
@@ -191,18 +194,29 @@ class CapabilityEditService:
         self._warn_if_in_git_work_tree()
 
     def _warn_if_in_git_work_tree(self) -> None:
-        """Backups copy manifests verbatim, including inline MCP ``env`` secrets."""
+        """Backups copy manifests verbatim, including inline MCP ``env`` secrets.
+
+        Warns (at most once per process) when the history dir is inside a git work tree
+        and git does not ignore it; when git cannot tell (not installed, not a real
+        repository), it warns to be safe.
+        """
+        global _git_warning_emitted
+        if _git_warning_emitted:
+            return
         git_root = find_git_work_tree(self._history_dir)
-        if git_root is not None:
-            logger.warning(
-                "capability_edit.history_in_git_work_tree",
-                history_dir=str(self._history_dir),
-                git_work_tree=str(git_root),
-                hint=(
-                    "capability history backups may contain secrets from MCP env in the "
-                    "manifests; keep .capability_history/ gitignored and never commit it"
-                ),
-            )
+        if git_root is None or git_ignores(git_root, self._history_dir):
+            return
+        _git_warning_emitted = True
+        logger.warning(
+            "capability_edit.history_in_git_work_tree",
+            history_dir=str(self._history_dir),
+            git_work_tree=str(git_root),
+            hint=(
+                "capability history backups may contain secrets from MCP env in the "
+                "manifests, and git does not (or cannot confirm that it does) ignore "
+                "them; add .capability_history/ to .gitignore and never commit it"
+            ),
+        )
 
     @property
     def history_dir(self) -> Path:
@@ -808,6 +822,25 @@ def _summary(**kwargs: Any) -> str:
             f"the change summary for the user could not be built ({type(exc).__name__}); "
             "nothing was proposed",
         ) from exc
+
+
+def git_ignores(git_root: Path, path: Path) -> bool:
+    """True only when ``git check-ignore`` confirms that files under ``path`` are ignored.
+
+    A file inside the directory is probed, so a ``dir/`` pattern matches even before the
+    directory exists. Any failure (git missing, not a repository, timeout) is False.
+    """
+    probe = path.resolve() / "probe.yaml"
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "-C", str(git_root), "check-ignore", "-q", "--", str(probe)],  # noqa: S607
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def find_git_work_tree(path: Path) -> Path | None:

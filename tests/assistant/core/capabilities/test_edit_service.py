@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import stat
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -952,16 +954,70 @@ async def test_failed_outcome_detail_is_one_safe_line() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_history_inside_a_git_work_tree_logs_a_warning(
+@pytest.fixture(autouse=True)
+def _fresh_git_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    import assistant.core.capabilities.edit_service as module
+
+    monkeypatch.setattr(module, "_git_warning_emitted", False)
+
+
+def _git_warnings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["event"] == "capability_edit.history_in_git_work_tree"]
+
+
+def _git_init(root: Path, gitignore: str | None = None) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)  # noqa: S607
+    if gitignore is not None:
+        (root / ".gitignore").write_text(gitignore)
+
+
+def test_history_not_ignored_by_git_logs_a_warning_once_per_process(
     catalog: CapabilityCatalog, config_dir: Path
 ) -> None:
-    (config_dir.parent / ".git").mkdir()
+    _git_init(config_dir.parent, gitignore="*.pyc\n")
     with capture_logs() as logs:
         CapabilityEditService(catalog)
-    events = [e for e in logs if e["event"] == "capability_edit.history_in_git_work_tree"]
+        CapabilityEditService(catalog)
+    events = _git_warnings(logs)
     assert len(events) == 1 and events[0]["log_level"] == "warning"
     assert events[0]["git_work_tree"] == str(config_dir.parent.resolve())
     assert "secrets" in events[0]["hint"]
+
+
+@pytest.mark.parametrize("pattern", [".capability_history/\n", "config.local/\n"])
+def test_history_ignored_by_git_does_not_warn(
+    catalog: CapabilityCatalog, config_dir: Path, pattern: str
+) -> None:
+    # The recommended setup: config.local/ (or the history dir itself) is gitignored.
+    _git_init(config_dir.parent, gitignore=pattern)
+    with capture_logs() as logs:
+        CapabilityEditService(catalog)
+    assert not _git_warnings(logs)
+
+
+def test_history_warns_when_git_cannot_confirm_it_is_ignored(
+    catalog: CapabilityCatalog, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _git_init(config_dir.parent, gitignore=".capability_history/\n")
+
+    def no_git(*_: Any, **__: Any) -> Any:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+    with capture_logs() as logs:
+        CapabilityEditService(catalog)
+    assert len(_git_warnings(logs)) == 1
+
+
+def test_bare_git_marker_without_a_repository_still_warns(
+    catalog: CapabilityCatalog, config_dir: Path
+) -> None:
+    (config_dir.parent / ".git").mkdir()  # git check-ignore fails: not a repository
+    with capture_logs() as logs:
+        CapabilityEditService(catalog)
+    assert len(_git_warnings(logs)) == 1
 
 
 def test_history_outside_a_git_work_tree_does_not_warn(
@@ -971,7 +1027,7 @@ def test_history_outside_a_git_work_tree_does_not_warn(
         pytest.skip("the test tmp dir is inside a git work tree")
     with capture_logs() as logs:
         CapabilityEditService(catalog)
-    assert not [e for e in logs if e["event"] == "capability_edit.history_in_git_work_tree"]
+    assert not _git_warnings(logs)
 
 
 def test_repo_gitignore_covers_the_history_dir() -> None:
