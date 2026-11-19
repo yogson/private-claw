@@ -139,6 +139,8 @@ celerybeat.pid
 .envrc
 .venv
 config.local/
+# Launcher instance list (per machine); config/instances.example.yaml is the template.
+instances.yaml
 # Capability edit backups (CapabilityEditService); may contain inline MCP env secrets.
 .capability_history/
 env/
