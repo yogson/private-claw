@@ -820,8 +820,9 @@ class Orchestrator:
         self, session_id: str, records: list[SessionRecord]
     ) -> bool:
         # A proposal whose replayed tool result still says `pending_confirmation` but that
-        # this process no longer tracks (e.g. it was pending at restart) gets an `expired`
-        # record, so the agent stops waiting for it. True when history must be re-read.
+        # has no resolution record gets one, so the agent stops waiting for it: `expired`
+        # if this process no longer tracks it (e.g. after a restart), its final state if
+        # it is already final (e.g. a /stop-ed turn). True when history must be re-read.
         if self._confirmations is None:
             return False
         pending_ids = unresolved_pending_ids(records)
@@ -837,9 +838,10 @@ class Orchestrator:
 
     async def _discard_confirmations(self, created: list[ConfirmationRequest]) -> None:
         # A failed/cancelled turn never renders its confirmations; free the session slot.
-        # No history record: the failed turn's tool call is not in history, so the user
-        # never saw the proposal and the agent cannot relate the record to anything. If
-        # the tool result did reach history, reconcile_pending records the outcome later.
+        # No history record here. Most failures persist no tool call, so a record would
+        # relate to nothing the agent can see. A /stop persists the partial turn, including
+        # the `pending_confirmation` tool result, as a cancelled turn; reconcile_pending
+        # writes the `failed` record at the start of the next turn, after that turn.
         if self._confirmations is None:
             return
         for request in created:

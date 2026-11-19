@@ -5,11 +5,26 @@ Data models for generic user confirmations (see docs/assistant_v1/domains/agent.
 "User confirmations").
 """
 
+import re
+import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypeGuard
 
 from pydantic import BaseModel, Field
+
+# Every id ConfirmationService issues: 16 lowercase hex characters.
+_CONFIRMATION_ID_RE = re.compile(r"[0-9a-f]{16}")
+
+
+def new_confirmation_id() -> str:
+    """A fresh confirmation id (16 lowercase hex characters)."""
+    return uuid.uuid4().hex[:16]
+
+
+def is_confirmation_id(value: object) -> TypeGuard[str]:
+    """True if ``value`` has the exact format of an id issued by new_confirmation_id()."""
+    return isinstance(value, str) and _CONFIRMATION_ID_RE.fullmatch(value) is not None
 
 
 class ConfirmationStatus(StrEnum):

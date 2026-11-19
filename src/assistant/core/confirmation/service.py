@@ -11,7 +11,6 @@ for ids that history still shows as pending (reconcile_pending).
 """
 
 import asyncio
-import uuid
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 
@@ -28,6 +27,8 @@ from assistant.core.confirmation.models import (
     ConfirmationResolveResult,
     ConfirmationStatus,
     ConfirmationUiRef,
+    is_confirmation_id,
+    new_confirmation_id,
 )
 
 logger = structlog.get_logger(__name__)
@@ -43,9 +44,9 @@ _UNKNOWN_DETAIL = (
     "(e.g. it was pending when the assistant restarted). Nothing was applied by this press."
 )
 _ORPHANED_DETAIL = (
-    "This confirmation was still pending when the assistant restarted and is no longer "
-    "tracked, so the user can no longer approve it. Nothing was applied. Propose it again "
-    "if it is still needed."
+    "This confirmation is no longer awaiting an answer (the assistant restarted or the "
+    "turn ended before it was resolved), so the user can no longer approve it. Nothing "
+    "was applied. Propose it again if it is still needed."
 )
 UNKNOWN_KIND = "unknown"
 
@@ -85,7 +86,7 @@ class ConfirmationService:
             return ConfirmationRequestResult(blocked_by=current)
         now = self._clock()
         request = ConfirmationRequest(
-            confirmation_id=uuid.uuid4().hex[:16],
+            confirmation_id=new_confirmation_id(),
             kind=draft.kind,
             session_id=session_id,
             origin_tool_call_id=draft.origin_tool_call_id,
@@ -149,9 +150,11 @@ class ConfirmationService:
     async def discard(self, confirmation_id: str, detail: str, *, record: bool = True) -> None:
         """Mark a still-pending request failed (e.g. its buttons could not be delivered).
 
-        ``record=False`` skips the history record: for proposals of failed turns, whose
-        tool call never reached history, so the agent has nothing to reconcile it with.
-        If such a proposal does show up in history, reconcile_pending records it later.
+        ``record=False`` skips the history record: for proposals of failed or cancelled
+        turns. Most failures persist no tool call, so the record would relate to nothing
+        the agent can see. A ``/stop`` does persist the partial turn, including the
+        ``pending_confirmation`` tool result; reconcile_pending then writes the record at
+        the start of the next turn, after that cancelled turn.
         """
         request = self._requests.get(confirmation_id)
         if request is None:
@@ -202,9 +205,10 @@ class ConfirmationService:
         if record:
             await self._record(request)
 
-    async def _record(self, request: ConfirmationRequest) -> None:
+    async def _record(self, request: ConfirmationRequest) -> bool:
+        """Hand ``request`` to the recorder; True if it was written without error."""
         if self._recorder is None:
-            return
+            return False
         try:
             await self._recorder.record_resolution(request)
         except Exception as exc:
@@ -213,6 +217,8 @@ class ConfirmationService:
                 confirmation_id=request.confirmation_id,
                 error=str(exc),
             )
+            return False
+        return True
 
     async def expire_due(self, session_id: str | None = None) -> None:
         """Expire pending requests past their TTL (all sessions, or only ``session_id``).
@@ -243,7 +249,7 @@ class ConfirmationService:
         proves the session (e.g. a confirmation pending across a restart), or a
         pending id found in that session's own history. The store deduplicates the
         record by its event id, so it is written at most once per id.
-        Returns True if a record was handed to the recorder.
+        Returns True if the record was written without error.
         """
         if confirmation_id in self._requests or self._recorder is None:
             return False
@@ -263,21 +269,16 @@ class ConfirmationService:
         logger.info(
             "confirmation.unknown_expired", confirmation_id=confirmation_id, session_id=session_id
         )
-        try:
-            await self._recorder.record_resolution(stub)
-        except Exception as exc:
-            logger.warning(
-                "confirmation.record_failed", confirmation_id=confirmation_id, error=str(exc)
-            )
-            return False
-        return True
+        return await self._record(stub)
 
     async def reconcile_pending(self, session_id: str, confirmation_ids: Iterable[str]) -> bool:
         """Give every id that ``session_id``'s history shows as pending a final record.
 
         Called at turn start with the ids whose replayed tool result still says
-        ``pending_confirmation`` and that have no resolution record yet:
-        - unknown ids (pending when the process restarted): ``expired`` record;
+        ``pending_confirmation`` and that have no resolution record yet
+        (unresolved_pending_ids). Ids not in the service's own format are ignored.
+        - unknown ids (the process restarted, or the request was pruned): ``expired``
+          record;
         - known, already final ids whose record was skipped (``discard(record=False)``)
           or failed to write: their final state is recorded now;
         - still-pending ids of this process: left alone.
@@ -286,14 +287,15 @@ class ConfirmationService:
         """
         wrote = False
         for confirmation_id in dict.fromkeys(confirmation_ids):
+            if not is_confirmation_id(confirmation_id):
+                continue
             request = self._requests.get(confirmation_id)
             if request is None:
                 wrote |= await self.record_unknown_expired(
                     confirmation_id, session_id, detail=_ORPHANED_DETAIL
                 )
             elif not request.is_pending and request.session_id == session_id:
-                await self._record(request)
-                wrote = True
+                wrote |= await self._record(request)
         return wrote
 
     def _prune_resolved(self, now: datetime) -> None:

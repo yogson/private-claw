@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Protocol
 
-from assistant.core.confirmation.models import ConfirmationRequest
+from assistant.core.confirmation.models import ConfirmationRequest, is_confirmation_id
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import (
     SessionRecord,
@@ -27,6 +27,12 @@ CONFIRMATION_RESOLVED_MARKER = "[[CONFIRMATION_RESOLVED]]"
 CONFIRMATION_TURN_PREFIX = "confirmation-"
 # Tool result status that tells the agent a confirmation is awaiting the user.
 PENDING_TOOL_RESULT_STATUS = "pending_confirmation"
+# Registry of the first-party tools that create confirmations through
+# ConfirmationService.request() and report them as ``pending_confirmation``. Only
+# their results are trusted by unresolved_pending_ids(): any other tool's output
+# (MCP servers, fetched JSON, external APIs) is untrusted and may use the same shape.
+# Every new confirmation-creating tool (e.g. capability edits) must be added here.
+CONFIRMATION_TOOL_NAMES: frozenset[str] = frozenset({"memory_propose_update"})
 # What the marker becomes in user-typed text, so a user cannot forge a resolution.
 _NEUTRALIZED_MARKER = "[[user-typed: CONFIRMATION_RESOLVED]]"
 
@@ -39,8 +45,11 @@ def is_confirmation_record(record: SessionRecord) -> bool:
 def unresolved_pending_ids(records: Iterable[SessionRecord]) -> list[str]:
     """Confirmation ids a tool result shows as pending with no resolution record after it.
 
-    Scans tool results with ``status == "pending_confirmation"`` (any proposing tool)
-    and drops ids that already have a ``confirmation-<id>`` resolution record.
+    Scans tool results of the tools in CONFIRMATION_TOOL_NAMES with
+    ``status == "pending_confirmation"`` and a well-formed id (is_confirmation_id), and
+    drops ids that already have a ``confirmation-<id>`` resolution record. Results of
+    other tools and malformed ids are ignored: they did not come from
+    ConfirmationService and must never become a trusted resolution record.
     """
     pending: dict[str, None] = {}
     resolved: set[str] = set()
@@ -50,11 +59,13 @@ def unresolved_pending_ids(records: Iterable[SessionRecord]) -> list[str]:
             continue
         if record.record_type != SessionRecordType.TOOL_RESULT:
             continue
+        if record.payload.get("tool_name") not in CONFIRMATION_TOOL_NAMES:
+            continue
         result = record.payload.get("result")
         if not isinstance(result, dict) or result.get("status") != PENDING_TOOL_RESULT_STATUS:
             continue
         confirmation_id = result.get("confirmation_id")
-        if isinstance(confirmation_id, str) and confirmation_id:
+        if is_confirmation_id(confirmation_id):
             pending[confirmation_id] = None
     return [cid for cid in pending if cid not in resolved]
 

@@ -11,6 +11,7 @@ import pytest
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
+from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.agent.interfaces import MessageRole
 from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
 from assistant.core.config.schemas import (
@@ -1120,8 +1121,8 @@ class TestOrchestratorExecuteTurn:
     ) -> None:
         store = FilesystemSessionStore(tmp_path)
         mock_store.sessions = store
-        # Before the restart a turn proposed "orphan01"; nobody pressed its buttons.
-        await persist_pending_proposal(store, "tg:123", "orphan01")
+        # Before the restart a turn proposed ORPHAN_ID; nobody pressed its buttons.
+        await persist_pending_proposal(store, "tg:123", ORPHAN_ID)
         restarted = ConfirmationService(
             ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
         )
@@ -1135,23 +1136,130 @@ class TestOrchestratorExecuteTurn:
             confirmation_service=restarted,
         )
 
-        await orch.execute_turn(_minimal_event(event_id="ev-1", text="hi"))
-        await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi again"))
+        # The memory tool is still active, so the tool-mismatch guard lets turn 1 run.
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={MEMORY_TOOL_NAME},
+        ):
+            first = await orch.execute_turn(_minimal_event(event_id="ev-1", text="hi"))
+
+            # The first turn after the restart already sees the outcome.
+            assert first is not None and first.text == "ok"
+            assert mock_pydantic_adapter.run_turn.await_count == 1
+            first_turn = mock_pydantic_adapter.run_turn.call_args_list[0].kwargs["messages"]
+            seen = [str(m.get("content", "")) for m in first_turn]
+            assert any(c.startswith(CONFIRMATION_RESOLVED_MARKER) and ORPHAN_ID in c for c in seen)
+
+            await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi again"))
         # A later press of the old button must not add a second record.
-        await restarted.record_unknown_expired("orphan01", "tg:123")
+        await restarted.record_unknown_expired(ORPHAN_ID, "tg:123")
 
         stored = await store.read_session("tg:123")
-        resolutions = [r for r in stored if r.event_id == "confirmation-orphan01"]
+        resolutions = [r for r in stored if r.event_id == f"confirmation-{ORPHAN_ID}"]
         assert len(resolutions) == 1
         payload = json.loads(
             resolutions[0].payload["content"].removeprefix(CONFIRMATION_RESOLVED_MARKER)
         )
         assert payload["status"] == "expired"
-        assert "restarted" in payload["detail"]
-        # The first turn after the restart already sees the outcome.
-        first_turn = mock_pydantic_adapter.run_turn.call_args_list[0].kwargs["messages"]
-        seen = [str(m.get("content", "")) for m in first_turn]
-        assert any(c.startswith(CONFIRMATION_RESOLVED_MARKER) and "orphan01" in c for c in seen)
+        assert "no longer awaiting an answer" in payload["detail"]
+        assert unresolved_pending_ids(await store.replay_for_turn("tg:123", 200)) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restart_before_next_turn", [False, True])
+    async def test_stopped_turn_confirmation_is_recorded_by_next_turn(
+        self,
+        restart_before_next_turn: bool,
+        tmp_path: Path,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        """/stop persists the pending tool result as a cancelled turn; the next turn records it."""
+        from assistant.agent.pydantic_ai_agent import TurnCancelledWithPartial
+
+        store = FilesystemSessionStore(tmp_path)
+        mock_store.sessions = store
+        confirmations = ConfirmationService(
+            ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+        )
+        created_ids: list[str] = []
+
+        async def _propose_then_stop(**kwargs: object) -> object:
+            deps = kwargs["deps"]
+            outcome = await deps.confirmation_requester(_memory_draft())  # type: ignore[attr-defined]
+            cid = outcome.request.confirmation_id
+            created_ids.append(cid)
+            raise TurnCancelledWithPartial(
+                [
+                    ModelResponse(
+                        parts=[ToolCallPart(tool_name=MEMORY_TOOL_NAME, tool_call_id="tc", args={})]
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name=MEMORY_TOOL_NAME,
+                                tool_call_id="tc",
+                                content=json.dumps(
+                                    {"status": "pending_confirmation", "confirmation_id": cid}
+                                ),
+                            )
+                        ]
+                    ),
+                ]
+            )
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_propose_then_stop)
+
+        def _orch(service: ConfirmationService) -> Orchestrator:
+            return Orchestrator(
+                store=mock_store,
+                config=_runtime_config(),
+                idempotency=mock_idempotency,
+                pydantic_ai_adapter=mock_pydantic_adapter,
+                session_factory=mock_session_factory,
+                confirmation_service=service,
+            )
+
+        orch = _orch(confirmations)
+        with patch(
+            "assistant.core.orchestrator.service.collect_enabled_tool_ids",
+            return_value={MEMORY_TOOL_NAME},
+        ):
+            with pytest.raises(TurnCancelledWithPartial):
+                await orch.execute_turn(_minimal_event(event_id="ev-1", text="remember tea"))
+            (cid,) = created_ids
+            # The slot is free at once, no record yet, the tool result is in history.
+            assert confirmations.pending_for_session("tg:123") is None
+            replay = await store.replay_for_turn("tg:123", 200)
+            assert not any(r.turn_id.startswith("confirmation-") for r in replay)
+            assert unresolved_pending_ids(replay) == [cid]
+
+            if restart_before_next_turn:
+                orch = _orch(
+                    ConfirmationService(
+                        ConfirmationHandlerRegistry(), recorder=SessionConfirmationRecorder(store)
+                    )
+                )
+            mock_pydantic_adapter.run_turn = AsyncMock(return_value=("ok", [], None))
+            await orch.execute_turn(_minimal_event(event_id="ev-2", text="hi"))
+
+        stored = await store.read_session("tg:123")
+        (resolution,) = [r for r in stored if r.event_id == f"confirmation-{cid}"]
+        payload = json.loads(
+            resolution.payload["content"].removeprefix(CONFIRMATION_RESOLVED_MARKER)
+        )
+        if restart_before_next_turn:
+            assert payload["status"] == "expired"
+            assert "no longer awaiting an answer" in payload["detail"]
+        else:
+            assert payload["status"] == "failed"
+            assert "turn did not complete" in payload["detail"]
+        # The record follows the whole cancelled turn, so the agent sees them in order.
+        (cancelled_turn,) = {
+            r.turn_id for r in stored if r.record_type == SessionRecordType.TOOL_RESULT
+        }
+        assert resolution.sequence > max(r.sequence for r in stored if r.turn_id == cancelled_turn)
         assert unresolved_pending_ids(await store.replay_for_turn("tg:123", 200)) == []
 
     @pytest.mark.asyncio
@@ -1244,6 +1352,9 @@ def _memory_draft() -> ConfirmationDraft:
         dedupe_key="k1",
         origin_tool_call_id="tool-1",
     )
+
+
+ORPHAN_ID = "0123456789abcdef"
 
 
 def _tool_call_record(

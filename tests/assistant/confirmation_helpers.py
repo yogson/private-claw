@@ -12,16 +12,24 @@ from assistant.store.interfaces import SessionStoreInterface
 
 
 async def persist_pending_proposal(
-    store: SessionStoreInterface, session_id: str, confirmation_id: str
+    store: SessionStoreInterface,
+    session_id: str,
+    confirmation_id: str,
+    *,
+    tool_name: str = "memory_propose_update",
+    turn_id: str | None = None,
 ) -> None:
-    """Persist a completed turn whose memory_propose_update result is still pending."""
-    turn_id = f"proposal-{confirmation_id}"
-    tool_call_id = f"tc-{confirmation_id}"
+    """Persist a completed turn whose ``tool_name`` result says ``pending_confirmation``.
+
+    The default tool is memory_propose_update, whose result is still pending.
+    """
+    turn_id = turn_id or f"proposal-{confirmation_id}"
+    tool_call_id = f"tc-{turn_id}"
     new_msgs = [
         ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="memory_propose_update",
+                    tool_name=tool_name,
                     tool_call_id=tool_call_id,
                     args={"intent_id": "i", "action": "upsert", "memory_type": "facts"},
                 )
@@ -30,7 +38,7 @@ async def persist_pending_proposal(
         ModelRequest(
             parts=[
                 ToolReturnPart(
-                    tool_name="memory_propose_update",
+                    tool_name=tool_name,
                     tool_call_id=tool_call_id,
                     content=json.dumps(
                         {"status": "pending_confirmation", "confirmation_id": confirmation_id}
