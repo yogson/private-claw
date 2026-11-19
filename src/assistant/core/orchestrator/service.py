@@ -697,22 +697,28 @@ class Orchestrator:
         streaming_text_notifier: Callable[[str], Awaitable[None]] | None = None,
         compaction_notifier: Callable[[], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
-        user_text = neutralize_confirmation_marker(extract_user_text(event))
+        user_text = extract_user_text(event)
         attachments = gather_attachments(event)
         attachment_context = format_attachment_context(attachments)
-        user_content = (user_text + attachment_context).strip() or _PLACEHOLDER_EMPTY
+        # Neutralized once all user-controlled text (incl. attachment file names) is in.
+        user_content = (
+            neutralize_confirmation_marker((user_text + attachment_context).strip())
+            or _PLACEHOLDER_EMPTY
+        )
 
         turn_id = event.event_id
         session_id = event.session_id
         trace_id = event.trace_id
 
         raw_text = extract_raw_text_for_multimodal(event)
-        if raw_text:
-            raw_text = neutralize_confirmation_marker(raw_text)
         content_blocks = await build_user_content_blocks(
             raw_text, attachments, self._attachment_downloader, trace_id
         )
         if content_blocks is not None:
+            for block in content_blocks:
+                # Text blocks carry the user's text, file names and text-file content.
+                if block.get("type") == "text":
+                    block["text"] = neutralize_confirmation_marker(block["text"])
             user_message = LLMMessage(
                 role=MessageRole.USER, content="", content_blocks=content_blocks
             )
