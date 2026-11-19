@@ -619,11 +619,11 @@
         {
           "id": "5.5",
           "name": "Dynamic Capability Shortlist and Descriptor Injection [CMP_CORE_AGENT_ORCHESTRATOR]",
-          "description": "Implement dynamic top-N capability shortlist selection and descriptor injection with policy pre-filtering.",
+          "description": "(Cancelled) Implement dynamic top-N capability shortlist selection and descriptor injection with policy pre-filtering.",
           "scope_path": "src/assistant/core/tooling/",
-          "status": "not_started",
+          "status": "cancelled",
           "completed_date": null,
-          "notes": "",
+          "notes": "Not planned: owner cancelled dynamic capability loading (https://github.com/yogson/private-claw/issues/55 closed as not planned, https://github.com/yogson/private-claw/pull/60 closed; branch feat/dynamic-capability-loading kept for reference). Capability activation stays static: config enabled_capabilities, or the per-session /capabilities override when set (it replaces enabled_capabilities for that session), expanded through nested_capabilities, minus denied_capabilities.",
           "files_delivered": []
         },
         {
@@ -657,7 +657,7 @@
       "success_criteria": [
         "Capabilities and skills load deterministically and invalid manifests are rejected",
         "Memory operations run through dedicated capability contracts with auditable proposal/apply outcomes",
-        "Per-turn tool context is shortlist-based, not full-catalog injection",
+        "Per-turn tool context follows the static active capability set (resolve_active_capabilities over the CapabilityCatalog snapshot); shortlist-based injection is not planned (cancelled task 5.5)",
         "Mapped MCP tools remain deny-by-default until explicitly allowlisted and pass policy and confirmation gates",
         "Sub-agent requests enforce model, capability, budget, and concurrency constraints with auditable traces"
       ]
@@ -759,7 +759,7 @@
     "Tracker aligned with ASSISTANT_V1_IMPLEMENTATION_PLAN phase sequencing, dependencies, and quality-gate flow.",
     "Tasks use component IDs that trace to ASSISTANT_V1_TECHNICAL_SPECIFICATION and domain ownership docs.",
     "Store foundation is explicitly represented before Telegram and memory phases to match current architecture contracts.",
-    "Capability runtime includes MCP bridge and dynamic shortlist injection behavior per CAPABILITY_CATALOG and technical spec.",
+    "Capability runtime includes the MCP bridge and static active-set capability exposure per CAPABILITY_CATALOG and technical spec (dynamic shortlist injection was cancelled, task 5.5).",
     "Sub-agent spawning remains explicit-model and policy-gated under phase 5 runtime controls.",
     "Authoritative tracker for assistant_v1 scope is docs/assistant_v1/project_tracker.json."
   ]

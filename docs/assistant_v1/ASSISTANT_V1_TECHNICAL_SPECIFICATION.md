@@ -269,7 +269,7 @@ Global invariants:
 - Registry discovers manifests at startup and validates schemas.
 - Capability invocation only proceeds when capability policy allows requested action.
 - All external side effects generate audit events.
-- Model-visible tool definitions are injected dynamically per turn from a ranked capability shortlist; full catalog is not injected by default.
+- Model-visible tool definitions come from the static active capability set (config `enabled_capabilities`, or the per-session `/capabilities` override when set, which replaces `enabled_capabilities` for that session, expanded through `nested_capabilities`, minus `denied_capabilities`). Dynamic per-turn injection from a ranked shortlist is not planned (see [#55](https://github.com/yogson/private-claw/issues/55)).
 - External MCP tool invocations must be mapped to capability IDs and pass the same policy/confirmation gates as first-party capabilities.
 - Capability side effects must be triggered only by provider-native tool calls; model text/JSON output must not be interpreted as executable tool intent.
 - Actions that need user approval (memory updates first) go through the single confirmation mechanism (`CMP_CORE_CONFIRMATION_SERVICE`): only an explicit button press approves, at most one confirmation is pending per session, and every outcome is written to session history. Owned by `docs/assistant_v1/domains/agent.md` ("User Confirmations").

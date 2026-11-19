@@ -109,7 +109,7 @@ Resolution flow:
    `resolve_active_capabilities(enabled, denied, snapshot.definitions)`
    (`core/capabilities/resolver.py`), used by every consumer (system prompt, tools, tool
    params, mismatch check, MCP toolsets, sub-agent MCP servers, `~/.claude/settings.json`):
-   - start from `enabled_capabilities` (or the per-session override), in order,
+   - start from `enabled_capabilities`, or from the per-session `/capabilities` override when set (it replaces `enabled_capabilities` for that session), in order,
    - expand `nested_capabilities` depth-first, cycle-safe, children right after their parent,
    - never include **or descend into** a capability listed in `denied_capabilities`: the
      children of a denied capability are active only if they are enabled explicitly or
@@ -143,7 +143,7 @@ Skill manifest schema requirements:
 - `skill_id`: stable identifier.
 - `entrypoint`: `<python_module>:<callable_name>`.
 - `required_capabilities`: list of capability IDs required for execution.
-- `capabilities`: optional additional capabilities requested dynamically.
+- `capabilities`: optional field accepted by the schema (`SkillManifest.capabilities` in `extensions/registry/models.py`) but ignored: nothing reads it. Dynamic capability requests are not planned (see "Dynamic Activation Model (Not planned)").
 - `dependency_resolution`: all `required_capabilities` must be registered and enabled at load time; unresolved dependencies block skill activation.
 - Discovery pattern: load manifests from `plugins/skills/*/manifest.yaml`; duplicate `skill_id` values are startup errors.
 
@@ -284,16 +284,49 @@ Derived state follows revisions:
 Out of scope (still startup-only): `tools.yaml`, `capabilities.yaml` (policy),
 `mcp_servers.yaml` and the other config domains.
 
-## Dynamic Activation Model (Normative)
+## Static Activation Model and Tool-Call Invariants (current, in force)
 
-The system must separate **runtime registry availability** from **model-visible tool context**.
+Active capabilities are static, resolved by `resolve_active_capabilities` over the CapabilityCatalog
+snapshot ([#53](https://github.com/yogson/private-claw/issues/53) /
+[PR #56](https://github.com/yogson/private-claw/pull/56)):
 
-- Runtime registry may discover and validate all manifests at startup.
-- The model must not receive all tool definitions by default.
-- Per turn, only shortlisted capability descriptors are injected into model context.
-- Capability execution must originate from provider-native tool calls; plain text payloads must not be treated as tool execution requests.
+> config `enabled_capabilities`, or the per-session `/capabilities` override when set (the override
+> **replaces** `enabled_capabilities` for that session, it does not add to it), expanded through
+> `nested_capabilities`, minus `denied_capabilities`.
 
-This is the required activation flow:
+The system prompt and tool definitions are built from this full active set.
+
+These rules are normative and enforced today:
+- Startup: the runtime registry discovers and validates all manifests (invalid or duplicate
+  manifests are startup errors; on live reload an invalid snapshot is rejected and the
+  last-known-good stays in use).
+- Capability execution originates only from provider-native tool calls; plain text or JSON payloads
+  in model output are never treated as tool execution requests.
+- Tool definitions passed to the model stay compact and contain only what is needed for safe
+  invocation; never pass raw implementation internals or unrestricted shell command text to the
+  model.
+- For MCP-backed tools, never pass raw MCP transport credentials or command/env internals to the
+  model.
+
+## Dynamic Activation Model (Not planned)
+
+> **Status: not implemented, not planned.** The owner decided not to pursue dynamic capability
+> activation/loading for now (see [#55](https://github.com/yogson/private-claw/issues/55), closed as not planned, and closed [PR #60](https://github.com/yogson/private-claw/pull/60); the branch
+> `feat/dynamic-capability-loading` is kept for reference). The current model is **static**, as
+> described in the section above.
+>
+> This section and the sub-sections below whose headings carry "(Not planned)" ("Catalog Query
+> Contract", "Tool Context Injection Rules" and "Example: Reminder Request") are a **historical
+> design sketch only**. They are not a requirement and do not describe current behavior. (The
+> tool-call and safety invariants in the static-activation section above are not part of the
+> sketch and remain in force.)
+
+In the sketched design, the system would separate **runtime registry availability** from **model-visible tool context**.
+
+- The model would not receive all tool definitions by default.
+- Per turn, only shortlisted capability descriptors would be injected into model context.
+
+This is the sketched activation flow:
 
 1. Build candidate set from intent signals:
    - user request text/entities,
@@ -309,14 +342,14 @@ This is the required activation flow:
    - ask targeted clarification, or
    - return actionable refusal/guidance for capability registration.
 
-For MCP-backed capabilities, steps 2-4 must additionally enforce:
+For MCP-backed capabilities, steps 2-4 would additionally enforce:
 - server connectivity and health checks,
 - tool-level allowlisting from MCP mapping config,
 - risk-class confirmation gates before descriptor injection.
 
-## Catalog Query Contract
+## Catalog Query Contract (Not planned)
 
-`CMP_TOOL_RUNTIME_REGISTRY` must provide deterministic catalog-query operations:
+`CMP_TOOL_RUNTIME_REGISTRY` would provide deterministic catalog-query operations:
 
 - `list_capabilities(filters)`:
   - filters by domain, side_effecting/read_only, and policy eligibility.
@@ -325,25 +358,29 @@ For MCP-backed capabilities, steps 2-4 must additionally enforce:
 - `get_tool_descriptors(capability_ids)`:
   - returns compact LLM-facing descriptors for context injection.
 
-Response records must include:
+Response records would include:
 - `capability_id`,
 - `score`,
 - `selection_reason`,
 - `policy_state` (`allowed`, `denied`, `requires_confirmation`).
 
-## Tool Context Injection Rules
+## Tool Context Injection Rules (Not planned)
 
 - Keep descriptor payload compact and deterministic.
 - Include only fields needed for safe invocation: name, arguments, constraints, confirmation requirement.
-- Do not inject raw implementation internals or unrestricted shell command text.
 - Include safety-critical notes verbatim when `requires_confirmation=true`.
 - Maintain audit metadata of which descriptors were injected for each turn.
 
 For MCP descriptors:
-- include `mcp_server` and `mcp_tool` metadata for traceability,
-- never inject raw MCP transport credentials or command/env internals.
+- include `mcp_server` and `mcp_tool` metadata for traceability.
 
-## Example: Reminder Request
+## Example: Reminder Request (Not planned)
+
+> **Illustrative of the not-planned dynamic model.** This walkthrough shows the historical
+> shortlist/descriptor-injection flow and does **not** describe current behavior. In the current
+> static model the reminder tools come from the active capability set (for example
+> `macos_personal`, when enabled), are already in the model's tool context, and the model calls
+> them via a native tool call with policy gates enforced at invocation.
 
 For a user turn like "set a reminder for tomorrow at 9 to pay rent":
 
