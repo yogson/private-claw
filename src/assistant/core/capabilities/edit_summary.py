@@ -209,11 +209,20 @@ def _diff_lists(
 
 
 def _added(keys: tuple[str, ...], path: str, value: Any, out: list[_Change]) -> None:
-    if isinstance(value, dict) and value:
+    """Leaves of an added subtree; empty default containers inside it are skipped, but a
+    subtree with no other leaves is still reported as one ``added`` line."""
+    leaves: list[_Change] = []
+    _added_leaves(keys, path, value, leaves)
+    out.extend(leaves or [_Change(keys, path, "added", new=value)])
+
+
+def _added_leaves(keys: tuple[str, ...], path: str, value: Any, out: list[_Change]) -> None:
+    if isinstance(value, dict):
         for key, sub in value.items():
-            _added((*keys, str(key)), _join(path, key), sub, out)
-    elif isinstance(value, list) and value:
-        _diff_lists(keys, path, [], value, out)
+            _added_leaves((*keys, str(key)), _join(path, key), sub, out)
+    elif isinstance(value, list):
+        if value:
+            _diff_lists(keys, path, [], value, out)
     else:
         out.append(_Change(keys, path, "added", new=value))
 

@@ -183,6 +183,16 @@ def test_permissions_nested_and_mcp() -> None:
     assert '⚠ mcp_servers: + "finance"' in text
 
 
+def test_empty_defaults_of_an_added_block_are_not_listed() -> None:
+    after = _cap(claude_code_settings={"mcp_servers": {"gh": {"command": "x"}}})
+    text = _summary(_cap(), after)
+    assert '⚠ claude_code_settings.mcp_servers.gh.command: + "x"' in text
+    assert "+ []" not in text
+    only_defaults = _summary(_cap(), _cap(claude_code_settings={}))
+    assert "⚠ claude_code_settings: + " in only_defaults
+    assert NO_CHANGES_TEXT not in only_defaults
+
+
 def test_changed_env_value_is_masked() -> None:
     def server(token: str) -> CapabilityDefinition:
         return _cap(
