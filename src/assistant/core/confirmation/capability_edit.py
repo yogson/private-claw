@@ -10,6 +10,7 @@ confirmation mechanism.
 """
 
 from assistant.core.capabilities.edit_service import CapabilityEditService, EditProposal
+from assistant.core.capabilities.edit_summary import inline
 from assistant.core.confirmation.models import (
     ConfirmationDraft,
     ConfirmationOutcome,
@@ -51,4 +52,8 @@ class CapabilityEditHandler:
             session_id=request.session_id,
             user_id=user_id,
         )
-        return ConfirmationOutcome(ok=outcome.ok, status=outcome.status, detail=outcome.detail)
+        # The detail is shown to the user (failed status line) and may quote manifest
+        # content (e.g. validator messages naming tool ids): keep it to one safe line.
+        return ConfirmationOutcome(
+            ok=outcome.ok, status=outcome.status, detail=inline(outcome.detail)
+        )

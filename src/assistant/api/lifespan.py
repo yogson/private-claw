@@ -106,7 +106,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Agent-proposed manifest edits (kind capability_edit): applied only on approval,
         # then picked up live through capability_catalog.reload().
         capability_edit_service = CapabilityEditService(
-            capability_catalog, retention=runtime_config.app.capability_history_retention
+            capability_catalog,
+            retention=runtime_config.app.capability_history_retention,
+            known_tool_ids=[t.tool_id for t in runtime_config.tools.tools],
         )
         confirmations = ConfirmationService(
             handlers=ConfirmationHandlerRegistry(

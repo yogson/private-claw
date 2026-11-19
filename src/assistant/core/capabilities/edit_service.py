@@ -16,6 +16,8 @@ handler are thin wrappers around it.
   node tree (``manifest_structure``: exactly one of each top-level key, no duplicate or
   merge keys, no aliases, ``self_edit`` is the plain boolean ``true``) and again on the
   parsed result, never by text matching: YAML escapes and merge keys hide keys from text.
+- ``tool_overrides`` keys and tool bindings added by an edit must name tools from the
+  tools registry (``tools.yaml``) when the service knows it.
 - Every proposal carries the sha256 of the raw bytes it was computed from. Approval re-checks
   it, so a proposal that is stale because the file changed in between is never applied.
 - Before every applied edit the current bytes are backed up to
@@ -36,7 +38,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -169,10 +171,12 @@ class CapabilityEditService:
         history_dir: Path | None = None,
         retention: int = DEFAULT_HISTORY_RETENTION,
         clock: Callable[[], datetime] = _utc_now,
+        known_tool_ids: Collection[str] | None = None,
     ) -> None:
         if retention < 1:
             raise ValueError("retention must be at least 1")
         self._catalog = catalog
+        self._known_tool_ids = frozenset(known_tool_ids) if known_tool_ids is not None else None
         self._config_dir = catalog.current().capabilities_dir.parent
         self._history_dir = history_dir or self._config_dir / HISTORY_DIR_NAME
         self._retention = retention
@@ -603,7 +607,9 @@ class CapabilityEditService:
             ) from exc
         # 3. Parsed values of the protected keys are unchanged.
         check_protected_fields(target.capability_id, current.definition, after)
-        # 4. Cross-file checks a catalog reload would run.
+        # 4. Added tool references exist in the tools registry.
+        self._check_tool_references(current.definition, after)
+        # 5. Cross-file checks a catalog reload would run.
         definitions = dict(target.snapshot.definitions)
         definitions[target.capability_id] = after
         issues = [i.message for i in self._catalog.validate_candidate(definitions) if i.blocking]
@@ -613,6 +619,24 @@ class CapabilityEditService:
                 "the resulting manifest fails cross-file validation: " + "; ".join(issues),
             )
         return after
+
+    def _check_tool_references(
+        self, before: CapabilityDefinition, after: CapabilityDefinition
+    ) -> None:
+        if self._known_tool_ids is None:
+            return
+        old = set(before.tool_overrides) | {b.tool_id for b in before.tools}
+        unknown = sorted(
+            tool_id
+            for tool_id in (*after.tool_overrides, *(b.tool_id for b in after.tools))
+            if tool_id not in old and tool_id not in self._known_tool_ids
+        )
+        if unknown:
+            raise CapabilityEditError(
+                STATUS_REJECTED_INVALID,
+                "unknown tool ids (not in tools.yaml) in tools / tool_overrides: "
+                + ", ".join(repr(t) for t in dict.fromkeys(unknown)),
+            )
 
     def _entry_dir(self, capability_id: str) -> Path:
         return self._history_dir / capability_id

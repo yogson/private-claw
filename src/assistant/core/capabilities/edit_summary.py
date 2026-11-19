@@ -29,6 +29,7 @@ are identical.
 import difflib
 import json
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +52,9 @@ _SECRET_KEY_RE = re.compile(
 )
 _PLAIN_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 _KEY_MAX_CHARS = 80
+# Control, format (bidi controls, zero-width), surrogate, private-use, unassigned, and
+# line / paragraph separators.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 _SENSITIVE_PREFIX = "  ⚠ "
 _PLAIN_PREFIX = "  • "
 
@@ -337,13 +341,27 @@ def clip(text: str, limit: int) -> str:
 
 
 def escape(text: str) -> str:
-    """Escape quotes, backslashes and control characters (one line, unambiguous)."""
-    return json.dumps(text, ensure_ascii=False)[1:-1]
+    """Escape quotes, backslashes, control and format characters (one line, unambiguous).
+
+    Manifest values are agent-controlled: a newline, U+2028 or a bidi override inside a
+    list item or key could otherwise forge extra summary lines or reorder what is shown.
+    """
+    return _escape_unsafe(json.dumps(text, ensure_ascii=False)[1:-1])
 
 
 def inline(text: str) -> str:
-    """Collapse whitespace (newlines included) to single spaces."""
-    return " ".join(text.split())
+    """One line of free text: whitespace runs (newlines included) collapse to one space,
+    remaining control / format (bidi, zero-width) characters are escaped as ``\\uXXXX``."""
+    return _escape_unsafe(" ".join(text.split()))
+
+
+def _escape_unsafe(text: str) -> str:
+    return "".join(
+        (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}")
+        if unicodedata.category(c) in _UNSAFE_CATEGORIES
+        else c
+        for c in text
+    )
 
 
 def _fit_lines(head: list[str], sensitive: list[str], plain: list[str], max_units: int) -> str:

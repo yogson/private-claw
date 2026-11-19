@@ -334,7 +334,9 @@ Proposal validation (no write):
    exactly one occurrence, else `rejected_invalid`. The replacement keeps comments and
    formatting outside the edited span byte-identical (no YAML round-trip, no new dependency).
 4. The result must parse and validate against the strict schema (`extra="forbid"`), keep
-   the parsed `capability_id` and `self_edit: true` unchanged, and pass the catalog's
+   the parsed `capability_id` and `self_edit: true` unchanged, name only tools from the
+   tools registry (`tools.yaml`) in `tool_overrides` keys and `tools` bindings it adds
+   (keys that already existed are tolerated), and pass the catalog's
    cross-file checks on a candidate snapshot (`validate_candidate`: nested references,
    tool bindings of the default policy).
 5. Structural guard of the protected keys (`core/capabilities/manifest_structure.py`,
@@ -363,6 +365,15 @@ lists of strings show each item added (`+`) or removed (`−`); a pure reorder s
 `order changed`. Values longer than 120 chars are cut with `(+N chars hidden)`. Values under
 `claude_code_settings.mcp_servers.*.env` / `headers` and secret-looking keys are shown as
 `<hidden>` (key names stay visible).
+
+Every manifest-derived string in the summary (values, list items, keys such as
+`tool_overrides` / `mcp_servers` names, the file name), the reason and the prompt excerpt
+is rendered as one line: values and keys are double-quoted with `\n`, `\r`, `\t`, `"` and
+`\\` escaped, free text has whitespace runs collapsed, and control, format (bidi
+overrides/isolates, zero-width), line/paragraph separator, private-use and unassigned
+characters are escaped as `\uXXXX`. So no manifest content can forge extra summary lines or a
+fake "Approved"/⚠-free appearance. The failure detail of an applied confirmation
+(shown in the "Failed:" status line) is sanitised the same way.
 
 Every top-level field except `prompt` (tools, tool_overrides, params_override, MCP servers,
 nested capabilities, Claude Code permissions and MCP servers, and any field added later) is
