@@ -129,14 +129,24 @@ Rules:
 - State is in memory only. After a restart unknown ids resolve as "no longer valid". When the user presses a
   button of such a confirmation, its signature proves which session issued it, so an `expired` record is written
   to that session (`ConfirmationService.record_unknown_expired`).
-- Pending at restart and never pressed: at turn start, after `expire_due(session_id)` and before the agent runs, the
+- Pending in history but no longer awaiting an answer (e.g. pending at restart and never pressed, or proposed in a
+  turn that was stopped with `/stop`): at turn start, after `expire_due(session_id)` and before the agent runs, the
   orchestrator scans the replayed tool results whose `status` is `pending_confirmation`
   (`unresolved_pending_ids`). Every such `confirmation_id` without a `confirmation-<id>` record is reconciled
   (`ConfirmationService.reconcile_pending`). An id the service no longer knows gets an `expired` record
-  ("pending when the assistant restarted ... propose it again if still needed"). A known id that is already final
-  but was never recorded gets its final record. A still-pending id is left alone. History is then re-read, so the same
-  turn sees the outcome. The store deduplicates records by event id, so a later press of the old button adds no
-  second record.
+  ("no longer awaiting an answer (the assistant restarted or the turn ended before it was resolved) ... propose it
+  again if still needed"). A known id that is already final but was never recorded gets its final record. A
+  still-pending id is left alone. History is then re-read, so the same turn sees the outcome. The store deduplicates
+  records by event id, so a later press of the old button adds no second record.
+  Only results of the first-party confirmation-creating tools in `CONFIRMATION_TOOL_NAMES`
+  (`assistant.core.confirmation.history`; currently `memory_propose_update`) are scanned, and only ids in the
+  service's own format (16 lowercase hex chars, `is_confirmation_id`). Output of any other tool (MCP servers, fetched
+  JSON, external APIs) is untrusted and may use the same shape; it must never become a trusted resolution record.
+  Every new confirmation-creating tool (e.g. capability edits) must be added to `CONFIRMATION_TOOL_NAMES`.
+- The tool-mismatch guard (warn instead of running the LLM when the most recent turn called tools that are no
+  longer active) skips synthetic `confirmation-<id>` turns when picking the most recent turn. A resolution record,
+  whether from a button press or written by turn-start reconciliation, is not a model turn and does not change
+  whether the user gets the warning.
 - TTL: `app.confirmation_ttl_seconds` (default 86400). The orchestrator calls `expire_due(session_id)` before each turn
   reads history, so a timed-out confirmation's `expired` record is visible to that turn. Expiry is also checked on
   request/resolve. Resolved entries are pruned one TTL after resolution (on request, resolve and sweep).
@@ -164,9 +174,16 @@ Rules:
   never saw it. This covers a failed or cancelled send, an error while building the turn's response or the
   confirmation message, and a missing chat id. The Telegram glue wraps response building
   (`discard_confirmations_on_error`) and delivery (`try/finally` in `deliver_with_confirmations`).
-- If the turn itself fails, its confirmations are discarded without a record (`discard(..., record=False)`): the
-  failed turn's tool call is not in history, so the user never saw the proposal and the agent has nothing to relate
-  the record to. If the tool result did reach history, turn-start reconciliation writes the record.
+- If the turn itself fails or is cancelled, its confirmations are discarded without a record
+  (`discard(..., record=False)`), which frees the session slot at once. Most failures (model/API errors, a
+  cancellation before any tool result was captured) persist no tool call, so a record would relate to nothing the
+  agent can see. A `/stop` does persist the partial turn, including the `pending_confirmation` tool result, as a
+  `cancelled` turn; the next turn's reconciliation then writes the `failed` record ("The turn did not complete, so
+  the confirmation was never shown."), or an `expired` record with the neutral wording above if the process
+  restarted in between.
+- A press on a confirmation discarded as `not_delivered` applies nothing and is answered "This confirmation is no
+  longer valid." The send may have failed after the message actually arrived (e.g. a timeout), so the user-facing
+  text does not claim the buttons could not be delivered; the agent-facing record detail still says so.
 
 ### 1) Turn Classification (before retrieval)
 
