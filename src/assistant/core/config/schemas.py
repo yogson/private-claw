@@ -359,6 +359,10 @@ class AgentNodeConfig(BaseModel):
     auth_token: str = ""
     default_model: str | None = None
     backend: str = "claude_code_streaming"
+    # Claude Code permission mode for ingress jobs. "auto" lets the auto-mode
+    # classifier approve safe actions and block risky ones; anything it would
+    # escalate to a human is denied, since ingress runs are unattended.
+    permission_mode: Literal["auto", "acceptEdits", "default", "plan", "bypassPermissions"] = "auto"
     repositories: dict[str, AgentNodeRepositoryConfig] = Field(default_factory=dict)
     webhook_timeout_seconds: float = Field(default=10.0, ge=1)
     # The webhook is abandoned this long after the job's effective deadline.

@@ -151,6 +151,7 @@ class TestCreate:
         task = await env.store.tasks.get(job_id)
         assert task is not None
         directory = Path(task.metadata["backend_params"]["directory"])
+        assert task.metadata["backend_params"]["permission_mode"] == "auto"
         assert directory != env.repo
         assert directory == env.data_root / "agent_node" / "worktrees" / job_id
         assert git(directory, "rev-parse", "--abbrev-ref", "HEAD") == f"agent-node/{job_id[:12]}"

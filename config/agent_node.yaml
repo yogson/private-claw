@@ -17,6 +17,11 @@ default_model: null
 # Delegation backend that runs the jobs.
 backend: claude_code_streaming
 
+# Claude Code permission mode for jobs: auto (recommended), acceptEdits, default,
+# plan or bypassPermissions. In auto mode, actions the classifier escalates for
+# human approval are denied, because ingress runs are unattended.
+permission_mode: auto
+
 # repo_full_name -> local checkout the sub-agent works in. A request naming any
 # other repository is refused with 422.
 repositories:

@@ -57,6 +57,26 @@ try:
 except ImportError:
     _SDK_AVAILABLE = False
 
+_PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypassPermissions", "auto")
+_AUTO_MODE_ESCALATION_DENIED = (
+    "Denied: auto mode escalated this action for human approval, but this run is "
+    "unattended. Choose a safer approach or report that the action is blocked."
+)
+
+
+def _resolve_permission_mode(params: dict[str, Any]) -> str:
+    """Return the requested Claude Code permission mode, or the legacy default.
+
+    ``auto`` is accepted although the SDK's ``PermissionMode`` literal predates it:
+    the SDK passes the value to the CLI as ``--permission-mode`` verbatim.
+    """
+    raw = str(params.get("permission_mode", "")).strip()
+    if raw in _PERMISSION_MODES:
+        return raw
+    if raw:
+        logger.warning("claude_streaming.permission_mode_ignored", permission_mode=raw)
+    return "bypassPermissions"  # legacy default: no TTY to route approval requests to
+
 
 def _normalize_answer(reply: str, labels: list[str]) -> str:
     """Map a free-text reply to an option label when it names one (by number or text)."""
@@ -187,6 +207,8 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
                 answers[question] = _normalize_answer(reply, labels)
             return PermissionResultAllow(updated_input={**input_data, "answers": answers})
 
+        permission_mode = _resolve_permission_mode(request.backend_params)
+
         async def _can_use_tool(
             tool_name: str,
             input_data: dict[str, Any],
@@ -194,6 +216,12 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         ) -> "PermissionResultAllow | PermissionResultDeny":
             if tool_name == "AskUserQuestion":
                 return await _answer_ask_user_question(input_data)
+            if permission_mode == "auto":
+                # Auto mode's classifier already approved what it considers safe; a
+                # request reaching this callback is one it escalated to a human.
+                # There is no human on an unattended run, so deny instead of
+                # silently approving what the classifier refused to.
+                return PermissionResultDeny(message=_AUTO_MODE_ESCALATION_DENIED)
             # Auto-approve everything else
             return PermissionResultAllow()
 
@@ -336,12 +364,7 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         if raw_effort is not None and effort is None and not extra_args:
             logger.warning("claude_streaming.effort_ignored", effort=raw_effort)
 
-        raw_permission_mode = str(params.get("permission_mode", "")).strip() or None
-        permission_mode = (
-            raw_permission_mode
-            if raw_permission_mode in ("default", "acceptEdits", "plan", "bypassPermissions")
-            else "bypassPermissions"  # safe default: no TTY to route approval requests to
-        )
+        permission_mode = _resolve_permission_mode(params)
 
         add_dirs_raw = params.get("add_dirs")
         add_dirs: list[str] = (

@@ -358,7 +358,10 @@ class AgentNodeService:
                         "model_id": self._effective_model(model),
                         "backend": self.config.backend,
                         "timeout_seconds": run_seconds,
-                        "backend_params": {"directory": workdir},
+                        "backend_params": {
+                            "directory": workdir,
+                            "permission_mode": self.config.permission_mode,
+                        },
                         "tool_params": self._tool_params(run_seconds),
                         "task_metadata": {
                             "source": AGENT_NODE_SOURCE,

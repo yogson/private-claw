@@ -675,3 +675,56 @@ async def test_execute_fails_when_stream_ends_with_pending_background_tasks() ->
     assert result.ok is False
     assert "background task" in (result.error or "")
     assert "waiting for the watch" in (result.error or "")
+
+
+async def _capture_options(backend_params: dict[str, Any]) -> Any:
+    captured: list[Any] = []
+
+    async def _fake_query(
+        *,
+        prompt: Any,
+        options: Any,
+        transport: Any = None,
+    ) -> AsyncGenerator[Any, None]:
+        captured.append(options)
+        yield _make_result_msg(result="done")
+
+    with _patch_query_side_effect(_fake_query):
+        adapter = ClaudeCodeStreamingBackendAdapter()
+        await adapter.execute(_make_request(backend_params=backend_params))
+    assert len(captured) == 1
+    return captured[0]
+
+
+@pytest.mark.asyncio
+async def test_auto_permission_mode_is_forwarded() -> None:
+    opts = await _capture_options({"permission_mode": "auto"})
+    assert opts.permission_mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_unknown_permission_mode_falls_back_to_bypass() -> None:
+    opts = await _capture_options({"permission_mode": "yolo"})
+    assert opts.permission_mode == "bypassPermissions"
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_denies_escalated_tool_requests() -> None:
+    """In auto mode a can_use_tool call is a classifier escalation: deny it."""
+    from claude_agent_sdk import PermissionResultDeny, ToolPermissionContext
+
+    opts = await _capture_options({"permission_mode": "auto"})
+    context = ToolPermissionContext(signal=None, suggestions=[])
+    result = await opts.can_use_tool("Bash", {"command": "rm -rf /"}, context)
+    assert isinstance(result, PermissionResultDeny)
+    assert "unattended" in result.message
+
+
+@pytest.mark.asyncio
+async def test_bypass_mode_still_allows_tool_requests() -> None:
+    from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
+
+    opts = await _capture_options({"permission_mode": "bypassPermissions"})
+    context = ToolPermissionContext(signal=None, suggestions=[])
+    result = await opts.can_use_tool("Bash", {"command": "ls"}, context)
+    assert isinstance(result, PermissionResultAllow)
