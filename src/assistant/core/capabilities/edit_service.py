@@ -51,7 +51,6 @@ import yaml
 
 from assistant.core.capabilities.atomic_file import atomic_write_bytes
 from assistant.core.capabilities.edit_summary import (
-    SensitiveValueTooLongError,
     SummaryTooLargeError,
     capability_change_summary,
 )
@@ -804,16 +803,11 @@ def _summary(**kwargs: Any) -> str:
     except SummaryTooLargeError as exc:
         raise CapabilityEditError(
             STATUS_REJECTED_INVALID,
-            f"the change has {exc.sensitive_changes} security-sensitive field changes, too "
-            "many to show the user in one confirmation; split it into smaller edits",
-        ) from exc
-    except SensitiveValueTooLongError as exc:
-        raise CapabilityEditError(
-            STATUS_REJECTED_INVALID,
-            f"the security-sensitive change at {exc.path} needs {exc.chars} chars to show the "
-            f"user in full (limit {exc.limit}); it cannot be shortened without hiding part of "
-            "it, so propose a smaller edit (change less of this value at once) or ask the "
-            "user to make the change by hand",
+            f"the change has {exc.sensitive_changes} security-sensitive field changes; "
+            f"showing their full old and new values needs {exc.needed_units} chars, more "
+            f"than one confirmation holds ({exc.max_units}). Nothing is ever cut from "
+            "them, so propose smaller edits (fewer fields, or a shorter value, at a time) "
+            "or ask the user to make the change by hand",
         ) from exc
     except Exception as exc:
         logger.warning("capability_edit.summary_failed", error_type=type(exc).__name__)

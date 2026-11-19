@@ -440,25 +440,90 @@ def _with_args_pattern(config_dir: Path, pattern: str) -> None:
     )
 
 
-def test_long_pattern_widened_at_the_tail_shows_the_widening(
+def test_long_pattern_widened_at_the_tail_shows_both_full_values(
     service: CapabilityEditService, config_dir: Path
 ) -> None:
     # Reviewer repro B3: both sides used to render as the same 120-char prefix.
     long = "^(" + "a" * 130 + ")$"
     _with_args_pattern(config_dir, long)
     proposal = _propose(service, f"'{long}'", f"'{long}|.*'")
-    assert '[git].allowed_args_pattern: edited (134 → 137 chars): …"' in proposal.summary
-    assert proposal.summary.splitlines()[-1].endswith(')$"[+"|.*"]')
+    assert f'[git].allowed_args_pattern: "{long}" → "{long}|.*"' in proposal.summary
 
 
 def test_sensitive_change_too_long_to_show_in_full_is_refused(
     service: CapabilityEditService, config_dir: Path
 ) -> None:
     _with_args_pattern(config_dir, "^status$")
-    err = _error(_propose, service, "'^status$'", f"'^({'b' * 500})$'")
+    err = _error(_propose, service, "'^status$'", f"'^({'b' * 4000})$'")
     assert err.status == STATUS_REJECTED_INVALID
-    assert "command_allowlist[git].allowed_args_pattern needs 504 chars" in err.reason
-    assert "smaller edit" in err.reason
+    assert "1 security-sensitive field changes" in err.reason
+    assert "Nothing is ever cut" in err.reason and "smaller edits" in err.reason
+
+
+_SERVER = (
+    EDITABLE
+    + 'claude_code_settings:\n  permissions:\n    deny: ["Bash(rm:*)"]\n'
+    + "  mcp_servers:\n    fs:\n      url: https://api.example.com/mcp\n"
+    + "      args: [--allow, /home/me/proj, --deny, /]\n      flag: true\n      n: 1\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        # Reviewer repros B4 (homoglyphs), B5 (list order), S7 (type-strict values).
+        (
+            "url: https://api.example.com/mcp",
+            "url: https://api.exаmple.com/mcp",
+            'fs.url: "https://api.example.com/mcp" → "https://api.ex\\u0430mple.com/mcp"',
+        ),
+        (
+            'deny: ["Bash(rm:*)"]',
+            'deny: ["Bash(rм:*)"]',
+            'permissions.deny: ["Bash(rm:*)"] → ["Bash(r\\u043c:*)"]',
+        ),
+        (
+            "args: [--allow, /home/me/proj, --deny, /]",
+            "args: [--allow, /, --deny, /home/me/proj, -v]",
+            'fs.args: ["--allow", "/home/me/proj", "--deny", "/"] → '
+            '["--allow", "/", "--deny", "/home/me/proj", "-v"]',
+        ),
+        (
+            "args: [--allow, /home/me/proj, --deny, /]",
+            "args: [--allow, /, --deny, /home/me/proj]",
+            'fs.args: ["--allow", "/home/me/proj", "--deny", "/"] → '
+            '["--allow", "/", "--deny", "/home/me/proj"]',
+        ),
+        ("flag: true", "flag: 1", "fs.flag: true → 1"),
+        ("n: 1\n", "n: 1.0\n", "fs.n: 1 → 1.0"),
+    ],
+)
+def test_reviewer_repros_are_visible_in_the_proposal(
+    service: CapabilityEditService, config_dir: Path, old: str, new: str, expected: str
+) -> None:
+    _manifest(config_dir).write_text(_SERVER)
+    proposal = _propose(service, old, new)
+    assert "No manifest fields change" not in proposal.summary
+    assert f"⚠ claude_code_settings.{'mcp_servers.' if 'fs.' in expected else ''}{expected}" in (
+        proposal.summary
+    )
+
+
+def test_added_delegation_block_with_empty_allowlists_is_visible(
+    service: CapabilityEditService,
+) -> None:
+    # Reviewer repro B6: only the TTL line used to be shown.
+    block = (
+        "tool_overrides:\n  delegate_subagent_task:\n    delegation_default_ttl_seconds: 600\n"
+        "    delegation_allowed_backends: []\n    delegation_model_allowlist: []\n"
+    )
+    proposal = _propose(service, "tools:\n", block + "tools:\n")
+    assert (
+        "⚠ tool_overrides.delegate_subagent_task: (absent) → "
+        '{"delegation_allowed_backends": [], "delegation_default_ttl_seconds": 600, '
+        '"delegation_model_allowlist": []} [note: an empty delegation allowlist means NO '
+        "restriction]"
+    ) in proposal.summary
 
 
 _SECRET = "ghp_SECRETVALUE123"
