@@ -11,6 +11,7 @@ from assistant.core.confirmation.handlers import (
 )
 from assistant.core.confirmation.history import (
     CONFIRMATION_RESOLVED_MARKER,
+    CONFIRMATION_TOOL_NAMES,
     ConfirmationRecorderInterface,
     SessionConfirmationRecorder,
     format_resolution_text,
@@ -43,6 +44,7 @@ from assistant.core.confirmation.service import (
 
 __all__ = [
     "CONFIRMATION_RESOLVED_MARKER",
+    "CONFIRMATION_TOOL_NAMES",
     "DEFAULT_CONFIRMATION_TTL_SECONDS",
     "MEMORY_BODY_MAX_CHARS",
     "MEMORY_UPDATE_KIND",

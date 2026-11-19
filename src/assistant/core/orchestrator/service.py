@@ -32,6 +32,7 @@ from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
 from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
 from assistant.core.confirmation import (
+    CONFIRMATION_TOOL_NAMES,
     ConfirmationDraft,
     ConfirmationRequest,
     ConfirmationRequestResult,
@@ -799,6 +800,19 @@ class Orchestrator:
             return None
 
         async def _request(draft: ConfirmationDraft) -> ConfirmationRequestResult:
+            if draft.origin_tool_name not in CONFIRMATION_TOOL_NAMES:
+                # Only registered tools' pending results are reconciled after a restart or
+                # /stop; an unregistered tool's proposal would be left pending forever.
+                logger.error(
+                    "orchestrator.confirmation_tool_not_registered",
+                    session_id=session_id,
+                    tool_name=draft.origin_tool_name,
+                    kind=draft.kind,
+                )
+                raise RuntimeError(
+                    f"Tool {draft.origin_tool_name!r} requested a confirmation but is not in "
+                    "CONFIRMATION_TOOL_NAMES (assistant.core.confirmation.history)"
+                )
             outcome = await service.request(session_id, draft)
             if outcome.created and outcome.request is not None and created is not None:
                 created.append(outcome.request)

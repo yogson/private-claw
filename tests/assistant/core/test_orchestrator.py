@@ -1065,6 +1065,45 @@ class TestOrchestratorExecuteTurn:
         # Its tool call never reached history, so no resolution record is written for it.
         recorder.record_resolution.assert_not_awaited()
 
+    @pytest.mark.parametrize("tool_name", ["", "mcp_srv_memory_propose_update", "new_tool"])
+    @pytest.mark.asyncio
+    async def test_requester_refuses_drafts_from_unregistered_tools(
+        self,
+        tool_name: str,
+        mock_store: MagicMock,
+        mock_idempotency: MagicMock,
+        mock_pydantic_adapter: MagicMock,
+        mock_session_factory: MagicMock,
+    ) -> None:
+        # A tool outside CONFIRMATION_TOOL_NAMES would create proposals that are never
+        # reconciled after a restart or /stop, so the requester refuses them loudly.
+        confirmations = ConfirmationService(ConfirmationHandlerRegistry())
+        errors: list[BaseException] = []
+        draft = _memory_draft().model_copy(update={"origin_tool_name": tool_name})
+
+        async def _run_turn(**kwargs: object) -> tuple[str, list[object], None]:
+            try:
+                await kwargs["deps"].confirmation_requester(draft)  # type: ignore[attr-defined]
+            except RuntimeError as exc:
+                errors.append(exc)
+            return ("ok", [], None)
+
+        mock_pydantic_adapter.run_turn = AsyncMock(side_effect=_run_turn)
+        orch = Orchestrator(
+            store=mock_store,
+            config=_runtime_config(),
+            idempotency=mock_idempotency,
+            pydantic_ai_adapter=mock_pydantic_adapter,
+            session_factory=mock_session_factory,
+            confirmation_service=confirmations,
+        )
+
+        result = await orch.execute_turn(_minimal_event(text="remember this"))
+
+        assert len(errors) == 1 and "CONFIRMATION_TOOL_NAMES" in str(errors[0])
+        assert confirmations.pending_for_session("tg:123") is None
+        assert result.confirmations == []
+
     @pytest.mark.asyncio
     async def test_expired_confirmations_are_recorded_before_history_is_read(
         self,
@@ -1393,6 +1432,7 @@ def _memory_draft() -> ConfirmationDraft:
         summary_for_user="Action: upsert",
         dedupe_key="k1",
         origin_tool_call_id="tool-1",
+        origin_tool_name="memory_propose_update",
     )
 
 

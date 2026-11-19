@@ -67,6 +67,9 @@ class ConfirmationDraft(BaseModel):
     summary_for_user: str
     dedupe_key: str
     origin_tool_call_id: str = ""
+    # Name of the tool creating the draft (``ctx.tool_name``). The orchestrator only
+    # accepts drafts from tools in CONFIRMATION_TOOL_NAMES.
+    origin_tool_name: str = ""
 
 
 class ConfirmationRequest(BaseModel):

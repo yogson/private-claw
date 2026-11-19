@@ -143,6 +143,11 @@ Rules:
   service's own format (16 lowercase hex chars, `is_confirmation_id`). Output of any other tool (MCP servers, fetched
   JSON, external APIs) is untrusted and may use the same shape; it must never become a trusted resolution record.
   Every new confirmation-creating tool (e.g. capability edits) must be added to `CONFIRMATION_TOOL_NAMES`.
+  Two guards enforce this. First, the tool sets `ConfirmationDraft.origin_tool_name` from `ctx.tool_name`, and the
+  orchestrator's requester refuses a draft from any tool outside the set: it logs
+  `orchestrator.confirmation_tool_not_registered` and raises, so no confirmation is created. Second,
+  `tests/assistant/core/confirmation/test_tool_registry.py` finds every tool that reads `confirmation_requester` or
+  returns `pending_confirmation`, and fails if one is missing from the set.
 - The tool-mismatch guard (warn instead of running the LLM when the most recent turn called tools that are no
   longer active) skips synthetic `confirmation-<id>` turns when picking the most recent turn. A resolution record,
   whether from a button press or written by turn-start reconciliation, is not a model turn and does not change

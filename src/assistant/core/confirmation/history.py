@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Protocol
 
+from assistant.agent.constants import MEMORY_TOOL_NAME
 from assistant.core.confirmation.models import ConfirmationRequest, is_confirmation_id
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import (
@@ -31,8 +32,10 @@ PENDING_TOOL_RESULT_STATUS = "pending_confirmation"
 # ConfirmationService.request() and report them as ``pending_confirmation``. Only
 # their results are trusted by unresolved_pending_ids(): any other tool's output
 # (MCP servers, fetched JSON, external APIs) is untrusted and may use the same shape.
-# Every new confirmation-creating tool (e.g. capability edits) must be added here.
-CONFIRMATION_TOOL_NAMES: frozenset[str] = frozenset({"memory_propose_update"})
+# Every new confirmation-creating tool (e.g. capability edits) must be added here:
+# the orchestrator's requester refuses drafts from any other tool, and
+# tests/assistant/core/confirmation/test_tool_registry.py fails for an unregistered tool.
+CONFIRMATION_TOOL_NAMES: frozenset[str] = frozenset({MEMORY_TOOL_NAME})
 # What the marker becomes in user-typed text, so a user cannot forge a resolution.
 _NEUTRALIZED_MARKER = "[[user-typed: CONFIRMATION_RESOLVED]]"
 

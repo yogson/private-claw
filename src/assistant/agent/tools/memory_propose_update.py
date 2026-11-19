@@ -75,7 +75,9 @@ async def memory_propose_update(
         return _result(
             {"status": "unavailable", "reason": "user confirmation is not available here"}
         )
-    draft = build_memory_update_draft(intent, origin_tool_call_id=ctx.tool_call_id or "")
+    draft = build_memory_update_draft(
+        intent, origin_tool_call_id=ctx.tool_call_id or "", origin_tool_name=ctx.tool_name or ""
+    )
     outcome = await requester(draft)
     if outcome.request is None:
         blocking = outcome.blocked_by

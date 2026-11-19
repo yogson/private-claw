@@ -310,6 +310,17 @@ async def test_reconcile_pending_without_recorder_writes_nothing() -> None:
     assert await service.reconcile_pending(SESSION, [ORPHAN_ID]) is False
 
 
+async def test_reconcile_pending_without_recorder_returns_false_for_known_final_ids() -> None:
+    # A known final id goes through _record(); with no recorder nothing is written,
+    # so the caller must not re-read history.
+    service = _service()
+    final = (await service.request(SESSION, _draft())).request
+    assert final is not None
+    await service.discard(final.confirmation_id, "turn failed", record=False)
+
+    assert await service.reconcile_pending(SESSION, [final.confirmation_id]) is False
+
+
 class _FailingRecorder:
     async def record_resolution(self, request: ConfirmationRequest) -> None:
         raise OSError("disk full")
