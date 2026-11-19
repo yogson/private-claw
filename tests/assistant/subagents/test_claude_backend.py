@@ -124,7 +124,8 @@ async def test_execute_returns_ok_from_result_line(monkeypatch: pytest.MonkeyPat
     result = await adapter.execute(request)
     assert result.ok is True
     assert result.output_text == "done"
-    assert result.usage == {"input": 1, "output": 2}
+    # Run stats (turns, duration, cost when reported) ride along with the token usage.
+    assert result.usage == {"input": 1, "output": 2, "num_turns": 1, "duration_ms": 100}
 
 
 @pytest.mark.asyncio

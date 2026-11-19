@@ -73,7 +73,7 @@ async def test_execute_returns_ok_on_success() -> None:
 
     assert result.ok is True
     assert result.output_text == "task complete"
-    assert result.usage == {"total_tokens": 42}
+    assert result.usage == {"total_tokens": 42, "num_turns": 1, "duration_ms": 100}
 
 
 @pytest.mark.asyncio

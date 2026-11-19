@@ -68,6 +68,16 @@ def _normalize_answer(reply: str, labels: list[str]) -> str:
     return reply
 
 
+def _usage_with_run_stats(result_msg: Any) -> dict[str, Any]:
+    """Token usage plus the run's cost, turn count and duration when the SDK reports them."""
+    usage: dict[str, Any] = dict(result_msg.usage or {})
+    for key in ("total_cost_usd", "num_turns", "duration_ms"):
+        value = getattr(result_msg, key, None)
+        if isinstance(value, int | float):
+            usage[key] = value
+    return usage
+
+
 class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
     """Executes staged delegation tasks via the claude-agent-sdk.
 
@@ -277,11 +287,11 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
             return DelegationResult(
                 ok=False,
                 error=result_msg.result or "claude-agent-sdk returned an error",
-                usage=result_msg.usage or {},
+                usage=_usage_with_run_stats(result_msg),
             )
 
         output_text = final_text.strip()
-        usage: dict[str, Any] = result_msg.usage or {}
+        usage: dict[str, Any] = _usage_with_run_stats(result_msg)
 
         if pending_bg:
             # The stream ended (closing the CLI) while background tasks were

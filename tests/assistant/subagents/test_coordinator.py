@@ -1208,3 +1208,125 @@ async def test_read_task_log_scoped_to_session_id(tmp_path: Path) -> None:
     assert await coordinator.read_task_log(task_id, session_id="tg:other") is None
     assert await coordinator.read_task_log(task_id, session_id="tg:123") is not None
     await store.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Extensions used by the HTTP ingress: task_metadata, retryable rejections,
+# non-interactive tasks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_task_metadata_is_merged_without_overriding_core_keys(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store, config=_config(tmp_path), backends=[_FakeBackend()]
+    )
+    accepted = await coordinator.enqueue_from_tool(
+        session_id="agent-node:abc",
+        turn_id="abc",
+        trace_id="abc",
+        user_id=None,
+        request={
+            "objective": "x",
+            "task_id": "abc",
+            "task_metadata": {"source": "agent_node_http", "kind": "hijacked"},
+        },
+    )
+    assert accepted["accepted"] is True
+    assert accepted["task_id"] == "abc"
+    task = await coordinator.get_task("abc")
+    assert task is not None
+    assert task.metadata["source"] == "agent_node_http"
+    assert task.metadata["kind"] == "delegation"
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrency_and_budget_rejections_are_retryable(tmp_path: Path) -> None:
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store, config=_config(tmp_path), backends=[_FakeBackend()]
+    )
+    first = await coordinator.enqueue_from_tool(
+        session_id="s",
+        turn_id="t",
+        trace_id="t",
+        user_id=None,
+        request={"objective": "x", "tool_params": {"delegation_max_concurrent_tasks": 1}},
+    )
+    assert first["accepted"] is True
+    limited = await coordinator.enqueue_from_tool(
+        session_id="s",
+        turn_id="t",
+        trace_id="t",
+        user_id=None,
+        request={"objective": "x", "tool_params": {"delegation_max_concurrent_tasks": 1}},
+    )
+    assert limited["accepted"] is False
+    assert limited["retryable"] is True
+    over_budget = await coordinator.enqueue_from_tool(
+        session_id="s",
+        turn_id="t",
+        trace_id="t",
+        user_id=None,
+        request={"objective": "x", "tool_params": {"delegation_per_task_token_cap": 1}},
+    )
+    assert over_budget["accepted"] is False
+    assert over_budget["retryable"] is True
+    bad_model = await coordinator.enqueue_from_tool(
+        session_id="s",
+        turn_id="t",
+        trace_id="t",
+        user_id=None,
+        request={"objective": "x", "model_id": "nope"},
+    )
+    assert bad_model["accepted"] is False
+    assert bad_model["retryable"] is False
+    await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_non_interactive_task_gets_no_relay(tmp_path: Path) -> None:
+    """A task marked interactive=False never waits on the question relay."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    backend = _RelayCapableBackend()
+    coordinator = DelegationCoordinator(store=store, config=_config(tmp_path), backends=[backend])
+    relayed: list[str] = []
+
+    async def _question_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> None:
+        relayed.append(question)
+
+    coordinator.set_question_relay_callback(_question_relay)
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="agent-node:j1",
+            turn_id="j1",
+            trace_id="j1",
+            user_id=None,
+            request={
+                "objective": "x",
+                "backend": "claude_code_streaming",
+                "task_id": "j1",
+                "task_metadata": {"interactive": False},
+            },
+        )
+        assert accepted["accepted"] is True
+        for _ in range(40):
+            task = await coordinator.get_task("j1")
+            if task is not None and task.status == TaskStatus.COMPLETED:
+                break
+            await asyncio.sleep(0.1)
+        task = await coordinator.get_task("j1")
+        assert task is not None and task.status == TaskStatus.COMPLETED
+        assert relayed == []
+        assert backend.relay_answer is None  # execute() ran without a relay registered
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
