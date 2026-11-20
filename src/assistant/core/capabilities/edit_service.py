@@ -57,6 +57,8 @@ from assistant.core.capabilities.edit_summary import (
     PromptChangeTooLargeError,
     SummaryTooLargeError,
     capability_change,
+    dump_manifest,
+    permission_raises,
 )
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.loader import ManifestParseError, parse_capability_manifest
@@ -899,7 +901,8 @@ def _summary(**kwargs: Any) -> ChangeSummary:
     """Approver summary and full prompt parts; a change whose ⚠ lines or prompt diff do
     not fit is refused, never cut."""
     try:
-        return capability_change(**kwargs)
+        summary = capability_change(**kwargs)
+        raised = permission_raises(dump_manifest(kwargs["before"]), dump_manifest(kwargs["after"]))
     except (PromptChangeTooLargeError, PromptDiffTooLargeError) as exc:
         raise CapabilityEditError(
             STATUS_REJECTED_INVALID,
@@ -923,6 +926,13 @@ def _summary(**kwargs: Any) -> ChangeSummary:
             f"the change summary for the user could not be built ({type(exc).__name__}); "
             "nothing was proposed",
         ) from exc
+    if raised:
+        logger.warning(
+            "capability_edit.permission_ceiling_raised",
+            capability_id=kwargs["capability_id"],
+            paths=raised,
+        )
+    return summary
 
 
 def git_ignores(git_root: Path, path: Path) -> bool:

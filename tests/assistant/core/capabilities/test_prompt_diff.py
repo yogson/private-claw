@@ -7,7 +7,11 @@ is refused. The diff is near-linear and bounded (no ``difflib.ndiff``).
 
 import random
 import re
+import signal
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
@@ -18,6 +22,7 @@ from assistant.core.capabilities.edit_summary import (
     summarize_change,
 )
 from assistant.core.capabilities.prompt_diff import (
+    CONTINUED_LABEL,
     MAX_PROMPT_LINES,
     PromptDiffTooLargeError,
     prompt_diff,
@@ -44,10 +49,14 @@ def _change(old: str, new: str, **kw: object) -> tuple[str, tuple[str, ...]]:
 
 
 def _content(parts: tuple[str, ...] | list[str]) -> list[str]:
-    """Diff lines of the parts with long-line continuations joined back."""
+    """Diff lines of the parts with the label lines dropped and long-line continuations
+    joined back (a continuation's marker must be its line's marker)."""
     lines: list[str] = []
     for line in "\n".join(parts).split("\n"):
+        if line == CONTINUED_LABEL:
+            continue
         if len(line) >= 2 and line[1] == "…" and lines:
+            assert line[0] == lines[-1][0], (line, lines[-1])
             lines[-1] += line[2:]
         else:
             lines.append(line)
@@ -297,20 +306,60 @@ def test_trailing_blank_lines_after_a_long_changed_line() -> None:
     _check_parts(old, new, parts, PROMPT_PART_MAX_UNITS)
 
 
-def test_a_part_that_would_start_blank_starts_with_an_empty_continuation() -> None:
+@contextmanager
+def _time_box(seconds: float) -> Iterator[None]:
+    """Fail with TimeoutError instead of hanging (there is no pytest-timeout)."""
+
+    def expire(*_args: object) -> None:
+        raise TimeoutError(f"still running after {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.fixture(autouse=True)
+def _fail_fast_instead_of_hanging() -> Iterator[None]:
+    # The pinned-label guard keeps split_parts from looping forever; a regression must
+    # fail fast, not hang the suite (N19 of #64). No time box where SIGALRM is unusable.
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    with _time_box(10):
+        yield
+
+
+def test_a_part_that_would_start_blank_starts_with_the_continued_label() -> None:
+    _check_continued_label()
+
+
+def _check_continued_label() -> None:
+    assert CONTINUED_LABEL == "(continued)"
     lines = ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "  ", "  "]
-    assert split_parts(lines, 100) == ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "+…\n  \n  "]
-    # A blank piece wider than what is left after the marker is cut, never flushed
+    assert split_parts(lines, 100) == ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "(continued)\n  \n  "]
+    # A blank piece wider than what is left after the label is cut, never flushed
     # alone (and the loop terminates).
     lines = ["@@ -1,2 +1,2 @@", "+ " + "x" * 98, "  " + " " * 97]
     parts = split_parts(lines, 100)
-    assert parts[2].startswith("+…\n   ") and parts[3].startswith(" …")
+    assert parts[2].startswith("(continued)\n   ") and parts[3].startswith(" …")
     assert all(p.strip() and utf16_len(p) <= 100 for p in parts)
     assert _content(parts) == lines
     # A long all-space context line after a full part.
     lines = ["@@ -1,1 +1,1 @@", "  " + " " * 300]
     parts = split_parts(lines, 64)
     assert all(p.strip() and utf16_len(p) <= 64 for p in parts)
+    assert _content(parts) == lines
+
+
+def test_a_hunk_header_is_never_continued() -> None:
+    # N17 of #64: the part after a hunk header used to start with "@…".
+    lines = ["@@ -1,1 +1,1 @@", "+ " + "x" * 28, "@@ -9,2 +9,2 @@", "  ", "-  "]
+    parts = split_parts(lines, 64)
+    assert parts == ["@@ -1,1 +1,1 @@\n+ " + "x" * 28 + "\n@@ -9,2 +9,2 @@", "(continued)\n  \n-  "]
     assert _content(parts) == lines
 
 

@@ -17,6 +17,7 @@ from assistant.core.capabilities.edit_summary import (
     ABSENT,
     INHERITED_NOTE,
     NO_CHANGES_TEXT,
+    PERMISSION_RAISED_NOTE,
     SECRET_CHANGED_NOTE,
     SENSITIVE_PREFIX,
     SENSITIVE_WARNING,
@@ -356,6 +357,32 @@ def test_removed_field_without_a_wider_default_gets_the_plain_inherited_note() -
     assert line.endswith(f"5 → {ABSENT}{INHERITED_NOTE}]")
 
 
+def test_removed_concurrency_limit_says_set_nowhere_means_no_limit() -> None:
+    # N20 of #67: unset everywhere, the coordinator admits any number of tasks.
+    before = _cap(tool_overrides={"d": {"delegation_max_concurrent_tasks": 2}})
+    (line,) = _sensitive_lines(_summary(before, _cap(tool_overrides={"d": {}})))
+    assert line.endswith(
+        f"2 → {ABSENT}{INHERITED_NOTE}; delegation_max_concurrent_tasks set nowhere: "
+        "no task-count limit]"
+    ), line
+
+
+def test_removing_a_whole_tool_binding_notes_its_params_override() -> None:
+    # N20 of #67: the binding's params_override is dropped with it (and falls back).
+    binding = {
+        "tool_id": "delegate_subagent_task",
+        "params_override": {"delegation_default_permission_mode": "plan"},
+    }
+    before = _cap(tools=[binding, {"tool_id": "shell_execute"}])
+    (line,) = _sensitive_lines(_summary(before, _cap(tools=[{"tool_id": "shell_execute"}])))
+    assert line.startswith(f"{SENSITIVE_PREFIX}tools[delegate_subagent_task]: ")
+    assert line.endswith(f"{ABSENT}{INHERITED_NOTE}{_PERMISSION_UNSET}"), line
+    # A binding without params_override sets no field: no note.
+    before = _cap(tools=[{"tool_id": "delegate_subagent_task"}, {"tool_id": "shell_execute"}])
+    (line,) = _sensitive_lines(_summary(before, _cap(tools=[{"tool_id": "shell_execute"}])))
+    assert "[note:" not in line, line
+
+
 def test_removing_an_entry_or_a_non_override_field_has_no_inherited_note() -> None:
     entries = [{"id": "ls", "command_pattern": "ls"}, {"id": "rm", "command_pattern": "rm"}]
     before = _cap(
@@ -369,7 +396,7 @@ def test_removing_an_entry_or_a_non_override_field_has_no_inherited_note() -> No
     # Changing (not removing) a field is not a fallback either.
     before = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "plan"}})
     after = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "auto"}})
-    assert "[note:" not in _summary(before, after)
+    assert INHERITED_NOTE not in _summary(before, after)
 
 
 # --- sub-agent permission ceiling (master #47): a capability override can raise it ------
@@ -389,9 +416,35 @@ def test_raising_the_subagent_permission_mode_is_a_full_sensitive_line() -> None
     text = _summary(before, after)
     assert (
         "⚠ tool_overrides.delegate_subagent_task.delegation_default_permission_mode: "
-        '"acceptEdits" → "bypassPermissions"'
+        '"acceptEdits" → "bypassPermissions"' + PERMISSION_RAISED_NOTE
     ) in text
     assert SENSITIVE_WARNING in text
+    assert PERMISSION_RAISED_NOTE.isascii()
+    # Lowering it is not a raise.
+    assert "RAISES" not in _summary(after, before)
+
+
+def test_permission_raise_compares_with_the_built_in_default_where_unset() -> None:
+    # A binding added with a mode wider than the built-in auto is a raise ...
+    binding = {
+        "tool_id": "delegate_subagent_task",
+        "params_override": {"delegation_default_permission_mode": "bypassPermissions"},
+    }
+    (line,) = _sensitive_lines(_summary(_cap(), _cap(tools=[binding])))
+    assert line.endswith(PERMISSION_RAISED_NOTE), line
+    # ... one up to auto is not, and neither is an unrelated field of the binding.
+    binding["params_override"] = {"delegation_default_permission_mode": "auto"}
+    assert "RAISES" not in _summary(_cap(), _cap(tools=[binding]))
+    before = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "bypassPermissions"}})
+    after = _cap(
+        tool_overrides={
+            "d": {
+                "delegation_default_permission_mode": "bypassPermissions",
+                "max_timeout_seconds": 5,
+            }
+        }
+    )
+    assert "RAISES" not in _summary(before, after)
 
 
 def test_added_subagent_permission_mode_shows_the_normalised_value() -> None:

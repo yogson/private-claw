@@ -385,14 +385,20 @@ is deliberately simple, and its invariants are property-tested
 - **Nothing is skipped.** A key or entry present on one side only is shown with its full
   value against `(absent)`, so every field of an added block is listed, `[]`, `{}` and `null`
   included. A line that sets `delegation_allowed_backends` or `delegation_model_allowlist`
-  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. Removing a
+  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. A line that sets
+  `delegation_default_permission_mode` wider than before (than the built-in `auto` where it
+  was not set), e.g. to `bypassPermissions`, gets `[note: this RAISES the sub-agent
+  permission ceiling]`, and the proposal logs a `capability_edit.permission_ceiling_raised`
+  warning. Removing a
   tool override field, or a whole override (`tool_overrides.<tool>`, `tool_overrides`,
-  `tools[<tool>].params_override`), does not clear it: the value from another override of
+  `tools[<tool>].params_override`, or a whole `tools[<tool>]` binding, which drops its
+  `params_override`), does not clear it: the value from another override of
   the tool, else tools.yaml, applies (`agent/tools/registry.py` merges them). Such a line
   gets `[note: a removed tool override is inherited, not cleared: another override of this
   tool or tools.yaml applies]`, plus what the field means when it is set nowhere if that is
   wide: `delegation_default_permission_mode` → the built-in `auto` (the second-widest
-  mode), the delegation allowlists → NO restriction, the delegation token caps → no cap.
+  mode), the delegation allowlists → NO restriction, the delegation token caps → no cap,
+  `delegation_max_concurrent_tasks` → no task-count limit.
 - **Never cut.** If the ⚠ lines do not all fit the summary cap, the proposal is
   `rejected_invalid` and the agent is asked for smaller edits (or to let the user edit by
   hand); a ⚠ line is never truncated or dropped in favour of another.
@@ -439,15 +445,16 @@ that fits one part is never split. A longer line fills the rest of the current p
 continues in the next ones, each continuation piece starting with `+…` / `-…` / ` …`. A
 part never starts with a blank context line (an empty prompt line renders as two spaces, and
 a part of only those would be an invisible message that `ConfirmationAttachment` refuses):
-such a part starts with an empty continuation of the previous part's last line (`+…`, ` …`,
-nothing after it) instead. No line is dropped. The
+such a part starts with a `(continued)` label line instead, which no content line or hunk
+header can look like. No line is dropped. The
 parts travel with the confirmation as a `ConfirmationAttachment` (`domains/agent.md`, "User
 Confirmations"). Telegram sends them as separate plain-text messages before the buttons, each
-headed `Prompt change for <capability_id> — part i/N (confirmation <first 8 hex of the id>)`
+headed `Prompt change for <capability_id> — part i/N (confirmation <tag>)`
 (`domains/telegram.md`). The bot sends the parts directly above the buttons, and the button
-message is a reply to the real part 1. The agent's own text comes before the parts. The tool
-result gives the agent the confirmation id, so its text can imitate a part header and appear
-above the real parts. It cannot change, remove or reorder the real parts. Read the parts
+message is a reply to the real part 1. The agent's own text comes before the parts. It can
+imitate the header layout, but not the tag: the tag is an HMAC of the confirmation id under a
+per-process key the agent never sees, so a fake header carries a different tag than the
+button message. It cannot change, remove or reorder the real parts. Read the parts
 directly above the buttons (the reply preview of the button message points to part 1).
 Nothing is ever cut. A prompt change that needs more than
 `app.capability_edit_max_prompt_parts` parts (default 8, up to 50) is `rejected_invalid`, and

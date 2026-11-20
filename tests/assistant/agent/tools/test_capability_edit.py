@@ -408,6 +408,31 @@ async def test_a_draft_that_fails_validation_is_rejected_invalid(
     assert confirmations.pending_for_session(SESSION) is None
 
 
+@pytest.mark.parametrize("tool_name", ["capability_propose_edit", "capability_propose_rollback"])
+async def test_a_requester_error_propagates_out_of_the_tool(
+    edit_service: CapabilityEditService, monkeypatch: pytest.MonkeyPatch, tool_name: str
+) -> None:
+    """S14: the requester call is deliberately not wrapped. Its only raise (#59, a tool
+    missing from CONFIRMATION_TOOL_NAMES) is a programming error that must fail the turn,
+    not turn into a ``rejected_invalid`` the agent could work around."""
+
+    async def refusing(draft: ConfirmationDraft) -> ConfirmationRequestResult:
+        raise RuntimeError("tool is not in CONFIRMATION_TOOL_NAMES")
+
+    ctx = _ctx(edit_service, None, tool_name=tool_name)
+    ctx.deps = TurnDeps(confirmation_requester=refusing, capability_edit_service=edit_service)
+    read = capability_read(ctx, "editable")
+    proposal = edit_service.propose_edit(
+        "editable", "PROMPT-OLD", "PROMPT-NEW", "r", read["base_sha256"]
+    )
+    monkeypatch.setattr(edit_service, "propose_rollback", lambda *_a: proposal)
+    with pytest.raises(RuntimeError, match="CONFIRMATION_TOOL_NAMES"):
+        if tool_name == "capability_propose_edit":
+            await _propose(ctx)
+        else:
+            await capability_propose_rollback(ctx, "editable", "h", "r", read["base_sha256"])
+
+
 async def test_random_prompt_edits_never_raise_out_of_the_tool(tmp_path: Path) -> None:
     import random
 
