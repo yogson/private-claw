@@ -109,7 +109,13 @@ def parse_instances(data: Any, repo_root: Path) -> list[InstanceSpec]:
     problems: list[str] = []
     specs: list[InstanceSpec] = []
     for name, raw in (data.get("instances") or {}).items():
-        spec = _parse_one(str(name), raw, repo_root, problems)
+        if not isinstance(name, str):
+            problems.append(
+                f"{name!r}: instance name must be a string; quote it "
+                "(YAML reads unquoted yes/no/on/off/null and numbers as non-strings)"
+            )
+            continue
+        spec = _parse_one(name, raw, repo_root, problems)
         if spec is not None:
             specs.append(spec)
     if problems:
@@ -146,7 +152,8 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
     if not isinstance(agent_node, bool):
         problems.append(f"{name}: agent_node must be true or false")
     label = raw.get("instance_name", name)
-    if not isinstance(label, str) or not _NAME_RE.fullmatch(label):
+    # An unset label defaults to the (already validated) name; don't report it twice.
+    if "instance_name" in raw and (not isinstance(label, str) or not _NAME_RE.fullmatch(label)):
         problems.append(f"{name}: instance_name {_NAME_RULE}")
     env = _parse_env(name, raw.get("env") or {}, problems)
 
@@ -172,7 +179,7 @@ def _parse_env(name: str, raw: Any, problems: list[str]) -> dict[str, str]:
         key = str(key)
         if not _ENV_NAME_RE.match(key):
             problems.append(f"{name}: env key '{key}' is not a valid variable name")
-        elif key.upper() in _RESERVED_ENV:
+        elif key.upper().split("__")[0] in _RESERVED_ENV:
             problems.append(f"{name}: env key '{key}' is set by the launcher; use the YAML keys")
         elif isinstance(value, dict | list) or value is None:
             problems.append(f"{name}: env value for '{key}' must be a scalar")
@@ -190,8 +197,9 @@ def build_child_env(
 ) -> dict[str, str]:
     """Environment for one instance: ``base_env`` plus the per-instance overrides.
 
-    Every instance's token variable is dropped, so a child never sees another bot's
-    token in its env; its own token goes in through the app's config override.
+    Every instance's token variable is dropped from the inherited env; the child's own
+    token goes in through the app's config override. (The child's ``load_dotenv()`` still
+    reads every token listed in ``.env``.)
     """
     token_envs = {s.token_env for s in all_specs}
     env = {k: v for k, v in base_env.items() if k not in token_envs}

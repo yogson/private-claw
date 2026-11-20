@@ -188,3 +188,29 @@ def test_child_env_has_exactly_the_instance_overrides(tmp_path: Path) -> None:
     assert "ASSISTANT_AGENT_NODE_ENABLED" not in env_b
     assert "token-a" not in env_b.values()
     assert env_b["ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"] == "token-b"
+
+
+def test_parse_rejects_nested_variants_of_reserved_env_keys(tmp_path: Path) -> None:
+    env = {"ASSISTANT_APP_DATA_ROOT__X": "x", "assistant_channel_telegram_bot_token__y": "y"}
+    problems = _problems({"a": {"port": 8001, "token_env": "TG_A", "env": env}}, tmp_path)
+
+    assert problems == [
+        f"a: env key '{key}' is set by the launcher; use the YAML keys" for key in env
+    ]
+
+
+def test_parse_reports_an_invalid_name_once_when_label_is_unset(tmp_path: Path) -> None:
+    assert _problems({"2nd": {"port": 8001, "token_env": "TG_A"}}, tmp_path) == [
+        "2nd: instance name must be 1-32 chars [a-z0-9_-], start with a letter, not true/false/null"
+    ]
+
+
+@pytest.mark.parametrize("text", ["yes", "no", "on", "off", "null", "2"])
+def test_parse_reports_non_string_yaml_names_clearly(tmp_path: Path, text: str) -> None:
+    data = yaml.safe_load(f"instances:\n  {text}:\n    port: 8001\n    token_env: TG_A\n")
+
+    with pytest.raises(LauncherError) as exc_info:
+        parse_instances(data, tmp_path)
+
+    assert len(exc_info.value.problems) == 1
+    assert "instance name must be a string; quote it" in exc_info.value.problems[0]

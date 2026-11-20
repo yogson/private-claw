@@ -289,6 +289,73 @@ async def test_run_polling_logs_conflict_and_keeps_backing_off(
 
 
 @pytest.mark.asyncio
+async def test_run_polling_tags_media_group_with_update_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An album fed as untagged Updates reaches the handler as one event with all update ids."""
+    monkeypatch.setattr(
+        "assistant.channels.telegram.ingestion.media_group._DEFAULT_FLUSH_DELAY_SECONDS", 0.05
+    )
+    config = _make_config()
+    adapter = TelegramAdapter(config)
+    stop = asyncio.Event()
+    album = [
+        Update.model_validate(
+            {
+                "update_id": update_id,
+                "message": {
+                    "message_id": update_id,
+                    "from": {"id": 123456, "is_bot": False, "first_name": "Test"},
+                    "chat": {"id": 123456, "type": "private"},
+                    "date": 1700000000,
+                    "media_group_id": "album1",
+                    "photo": [
+                        {
+                            "file_id": f"f{update_id}",
+                            "file_unique_id": f"u{update_id}",
+                            "width": 1,
+                            "height": 1,
+                        }
+                    ],
+                },
+            }
+        )
+        for update_id in (800, 801, 802)
+    ]
+    sent = False
+
+    async def _get_updates(**_: object) -> list[Update]:
+        nonlocal sent
+        if sent:
+            await asyncio.sleep(0.01)
+            return []
+        sent = True
+        return album
+
+    events: list[NormalizedEvent] = []
+
+    async def _handler(event: NormalizedEvent) -> ChannelResponse | None:
+        events.append(event)
+        stop.set()
+        return None
+
+    with patch("assistant.channels.telegram.polling.Bot") as mock_bot_cls:
+        mock_bot = MagicMock()
+        mock_bot.get_updates = AsyncMock(side_effect=_get_updates)
+        mock_bot.delete_webhook = AsyncMock()
+        mock_bot.set_my_commands = AsyncMock()
+        mock_bot.set_chat_menu_button = AsyncMock()
+        mock_bot.session.close = AsyncMock()
+        mock_bot_cls.return_value = mock_bot
+
+        await asyncio.wait_for(run_polling(adapter, config, _handler, stop_event=stop), 5)
+
+    assert len(events) == 1
+    assert events[0].metadata["update_id"] == 800
+    assert events[0].metadata["update_ids"] == [800, 801, 802]
+
+
+@pytest.mark.asyncio
 async def test_process_update_logs_update_id_for_message_and_callback() -> None:
     """The ingress audit log event and event metadata carry the Telegram update_id."""
     adapter = TelegramAdapter(_make_config())
