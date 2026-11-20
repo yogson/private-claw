@@ -7,8 +7,8 @@
 
 ```bash
 # Start development
-make start                  # Start API service
-make up / status / down     # Extra instances, one Telegram bot each (see "Parallel instances")
+make start                  # Start API service (single process, no instances.yaml)
+make up / status / down     # Instances from instances.yaml (see "Parallel instances")
 
 # Incremental quality checks (run these often!)
 make format                 # Auto-format code (instant)
@@ -18,24 +18,31 @@ make lint                   # Linting and type checking
 **💡 Pro tip**: Run `make format lint` after editing a few files to catch issues early!
 
 
-## Parallel instances (one Telegram bot each)
+## Parallel instances (equal instances)
 
-Run several assistant instances side by side, for example one per workstream. Each
-instance has its own Telegram bot. All of them run the same code from the same checkout
-and `.venv` and share one config dir (the active `ASSISTANT_CONFIG_DIR`, e.g.
-`config.local/`). This is not strict isolation; see "What is shared" below.
+Run several assistant instances side by side, for example one per workstream. All of
+them run the same code from the same checkout and `.venv` and share one config dir (the
+active `ASSISTANT_CONFIG_DIR`, e.g. `config.local/`). This is not strict isolation; see
+"What is shared" below.
 
-The **main instance does not change**: `make start` / `make stop` (port 8000, `./data`,
-token in `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`). The launcher only manages the extra
-instances and never touches the main one. The main instance is not listed in
-`instances.yaml`: its channels come from the shared config as before (`enabled` in
-`channel.telegram.yaml` and `agent_node.yaml`, or `ASSISTANT_CHANNEL_TELEGRAM_ENABLED` /
-`ASSISTANT_AGENT_NODE_ENABLED`).
+There are two modes, chosen by whether `<ASSISTANT_CONFIG_DIR>/instances.yaml` exists:
 
-### Add a bot
+- **No `instances.yaml`: single process, as before.** `make start` runs one instance in
+  the foreground (`0.0.0.0:8000`, data root from `ASSISTANT_APP_DATA_ROOT` or `data_root`
+  in `app.yaml`, token in `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`,
+  channels from the shared config: `enabled` in `channel.telegram.yaml` and
+  `agent_node.yaml`). `make stop` stops whatever listens on port 8000.
+- **`instances.yaml` exists: the launcher manages every instance.** All instances are
+  declared in that file and are equal: none is special, and any of them may use port
+  8000 and `data_dir: data`. Use `make up` / `make down` / `make status`. `make start` and
+  `make stop` refuse with a message (exit code 2), so there is exactly one way to start
+  and stop instances. The file decides, even if it lists no instances; remove or rename
+  it to go back to `make start`.
 
-1. In Telegram, talk to [@BotFather](https://t.me/BotFather): `/newbot`, pick a name and a
-   username, and copy the token. Use one new bot per instance. Never reuse the main bot.
+### Add an instance
+
+1. For a Telegram instance, talk to [@BotFather](https://t.me/BotFather): `/newbot`, pick a
+   name and a username, and copy the token. Use one bot per instance.
 2. Put the token in `.env` (or your shell env) under a name that does **not** start with
    `ASSISTANT_`, e.g. `TG_BOT_TOKEN_RESEARCH=123456:ABC...`. `ASSISTANT_*` names are read by
    the app as config overrides (`ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN_X` would be an unknown
@@ -45,9 +52,13 @@ instances and never touches the main one. The main instance is not listed in
 
 ```yaml
 instances:
+  main:
+    port: 8000                          # unique, free; 8000 is an ordinary port
+    token_env: TG_BOT_TOKEN_MAIN        # variable name, never the token itself
+    data_dir: data                      # the classic ./data is allowed too
   research:
-    port: 8001                          # unique, free, not 8000
-    token_env: TG_BOT_TOKEN_RESEARCH    # variable name, never the token itself
+    port: 8001
+    token_env: TG_BOT_TOKEN_RESEARCH
     # data_dir: data/instances/research # default: data/instances/<name>
     # instance_name: research           # label in logs / "System started (research)."
     # telegram: true                    # Telegram channel, on by default
@@ -57,18 +68,17 @@ instances:
 ```
 
 The allowlist comes from the shared `channel.telegram.yaml`, so the same users can use
-every bot. Extra instances always bind `127.0.0.1`.
+every bot. Launcher instances always bind `127.0.0.1`.
 
 ### Channels per instance: Telegram and HTTP ingress
 
-Each instance switches its two inputs independently:
+Each instance switches its two inputs independently. The launcher always sets both, so
+`enabled` in the shared `channel.telegram.yaml` and `agent_node.yaml` does not matter for
+launcher instances (it still does for `make start`).
 
 - `telegram` (default `true`): the instance polls its own bot. `token_env` is required.
-  With `telegram: false` there is no bot: `token_env` is optional and ignored, the token
-  checks below are skipped, and the bot token override is set to empty, so no bot token
-  (not even the main one from `.env` or `channel.telegram.yaml`) reaches the instance's
-  Telegram config. (`load_dotenv` still loads the `.env` variables, such as
-  `TG_BOT_TOKEN_*`, into the instance's process env.)
+  With `telegram: false` there is no bot: `token_env` is optional and ignored, and the
+  token checks below are skipped.
 - `agent_node` (default `false`): the agent-node HTTP ingress (`/jobs`) on the instance's
   own port, `http://127.0.0.1:<port>`. It uses the shared `agent_node.yaml` (`auth_token`,
   `repositories`, ...). The app's own checks still apply: if that file is missing the
@@ -76,6 +86,15 @@ Each instance switches its two inputs independently:
   serves no `/jobs`. For an ingress-only instance `make up` checks both (see below).
 
 An instance with both off would serve nothing, so the launcher rejects `instances.yaml`.
+
+Every instance gets its bot token only through the launcher's
+`ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN` override: the value of its `token_env`, or empty
+with `telegram: false`. The override replaces a bare `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`
+from the shell env or `.env` and the `bot_token` in the shared `channel.telegram.yaml`, so
+no instance inherits a token it was not given. If the bare variable is still set,
+`make up` prints a note: move the token to a `token_env` variable and remove it.
+(`load_dotenv` still loads the other `.env` variables, such as `TG_BOT_TOKEN_*`, into each
+instance's process env.)
 
 ```yaml
 instances:
@@ -95,22 +114,25 @@ instances:
 ### Commands
 
 ```bash
-make up                  # start every extra instance (detached)
+make up                  # start every instance (detached)
 make up NAME=research    # start one
 make status [NAME=...]   # name, port, running/stopped/stale, PID, /health/live, token var, paths
-make down [NAME=...]     # stop all extra instances (or one); the main instance keeps running
+make down [NAME=...]     # stop all instances (or one)
 ```
 
 `make up` first checks **all** instances and starts **none** if any check fails:
 - the token variable is missing or empty, or its name starts with `ASSISTANT_`
   (instances with `telegram: true` only);
-- two instances share a token, or an instance uses the main instance's token
-  (instances with `telegram: true` only);
+- two instances share a bot token (instances with `telegram: true` only);
 - an ingress-only instance (`telegram: false`, `agent_node: true`) has no
   `agent_node.yaml` in the config dir, or no `auth_token` (neither in that file nor in
   `ASSISTANT_AGENT_NODE_AUTH_TOKEN`), so it would serve nothing;
-- a port is used twice, is already taken, or is 8000;
-- two instances share a data dir, or one uses the main data dir (`./data`).
+- two instances share a port, or a port is already taken (for example by a process left
+  over from `make start`);
+- two instances share a data dir;
+- the process env or `.env` has a case variant of a variable the launcher sets (see the
+  table below), e.g. `assistant_app_data_root`: the app reads `ASSISTANT_*` names
+  case-insensitively, so it would override the launcher's value.
 
 Instances that are already running are skipped. Tokens are looked up in the process env
 first, then in `.env`. `make status` prints token variable names, never token values.
@@ -132,8 +154,43 @@ mechanism; they show up as `env_override` in `/admin/config/effective`):
 
 `make down` sends SIGTERM to the PID in the PID file, but only if `ps` still shows this
 instance's uvicorn on its port, so a reused PID is never killed. It waits up to 30 s for
-a graceful shutdown, then sends SIGKILL. There is no autostart and no restart-on-crash:
-run `make status` after a reboot.
+a graceful shutdown, then sends SIGKILL. It does not stop processes it did not start
+(such as one from `make start`). There is no autostart and no restart-on-crash: run
+`make status` after a reboot.
+
+### Migrating from a "main" instance plus extra instances
+
+Before this change the main instance ran outside the launcher (`make start`, port 8000,
+its data root, `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`). To bring it under the launcher
+without losing its sessions or memory:
+
+1. Stop the old main instance while `make stop` still works (before updating the
+   checkout), or afterwards with `kill -TERM $(lsof -ti :8000)`. Otherwise `make up`
+   refuses: port 8000 is in use.
+2. In `.env`, rename `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN=...` to a non-`ASSISTANT_`
+   name, e.g. `TG_BOT_TOKEN_MAIN=...`.
+3. Add it to `instances.yaml`. Set `agent_node: true` if the old main instance served
+   `/jobs` (i.e. `agent_node.yaml` had `enabled: true`):
+
+   ```yaml
+   instances:
+     main:
+       port: 8000
+       token_env: TG_BOT_TOKEN_MAIN
+       data_dir: data
+   ```
+
+   Set `data_dir` to the data root the old main instance used: `ASSISTANT_APP_DATA_ROOT`
+   (process env or `.env`) if set, else `data_root` in the config dir's `app.yaml`
+   (`./data` in the example config). Under the launcher `data_dir` replaces both. If it
+   points elsewhere, nothing is deleted, but `main` starts with empty sessions and memory.
+
+4. `make up NAME=main`, then `make status`.
+
+Differences from `make start`: the instance binds `127.0.0.1` instead of `0.0.0.0` (it is
+no longer reachable from other machines on port 8000), runs detached with its log in
+`<data_dir>/logs/uvicorn-<date>.log` (with `data_dir: data`, the same file as before), says
+"System started (main)." and reports to Logfire as `private-claw-main`.
 
 ### What is per instance
 
@@ -147,19 +204,21 @@ instance's own bot to the chats in its own data dir) are per instance too.
 
 A data dir must never be used by two live processes: on startup an instance marks the
 running delegations in its store as failed, so a second process on the same data dir
-would kill the first one's delegations. The launcher enforces separate data dirs.
+would kill the first one's delegations. The launcher enforces separate data dirs. A data
+dir may contain another instance's (e.g. `data` and the default `data/instances/<name>`).
 
 ### What is shared
 
 - **Config dir**, including approved `capability_edit`s: an edit approved in any instance
   changes every instance (each picks it up on its next turn). The edit lock is per process,
   so approving edits to the same manifest in two instances at the same moment can race.
-  `POST /admin/config/apply` writes the shared YAML files. It writes only the files' own
-  keys plus the payload; env-derived values that are not in the payload are never written.
-  The admin UI form, however, is pre-filled with effective values (env overrides included)
-  and submits them all, so saving a form section on an instance with env overrides (e.g.
-  `ASSISTANT_MEMORY_DEFAULT_USER_ID`) writes those values to the shared config. Save config
-  through the admin UI of the main instance, not an extra one.
+  The admin UI of **any** instance can save config: `POST /admin/config/apply` writes only
+  the files' own keys plus the payload, and the admin UI edit form is pre-filled with the
+  file's values (or schema defaults), not with the instance's env overrides. Saving a form
+  section therefore never writes an instance's `ASSISTANT_*` overrides (e.g.
+  `ASSISTANT_MEMORY_DEFAULT_USER_ID`) to the shared config. Fields that this instance
+  overrides from the env are marked `env` in the form; editing one changes the shared
+  file, while this instance keeps using its override.
 - **Mem0**: `memory.default_user_id` is shared, so memories from one workstream are visible
   in all of them. For separate memories set `ASSISTANT_MEMORY_DEFAULT_USER_ID` under `env:`.
 - **`~/.claude/settings.json`**: every instance writes it at startup and on capability
@@ -176,9 +235,9 @@ would kill the first one's delegations. The launcher enforces separate data dirs
 Telegram delivers a bot's updates to whoever polls that bot's token, so routing is per
 token: each instance answers only through its own bot. Telegram allows one `getUpdates`
 consumer per token. If two processes poll the same token (e.g. an instance started by
-hand with the main token), Telegram returns 409 Conflict, both lose updates, and the app
-logs `telegram.polling.conflict` at error level while it keeps backing off. Stop one of
-the processes. `make up` refuses duplicate tokens, including the main one.
+hand with a token a launcher instance also uses), Telegram returns 409 Conflict, both
+lose updates, and the app logs `telegram.polling.conflict` at error level while it keeps
+backing off. Stop one of the processes. `make up` refuses duplicate tokens.
 
 
 ## Software Architecture Principles

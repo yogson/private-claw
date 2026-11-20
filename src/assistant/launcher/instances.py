@@ -1,7 +1,7 @@
 """
 Component ID: CMP_OPS_INSTANCE_LAUNCHER
 
-Extra-instance specs: parse ``<config_dir>/instances.yaml``, preflight-check every
+Instance specs: parse ``<config_dir>/instances.yaml``, preflight-check every
 instance before any is started, and build each child process environment.
 """
 
@@ -14,9 +14,8 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
-MAIN_PORT = 8000
-MAIN_DATA_DIR = "data"
-MAIN_TOKEN_ENV = "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"
+DATA_DIR = "data"
+BOT_TOKEN_ENV = "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"
 INSTANCE_HOST = "127.0.0.1"
 INSTANCES_FILENAME = "instances.yaml"
 
@@ -30,7 +29,7 @@ _DEFAULT_CONFIG_DIR = "config"
 # Set by the launcher itself; `env:` extras may not override them.
 _RESERVED_ENV = {
     CONFIG_DIR_ENV,
-    MAIN_TOKEN_ENV,
+    BOT_TOKEN_ENV,
     DATA_ROOT_ENV,
     INSTANCE_NAME_ENV,
     AGENT_NODE_ENABLED_ENV,
@@ -54,7 +53,7 @@ class LauncherError(Exception):
 
 @dataclass(frozen=True)
 class InstanceSpec:
-    """One extra instance from instances.yaml (paths are absolute)."""
+    """One instance from instances.yaml (paths are absolute)."""
 
     name: str
     port: int
@@ -84,7 +83,7 @@ def load_env_lookup(repo_root: Path, environ: Mapping[str, str]) -> dict[str, st
 
 
 def resolve_shared_config_dir(lookup: Mapping[str, str], repo_root: Path) -> Path:
-    """The config dir the main instance uses (ASSISTANT_CONFIG_DIR, default ``config``)."""
+    """The shared config dir (ASSISTANT_CONFIG_DIR, default ``config``)."""
     raw = lookup.get(CONFIG_DIR_ENV, "").strip() or _DEFAULT_CONFIG_DIR
     return absolute_path(raw, repo_root)
 
@@ -134,7 +133,7 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
         problems.append(f"{name}: expected a mapping with at least port (and token_env)")
         return None
     for key in sorted(set(raw) - _ALLOWED_KEYS):
-        hint = " (extra instances always bind 127.0.0.1)" if key == "host" else ""
+        hint = " (instances always bind 127.0.0.1)" if key == "host" else ""
         problems.append(f"{name}: unknown key '{key}'{hint}")
 
     port = raw.get("port")
@@ -153,7 +152,7 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
                 f"{name}: token_env '{token_env}' must not start with ASSISTANT_ "
                 "(the app would read it as a config override)"
             )
-    data_dir = raw.get("data_dir", f"{MAIN_DATA_DIR}/instances/{name}")
+    data_dir = raw.get("data_dir", f"{DATA_DIR}/instances/{name}")
     if not isinstance(data_dir, str) or not data_dir.strip():
         problems.append(f"{name}: data_dir must be a non-empty path")
     agent_node = raw.get("agent_node", False)
@@ -214,8 +213,9 @@ def build_child_env(
     Every instance's token variable is dropped from the inherited env; the child's own
     token goes in through the app's config override. (The child's ``load_dotenv()`` still
     reads every token listed in ``.env``.) With ``telegram: false`` the channel is switched
-    off and the bot token override is empty, so no bot token (not even the main one from
-    ``.env`` or the shared YAML) reaches the child's Telegram config.
+    off and the bot token override is empty. Either way the override replaces any bare
+    ``ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`` from the env or ``.env`` and the shared YAML
+    ``bot_token``, so no instance inherits a token it was not given.
     """
     token_envs = {s.token_env for s in all_specs if s.token_env}
     env = {k: v for k, v in base_env.items() if k not in token_envs}
@@ -223,7 +223,7 @@ def build_child_env(
     env.update(spec.env)
     env[CONFIG_DIR_ENV] = str(config_dir)
     env[TELEGRAM_ENABLED_ENV] = _env_bool(spec.telegram)
-    env[MAIN_TOKEN_ENV] = token if spec.telegram else ""
+    env[BOT_TOKEN_ENV] = token if spec.telegram else ""
     env[AGENT_NODE_ENABLED_ENV] = _env_bool(spec.agent_node)
     env[DATA_ROOT_ENV] = str(spec.data_dir)
     env[INSTANCE_NAME_ENV] = spec.instance_name

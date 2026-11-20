@@ -2,7 +2,9 @@
 Component ID: CMP_OPS_INSTANCE_LAUNCHER
 
 ``python -m assistant.launcher up|down|status [name]``: start, stop and inspect the
-extra instances listed in ``<ASSISTANT_CONFIG_DIR>/instances.yaml``.
+instances listed in ``<ASSISTANT_CONFIG_DIR>/instances.yaml``.
+``check-single <target>``: used by ``make start / stop``; refuses when instances.yaml
+exists, because the launcher then manages every instance.
 Never prints token values, only token variable names.
 """
 
@@ -14,7 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from assistant.launcher.instances import (
+    BOT_TOKEN_ENV,
     INSTANCE_HOST,
+    INSTANCES_FILENAME,
     InstanceSpec,
     LauncherError,
     build_child_env,
@@ -56,7 +60,13 @@ def cmd_up(ctx: LauncherContext, selected: list[InstanceSpec]) -> int:
     to_start = [s for s in selected if states[s.name][0] is not InstanceState.RUNNING]
     if not to_start:
         return 0
-    tokens = preflight(ctx.specs, to_start, ctx.lookup, ctx.config_dir, ctx.repo_root, port_in_use)
+    tokens = preflight(ctx.specs, to_start, ctx.lookup, ctx.config_dir, port_in_use)
+    if ctx.lookup.get(BOT_TOKEN_ENV, "").strip():
+        ctx.out(
+            f"note: {BOT_TOKEN_ENV} is set (process env or .env) but no instance uses it: "
+            "each one gets the token named by its token_env. Move it to a token_env "
+            "variable and remove it (docs/DEVELOPMENT.md, 'Migrating')."
+        )
 
     started = []
     for spec in to_start:
@@ -83,7 +93,7 @@ def cmd_up(ctx: LauncherContext, selected: list[InstanceSpec]) -> int:
 
 
 def cmd_down(ctx: LauncherContext, selected: list[InstanceSpec]) -> int:
-    """Stop the selected instances by PID file; never touches the main instance."""
+    """Stop the selected instances by PID file; never touches processes it did not start."""
     for spec in selected:
         state, pid = instance_state(spec)
         if state is InstanceState.STOPPED:
@@ -129,6 +139,7 @@ def cmd_status(ctx: LauncherContext, selected: list[InstanceSpec]) -> int:
     return 0
 
 
+_CHECK_SINGLE = "check-single"
 _COMMANDS: dict[str, Callable[[LauncherContext, list[InstanceSpec]], int]] = {
     "up": cmd_up,
     "down": cmd_down,
@@ -142,6 +153,22 @@ def build_context(environ: Mapping[str, str], repo_root: Path) -> LauncherContex
     config_dir = resolve_shared_config_dir(lookup, repo_root)
     specs = load_instances(config_dir, repo_root)
     return LauncherContext(repo_root, config_dir, lookup, environ, specs)
+
+
+def check_single(environ: Mapping[str, str], repo_root: Path, target: str | None) -> int:
+    """``make start / stop`` guard: 0 without instances.yaml, else 2 with a hint."""
+    lookup = load_env_lookup(repo_root, environ)
+    path = resolve_shared_config_dir(lookup, repo_root) / INSTANCES_FILENAME
+    if not path.is_file():
+        return 0
+    print(
+        f"make {target or 'start'}: refused: {_display(path, repo_root)} exists, so the "
+        "launcher manages every instance.\nUse make up / make down / make status "
+        "[NAME=<instance>]. To run a single process with make start again, remove or "
+        "rename instances.yaml.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def select(specs: list[InstanceSpec], name: str | None) -> list[InstanceSpec]:
@@ -162,12 +189,15 @@ def main(
 ) -> int:
     """CLI entry point; returns the process exit code."""
     parser = argparse.ArgumentParser(prog="python -m assistant.launcher")
-    parser.add_argument("command", choices=sorted(_COMMANDS))
+    parser.add_argument("command", choices=[*sorted(_COMMANDS), _CHECK_SINGLE])
     parser.add_argument("name", nargs="?", default=None)
     args = parser.parse_args(argv)
+    root = (repo_root or Path.cwd()).resolve()
+    env = os.environ if environ is None else environ
+    if args.command == _CHECK_SINGLE:
+        return check_single(env, root, args.name)
     try:
-        root = (repo_root or Path.cwd()).resolve()
-        ctx = build_context(os.environ if environ is None else environ, root)
+        ctx = build_context(env, root)
         selected = select(ctx.specs, args.name)
         if not selected:
             ctx.out(f"No instances configured in {ctx.config_dir / 'instances.yaml'}")

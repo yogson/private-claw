@@ -1,26 +1,28 @@
-# Extra assistant instances for `make up / down / status` (see docs/DEVELOPMENT.md).
+# Assistant instances for `make up / down / status` (see docs/DEVELOPMENT.md).
 # Copy to <ASSISTANT_CONFIG_DIR>/instances.yaml (e.g. config.local/instances.yaml).
-# The main instance is NOT listed here: it stays on `make start` / `make stop`
-# (port 8000, ./data, token from ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN).
+# While this file exists the launcher manages EVERY instance: all are equal, and
+# `make start` / `make stop` refuse. Without it, `make start` runs one process as before.
 #
 # Tokens never go in this file: token_env names a variable in .env or the shell env.
 # Every instance needs its own port and data dir, and (with telegram on) its own bot token.
-# Extra instances bind 127.0.0.1. Each instance turns its Telegram channel and its
-# agent_node HTTP ingress (/jobs) on or off; at least one of the two must be on.
+# Instances bind 127.0.0.1. Each instance turns its Telegram channel and its agent_node
+# HTTP ingress (/jobs) on or off; at least one of the two must be on.
 instances:
-  research:                               # name: [a-z][a-z0-9_-]{0,31}
-    port: 8001                            # not 8000, unique, free
-    token_env: TG_BOT_TOKEN_RESEARCH      # must not start with ASSISTANT_
+  main:                                   # name: [a-z][a-z0-9_-]{0,31}
+    port: 8000                            # unique, free (8000 is an ordinary port)
+    token_env: TG_BOT_TOKEN_MAIN          # must not start with ASSISTANT_
+    data_dir: data                        # migrating: the old instance's data root, see
+                                          # docs/DEVELOPMENT.md (empty sessions if wrong)
+  research:
+    port: 8001
+    token_env: TG_BOT_TOKEN_RESEARCH
     # data_dir: data/instances/research   # default: data/instances/<name>
     # instance_name: research             # label in logs / "System started (...)"; default: name
     # telegram: true                      # default: Telegram channel on (needs token_env)
     # agent_node: false                   # default: agent_node HTTP ingress off
     # env:                                # optional extra non-secret overrides
     #   ASSISTANT_MEMORY_DEFAULT_USER_ID: research
-  writing:                                # Telegram only (the defaults)
-    port: 8002
-    token_env: TG_BOT_TOKEN_WRITING
   jobs:                                   # HTTP ingress only: no bot, no token_env
-    port: 8003
+    port: 8002
     telegram: false
     agent_node: true                      # uses the shared agent_node.yaml (auth_token, repos)

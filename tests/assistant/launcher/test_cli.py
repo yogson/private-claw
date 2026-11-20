@@ -77,17 +77,15 @@ def test_up_refuses_everything_when_one_instance_is_invalid(
 ) -> None:
     calls = _spawn_recorder(monkeypatch)
 
-    # TG_B is the main token: refuse, and start nothing (not even a).
-    code = cli.main(
-        ["up"], environ={"ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN": _SECRET_B}, repo_root=repo
-    )
+    # b reuses a's token: refuse, and start nothing (not even a).
+    code = cli.main(["up"], environ={"TG_B": _SECRET_A}, repo_root=repo)
 
     assert code == 2
     assert calls == []
     err = capsys.readouterr().err
     assert "refused, nothing started" in err
-    assert "b: TG_B is the main instance's bot token" in err
-    assert _SECRET_B not in err
+    assert "b: same bot token as instance 'a'" in err
+    assert _SECRET_A not in err
 
 
 def test_up_single_instance_skips_running(
@@ -190,3 +188,100 @@ def test_status_shows_states_without_token_values(
 def test_missing_instances_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["status"], environ={}, repo_root=tmp_path) == 2
     assert "instances.example.yaml" in capsys.readouterr().err
+
+
+def test_up_runs_an_instance_on_8000_with_the_classic_data_dir(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / "config.local" / "instances.yaml").write_text(
+        yaml.safe_dump(
+            {"instances": {"main": {"port": 8000, "token_env": "TG_A", "data_dir": "data"}}}
+        )
+    )
+    calls = _spawn_recorder(monkeypatch)
+
+    assert cli.main(["up"], environ={}, repo_root=repo) == 0
+
+    (name, env) = calls[0]
+    assert name == "main"
+    assert env["ASSISTANT_APP_DATA_ROOT"] == str((repo / "data").resolve())
+    assert env["ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"] == _SECRET_A
+    assert (repo / "data/run/uvicorn.pid").read_text().strip() == "9000"
+
+
+def test_up_notes_a_leftover_bare_bot_token_and_does_not_pass_it_on(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _spawn_recorder(monkeypatch)
+    with (repo / ".env").open("a") as env_file:
+        env_file.write("ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN=333:old-main-token\n")
+
+    assert cli.main(["up"], environ={}, repo_root=repo) == 0
+
+    out = capsys.readouterr().out
+    assert "note: ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN is set" in out
+    assert "old-main-token" not in out
+    tokens = [env["ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"] for _, env in calls]
+    assert tokens == [_SECRET_A, _SECRET_B]
+
+
+@pytest.mark.parametrize(
+    ("key", "reserved"),
+    [
+        ("assistant_channel_telegram_bot_token", "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"),
+        ("assistant_app_data_root", "ASSISTANT_APP_DATA_ROOT"),
+        ("Assistant_Channel_Telegram_Enabled", "ASSISTANT_CHANNEL_TELEGRAM_ENABLED"),
+        ("assistant_agent_node_enabled", "ASSISTANT_AGENT_NODE_ENABLED"),
+        ("assistant_app_instance_name", "ASSISTANT_APP_INSTANCE_NAME"),
+        ("ASSISTANT_APP_DATA_ROOT__X", "ASSISTANT_APP_DATA_ROOT"),
+    ],
+)
+@pytest.mark.parametrize("in_dotenv", [True, False])
+def test_up_refuses_case_variants_of_launcher_variables(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+    reserved: str,
+    in_dotenv: bool,
+) -> None:
+    """The app matches ASSISTANT_* case-insensitively and the child's load_dotenv() adds
+    the variant after the launcher's variable, so it would win: refuse it up front."""
+    calls = _spawn_recorder(monkeypatch)
+    environ: dict[str, str] = {}
+    if in_dotenv:
+        with (repo / ".env").open("a") as env_file:
+            env_file.write(f"{key}=333:leaked\n")
+    else:
+        environ[key] = "333:leaked"
+
+    assert cli.main(["up"], environ=environ, repo_root=repo) == 2
+
+    assert calls == []
+    err = capsys.readouterr().err
+    assert f"'{key}' (process env or .env) would override {reserved}" in err
+    assert "leaked" not in err
+
+
+@pytest.mark.parametrize("target", ["start", "stop"])
+def test_check_single_refuses_when_instances_file_exists(
+    repo: Path, capsys: pytest.CaptureFixture[str], target: str
+) -> None:
+    assert cli.main(["check-single", target], environ={}, repo_root=repo) == 2
+
+    err = capsys.readouterr().err
+    assert f"make {target}: refused: config.local/instances.yaml exists" in err
+    assert "make up / make down / make status" in err
+
+
+def test_check_single_passes_without_instances_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".env").write_text("ASSISTANT_CONFIG_DIR=config.local\n")
+    (tmp_path / "config.local").mkdir()
+    (tmp_path / "config").mkdir()
+    # instances.yaml in the default config dir does not count when another one is active.
+    (tmp_path / "config" / "instances.yaml").write_text("instances: {}\n")
+
+    assert cli.main(["check-single", "start"], environ={}, repo_root=tmp_path) == 0
+    assert capsys.readouterr() == ("", "")
