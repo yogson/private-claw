@@ -24,6 +24,7 @@ CONFIG_DIR_ENV = "ASSISTANT_CONFIG_DIR"
 DATA_ROOT_ENV = "ASSISTANT_APP_DATA_ROOT"
 INSTANCE_NAME_ENV = "ASSISTANT_APP_INSTANCE_NAME"
 AGENT_NODE_ENABLED_ENV = "ASSISTANT_AGENT_NODE_ENABLED"
+TELEGRAM_ENABLED_ENV = "ASSISTANT_CHANNEL_TELEGRAM_ENABLED"
 LOGFIRE_SERVICE_ENV = "LOGFIRE_SERVICE_NAME"
 _DEFAULT_CONFIG_DIR = "config"
 # Set by the launcher itself; `env:` extras may not override them.
@@ -33,8 +34,9 @@ _RESERVED_ENV = {
     DATA_ROOT_ENV,
     INSTANCE_NAME_ENV,
     AGENT_NODE_ENABLED_ENV,
+    TELEGRAM_ENABLED_ENV,
 }
-_ALLOWED_KEYS = {"port", "token_env", "data_dir", "agent_node", "env", "instance_name"}
+_ALLOWED_KEYS = {"port", "token_env", "data_dir", "telegram", "agent_node", "env", "instance_name"}
 # Instance names and labels: the label reaches the app as ASSISTANT_APP_INSTANCE_NAME,
 # which is JSON-parsed, so it must not parse as a number, bool or null.
 _NAME_RE = re.compile(r"(?!(?:true|false|null)\Z)[a-z][a-z0-9_-]{0,31}")
@@ -56,9 +58,10 @@ class InstanceSpec:
 
     name: str
     port: int
-    token_env: str
+    token_env: str | None  # None when telegram is off (token_env is then ignored)
     data_dir: Path
     instance_name: str
+    telegram: bool = True
     agent_node: bool = False
     env: Mapping[str, str] = field(default_factory=dict)
 
@@ -128,7 +131,7 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
     if not _NAME_RE.fullmatch(name):
         problems.append(f"{name}: instance name {_NAME_RULE}")
     if not isinstance(raw, dict):
-        problems.append(f"{name}: expected a mapping with at least port and token_env")
+        problems.append(f"{name}: expected a mapping with at least port (and token_env)")
         return None
     for key in sorted(set(raw) - _ALLOWED_KEYS):
         hint = " (extra instances always bind 127.0.0.1)" if key == "host" else ""
@@ -137,27 +140,37 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
     port = raw.get("port")
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         problems.append(f"{name}: port must be an integer 1-65535")
-    token_env = raw.get("token_env")
-    if not isinstance(token_env, str) or not _ENV_NAME_RE.match(token_env):
-        problems.append(f"{name}: token_env must be an env variable name")
-    elif token_env.upper().startswith("ASSISTANT_"):
-        problems.append(
-            f"{name}: token_env '{token_env}' must not start with ASSISTANT_ "
-            "(the app would read it as a config override)"
-        )
+    telegram = raw.get("telegram", True)
+    if not isinstance(telegram, bool):
+        problems.append(f"{name}: telegram must be a boolean")
+    # Without the Telegram channel the bot token is not used, so token_env is ignored.
+    token_env = raw.get("token_env") if telegram is True else None
+    if telegram is True:
+        if not isinstance(token_env, str) or not _ENV_NAME_RE.match(token_env):
+            problems.append(f"{name}: token_env must be an env variable name")
+        elif token_env.upper().startswith("ASSISTANT_"):
+            problems.append(
+                f"{name}: token_env '{token_env}' must not start with ASSISTANT_ "
+                "(the app would read it as a config override)"
+            )
     data_dir = raw.get("data_dir", f"{MAIN_DATA_DIR}/instances/{name}")
     if not isinstance(data_dir, str) or not data_dir.strip():
         problems.append(f"{name}: data_dir must be a non-empty path")
     agent_node = raw.get("agent_node", False)
     if not isinstance(agent_node, bool):
         problems.append(f"{name}: agent_node must be true or false")
+    if telegram is False and agent_node is False:
+        problems.append(
+            f"{name}: telegram and agent_node are both false; "
+            "the instance would serve nothing, enable at least one"
+        )
     label = raw.get("instance_name", name)
     # An unset label defaults to the (already validated) name; don't report it twice.
     if "instance_name" in raw and (not isinstance(label, str) or not _NAME_RE.fullmatch(label)):
         problems.append(f"{name}: instance_name {_NAME_RULE}")
     env = _parse_env(name, raw.get("env") or {}, problems)
 
-    if len(problems) > start or not isinstance(port, int) or not isinstance(token_env, str):
+    if len(problems) > start or not isinstance(port, int):
         return None
     return InstanceSpec(
         name=name,
@@ -165,6 +178,7 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
         token_env=token_env,
         data_dir=absolute_path(data_dir, repo_root),
         instance_name=label,
+        telegram=telegram,
         agent_node=agent_node,
         env=env,
     )
@@ -199,19 +213,25 @@ def build_child_env(
 
     Every instance's token variable is dropped from the inherited env; the child's own
     token goes in through the app's config override. (The child's ``load_dotenv()`` still
-    reads every token listed in ``.env``.)
+    reads every token listed in ``.env``.) With ``telegram: false`` the channel is switched
+    off and the bot token override is empty, so no bot token (not even the main one from
+    ``.env`` or the shared YAML) reaches the child's Telegram config.
     """
-    token_envs = {s.token_env for s in all_specs}
+    token_envs = {s.token_env for s in all_specs if s.token_env}
     env = {k: v for k, v in base_env.items() if k not in token_envs}
     env[LOGFIRE_SERVICE_ENV] = f"private-claw-{spec.name}"
-    if not spec.agent_node:
-        env[AGENT_NODE_ENABLED_ENV] = "false"
     env.update(spec.env)
     env[CONFIG_DIR_ENV] = str(config_dir)
-    env[MAIN_TOKEN_ENV] = token
+    env[TELEGRAM_ENABLED_ENV] = _env_bool(spec.telegram)
+    env[MAIN_TOKEN_ENV] = token if spec.telegram else ""
+    env[AGENT_NODE_ENABLED_ENV] = _env_bool(spec.agent_node)
     env[DATA_ROOT_ENV] = str(spec.data_dir)
     env[INSTANCE_NAME_ENV] = spec.instance_name
     return env
+
+
+def _env_bool(value: bool) -> str:
+    return "true" if value else "false"
 
 
 def absolute_path(path: str, repo_root: Path) -> Path:

@@ -116,7 +116,7 @@ def cmd_status(ctx: LauncherContext, selected: list[InstanceSpec]) -> int:
                 state.value,
                 str(pid) if pid is not None else "-",
                 health,
-                spec.token_env,
+                spec.token_env or "-",
                 _display(spec.data_dir, ctx.repo_root),
                 _display(uvicorn_log_path(spec), ctx.repo_root),
             )

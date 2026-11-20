@@ -121,6 +121,79 @@ def test_preflight_only_checks_presence_and_ports_of_instances_to_start(tmp_path
     assert "same bot token" in text
 
 
+def _write_agent_node(root: Path, **values: Any) -> None:
+    config_dir = root / "config.local"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "agent_node.yaml").write_text(yaml.safe_dump(values))
+
+
+def test_preflight_skips_token_checks_for_telegram_off(tmp_path: Path) -> None:
+    _write_agent_node(tmp_path, auth_token="secret")
+    specs = _specs(
+        tmp_path,
+        {
+            "ingress": {"port": 8001, "telegram": False, "agent_node": True},
+            # token_env is ignored without telegram: a missing or main token is fine.
+            "other": {"port": 8002, "telegram": False, "agent_node": True, "token_env": "TG_M"},
+            "bot": {"port": 8003, "token_env": "TG_B"},
+        },
+    )
+    lookup = {"TG_B": "token-b", "TG_M": "main", "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN": "main"}
+
+    assert _run(tmp_path, specs, lookup) == {"ingress": "", "other": "", "bot": "token-b"}
+
+
+def test_preflight_rejects_ingress_only_instance_without_agent_node_config(
+    tmp_path: Path,
+) -> None:
+    specs = _specs(tmp_path, {"jobs": {"port": 8001, "telegram": False, "agent_node": True}})
+
+    text = _problems(tmp_path, specs, {})
+    assert "jobs: agent_node: true but" in text and "agent_node.yaml does not exist" in text
+    assert "it would serve nothing" in text
+
+    _write_agent_node(tmp_path, repositories={})
+    text = _problems(tmp_path, specs, {})
+    assert "jobs: agent_node: true but auth_token is empty" in text
+    assert "ASSISTANT_AGENT_NODE_AUTH_TOKEN" in text
+
+
+def test_preflight_ingress_only_accepts_token_from_yaml_or_env(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, {"jobs": {"port": 8001, "telegram": False, "agent_node": True}})
+    _write_agent_node(tmp_path, auth_token="secret")
+    assert _run(tmp_path, specs, {}) == {"jobs": ""}
+
+    _write_agent_node(tmp_path)
+    assert _run(tmp_path, specs, {"ASSISTANT_AGENT_NODE_AUTH_TOKEN": "from-env"}) == {"jobs": ""}
+
+
+def test_preflight_ingress_check_skips_telegram_instances(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, {"a": {"port": 8001, "token_env": "TG_A", "agent_node": True}})
+
+    assert _run(tmp_path, specs, _TOKENS) == {"a": "token-a"}
+
+
+def test_preflight_still_checks_tokens_of_telegram_instances(tmp_path: Path) -> None:
+    _write_agent_node(tmp_path, auth_token="secret")
+    specs = _specs(
+        tmp_path,
+        {
+            "ingress": {"port": 8001, "telegram": False, "agent_node": True},
+            "a": {"port": 8002, "telegram": True, "token_env": "TG_A"},
+            "b": {"port": 8003, "token_env": "TG_B"},
+            "c": {"port": 8004, "token_env": "TG_C", "agent_node": True},
+        },
+    )
+    lookup = {"TG_B": "main", "TG_C": "main", "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN": "main"}
+
+    text = _problems(tmp_path, specs, lookup)
+
+    assert "ingress" not in text
+    assert "a: TG_A is not set or empty" in text
+    assert "b: TG_B is the main instance's bot token" in text
+    assert "c: TG_C is the main instance's bot token" in text
+
+
 def test_port_in_use_detects_listener() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))

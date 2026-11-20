@@ -35,6 +35,7 @@ def test_parse_applies_defaults(tmp_path: Path) -> None:
     assert spec.token_env == "TG_RESEARCH"
     assert spec.data_dir == (tmp_path / "data" / "instances" / "research").resolve()
     assert spec.instance_name == "research"
+    assert spec.telegram is True
     assert spec.agent_node is False
     assert spec.env == {}
     assert spec.pid_file == spec.data_dir / "run" / "uvicorn.pid"
@@ -178,6 +179,7 @@ def test_child_env_has_exactly_the_instance_overrides(tmp_path: Path) -> None:
         "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN": "token-a",
         "ASSISTANT_APP_DATA_ROOT": str(specs[0].data_dir),
         "ASSISTANT_APP_INSTANCE_NAME": "a",
+        "ASSISTANT_CHANNEL_TELEGRAM_ENABLED": "true",
         "ASSISTANT_AGENT_NODE_ENABLED": "false",
         "ASSISTANT_MEMORY_DEFAULT_USER_ID": "a",
         "LOGFIRE_SERVICE_NAME": "private-claw-a",
@@ -185,7 +187,8 @@ def test_child_env_has_exactly_the_instance_overrides(tmp_path: Path) -> None:
     assert "token-b" not in env_a.values()
 
     env_b = build_child_env(specs[1], "token-b", base, config_dir, specs)
-    assert "ASSISTANT_AGENT_NODE_ENABLED" not in env_b
+    assert env_b["ASSISTANT_AGENT_NODE_ENABLED"] == "true"
+    assert env_b["ASSISTANT_CHANNEL_TELEGRAM_ENABLED"] == "true"
     assert "token-a" not in env_b.values()
     assert env_b["ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"] == "token-b"
 
@@ -214,3 +217,81 @@ def test_parse_reports_non_string_yaml_names_clearly(tmp_path: Path, text: str) 
 
     assert len(exc_info.value.problems) == 1
     assert "instance name must be a string; quote it" in exc_info.value.problems[0]
+
+
+def test_parse_telegram_off_ignores_token_env(tmp_path: Path) -> None:
+    specs = _parse(
+        {
+            "ingress": {"port": 8001, "telegram": False, "agent_node": True},
+            "kept": {"port": 8002, "telegram": False, "agent_node": True, "token_env": "TG_K"},
+            "bad": {"port": 8003, "telegram": False, "agent_node": True, "token_env": 5},
+        },
+        tmp_path,
+    )
+
+    assert [(s.name, s.telegram, s.agent_node, s.token_env) for s in specs] == [
+        ("ingress", False, True, None),
+        ("kept", False, True, None),
+        ("bad", False, True, None),
+    ]
+
+
+def test_parse_telegram_on_still_requires_token_env(tmp_path: Path) -> None:
+    problems = _problems({"a": {"port": 8001, "telegram": True, "agent_node": True}}, tmp_path)
+
+    assert problems == ["a: token_env must be an env variable name"]
+
+
+@pytest.mark.parametrize("telegram", ["false", None])
+def test_parse_non_bool_telegram_does_not_ask_for_token_env(
+    tmp_path: Path, telegram: object
+) -> None:
+    problems = _problems({"a": {"port": 8001, "telegram": telegram, "agent_node": True}}, tmp_path)
+
+    assert problems == ["a: telegram must be a boolean"]
+
+
+def test_parse_rejects_instance_with_telegram_and_agent_node_off(tmp_path: Path) -> None:
+    problems = _problems(
+        {
+            "idle": {"port": 8001, "telegram": False},
+            "explicit": {"port": 8002, "telegram": False, "agent_node": False},
+            "flag": {"port": 8003, "token_env": "TG_A", "telegram": "no"},
+        },
+        tmp_path,
+    )
+
+    assert problems == [
+        "idle: telegram and agent_node are both false; "
+        "the instance would serve nothing, enable at least one",
+        "explicit: telegram and agent_node are both false; "
+        "the instance would serve nothing, enable at least one",
+        "flag: telegram must be a boolean",
+    ]
+
+
+def test_parse_rejects_channel_toggles_in_env(tmp_path: Path) -> None:
+    env = {"ASSISTANT_CHANNEL_TELEGRAM_ENABLED": "false", "assistant_agent_node_enabled": "true"}
+    problems = _problems({"a": {"port": 8001, "token_env": "TG_A", "env": env}}, tmp_path)
+
+    assert problems == [
+        f"a: env key '{key}' is set by the launcher; use the YAML keys" for key in env
+    ]
+
+
+@pytest.mark.parametrize(("telegram", "agent_node"), [(True, True), (True, False), (False, True)])
+def test_child_env_sets_both_channel_toggles_explicitly(
+    tmp_path: Path, telegram: bool, agent_node: bool
+) -> None:
+    raw: dict[str, Any] = {"port": 8001, "telegram": telegram, "agent_node": agent_node}
+    if telegram:
+        raw["token_env"] = "TG_A"
+    specs = _parse({"a": raw, "b": {"port": 8002, "token_env": "TG_B"}}, tmp_path)
+    base = {"TG_A": "token-a", "TG_B": "token-b", "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN": "main"}
+
+    env = build_child_env(specs[0], "token-a" if telegram else "", base, tmp_path, specs)
+
+    assert env["ASSISTANT_CHANNEL_TELEGRAM_ENABLED"] == str(telegram).lower()
+    assert env["ASSISTANT_AGENT_NODE_ENABLED"] == str(agent_node).lower()
+    assert env["ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"] == ("token-a" if telegram else "")
+    assert not {"token-b", "main"} & set(env.values())
