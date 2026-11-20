@@ -142,10 +142,10 @@ def _parse_one(name: str, raw: Any, repo_root: Path, problems: list[str]) -> Ins
         problems.append(f"{name}: port must be an integer 1-65535")
     telegram = raw.get("telegram", True)
     if not isinstance(telegram, bool):
-        problems.append(f"{name}: telegram must be true or false")
+        problems.append(f"{name}: telegram must be a boolean")
     # Without the Telegram channel the bot token is not used, so token_env is ignored.
-    token_env = raw.get("token_env") if telegram is not False else None
-    if telegram is not False:
+    token_env = raw.get("token_env") if telegram is True else None
+    if telegram is True:
         if not isinstance(token_env, str) or not _ENV_NAME_RE.match(token_env):
             problems.append(f"{name}: token_env must be an env variable name")
         elif token_env.upper().startswith("ASSISTANT_"):

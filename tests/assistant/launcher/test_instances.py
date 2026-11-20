@@ -242,6 +242,15 @@ def test_parse_telegram_on_still_requires_token_env(tmp_path: Path) -> None:
     assert problems == ["a: token_env must be an env variable name"]
 
 
+@pytest.mark.parametrize("telegram", ["false", None])
+def test_parse_non_bool_telegram_does_not_ask_for_token_env(
+    tmp_path: Path, telegram: object
+) -> None:
+    problems = _problems({"a": {"port": 8001, "telegram": telegram, "agent_node": True}}, tmp_path)
+
+    assert problems == ["a: telegram must be a boolean"]
+
+
 def test_parse_rejects_instance_with_telegram_and_agent_node_off(tmp_path: Path) -> None:
     problems = _problems(
         {
@@ -257,7 +266,7 @@ def test_parse_rejects_instance_with_telegram_and_agent_node_off(tmp_path: Path)
         "the instance would serve nothing, enable at least one",
         "explicit: telegram and agent_node are both false; "
         "the instance would serve nothing, enable at least one",
-        "flag: telegram must be true or false",
+        "flag: telegram must be a boolean",
     ]
 
 

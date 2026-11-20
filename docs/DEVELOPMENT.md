@@ -66,12 +66,14 @@ Each instance switches its two inputs independently:
 - `telegram` (default `true`): the instance polls its own bot. `token_env` is required.
   With `telegram: false` there is no bot: `token_env` is optional and ignored, the token
   checks below are skipped, and the bot token override is set to empty, so no bot token
-  (not even the main one from `.env` or `channel.telegram.yaml`) reaches the instance.
+  (not even the main one from `.env` or `channel.telegram.yaml`) reaches the instance's
+  Telegram config. (`load_dotenv` still loads the `.env` variables, such as
+  `TG_BOT_TOKEN_*`, into the instance's process env.)
 - `agent_node` (default `false`): the agent-node HTTP ingress (`/jobs`) on the instance's
   own port, `http://127.0.0.1:<port>`. It uses the shared `agent_node.yaml` (`auth_token`,
   `repositories`, ...). The app's own checks still apply: if that file is missing the
   ingress stays off, and with an empty `auth_token` the app logs `agent_node.disabled` and
-  serves no `/jobs`.
+  serves no `/jobs`. For an ingress-only instance `make up` checks both (see below).
 
 An instance with both off would serve nothing, so the launcher rejects `instances.yaml`.
 
@@ -102,7 +104,11 @@ make down [NAME=...]     # stop all extra instances (or one); the main instance 
 `make up` first checks **all** instances and starts **none** if any check fails:
 - the token variable is missing or empty, or its name starts with `ASSISTANT_`
   (instances with `telegram: true` only);
-- two instances share a token, or an instance uses the main instance's token;
+- two instances share a token, or an instance uses the main instance's token
+  (instances with `telegram: true` only);
+- an ingress-only instance (`telegram: false`, `agent_node: true`) has no
+  `agent_node.yaml` in the config dir, or no `auth_token` (neither in that file nor in
+  `ASSISTANT_AGENT_NODE_AUTH_TOKEN`), so it would serve nothing;
 - a port is used twice, is already taken, or is 8000;
 - two instances share a data dir, or one uses the main data dir (`./data`).
 

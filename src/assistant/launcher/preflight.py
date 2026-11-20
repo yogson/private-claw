@@ -23,6 +23,8 @@ from assistant.launcher.instances import (
     absolute_path,
 )
 
+AGENT_NODE_TOKEN_ENV = "ASSISTANT_AGENT_NODE_AUTH_TOKEN"
+
 
 def preflight(
     specs: list[InstanceSpec],
@@ -37,7 +39,9 @@ def preflight(
     Cross-instance rules (unique ports, tokens, data dirs; main instance reserved)
     apply to the whole file. Token presence and free ports are checked for the
     instances about to start. Instances with ``telegram: false`` have no token: they
-    skip the token checks and get ``""``. Raises LauncherError listing every problem.
+    skip the token checks and get ``""``; if they are also ingress-only
+    (``agent_node: true``), the agent-node config must be usable, or they would serve
+    nothing. Raises LauncherError listing every problem.
     """
     problems: list[str] = []
     tokens = {s.name: lookup.get(s.token_env, "").strip() for s in specs if s.token_env}
@@ -49,6 +53,10 @@ def preflight(
             )
         if spec.port != MAIN_PORT and is_port_busy(spec.port):
             problems.append(f"{spec.name}: port {spec.port} is already in use")
+        if not spec.telegram and spec.agent_node:
+            ingress_problem = _ingress_problem(lookup, config_dir)
+            if ingress_problem:
+                problems.append(f"{spec.name}: {ingress_problem}; it would serve nothing")
 
     main_tokens = _main_tokens(lookup, config_dir)
     main_dirs = _main_data_dirs(lookup, config_dir, repo_root)
@@ -91,6 +99,17 @@ def port_in_use(port: int) -> bool:
         except OSError:
             return True
     return False
+
+
+def _ingress_problem(lookup: Mapping[str, str], config_dir: Path) -> str | None:
+    """Why the shared agent-node ingress cannot come up, or None when it can."""
+    path = config_dir / "agent_node.yaml"
+    if not path.is_file():
+        return f"agent_node: true but {path} does not exist"
+    token = lookup.get(AGENT_NODE_TOKEN_ENV, "") or _yaml_value(path, "auth_token") or ""
+    if not isinstance(token, str) or not token.strip():
+        return f"agent_node: true but auth_token is empty (set {AGENT_NODE_TOKEN_ENV} or {path})"
+    return None
 
 
 def _main_tokens(lookup: Mapping[str, str], config_dir: Path) -> set[str]:

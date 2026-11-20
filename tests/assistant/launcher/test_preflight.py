@@ -121,7 +121,14 @@ def test_preflight_only_checks_presence_and_ports_of_instances_to_start(tmp_path
     assert "same bot token" in text
 
 
+def _write_agent_node(root: Path, **values: Any) -> None:
+    config_dir = root / "config.local"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "agent_node.yaml").write_text(yaml.safe_dump(values))
+
+
 def test_preflight_skips_token_checks_for_telegram_off(tmp_path: Path) -> None:
+    _write_agent_node(tmp_path, auth_token="secret")
     specs = _specs(
         tmp_path,
         {
@@ -136,7 +143,38 @@ def test_preflight_skips_token_checks_for_telegram_off(tmp_path: Path) -> None:
     assert _run(tmp_path, specs, lookup) == {"ingress": "", "other": "", "bot": "token-b"}
 
 
+def test_preflight_rejects_ingress_only_instance_without_agent_node_config(
+    tmp_path: Path,
+) -> None:
+    specs = _specs(tmp_path, {"jobs": {"port": 8001, "telegram": False, "agent_node": True}})
+
+    text = _problems(tmp_path, specs, {})
+    assert "jobs: agent_node: true but" in text and "agent_node.yaml does not exist" in text
+    assert "it would serve nothing" in text
+
+    _write_agent_node(tmp_path, repositories={})
+    text = _problems(tmp_path, specs, {})
+    assert "jobs: agent_node: true but auth_token is empty" in text
+    assert "ASSISTANT_AGENT_NODE_AUTH_TOKEN" in text
+
+
+def test_preflight_ingress_only_accepts_token_from_yaml_or_env(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, {"jobs": {"port": 8001, "telegram": False, "agent_node": True}})
+    _write_agent_node(tmp_path, auth_token="secret")
+    assert _run(tmp_path, specs, {}) == {"jobs": ""}
+
+    _write_agent_node(tmp_path)
+    assert _run(tmp_path, specs, {"ASSISTANT_AGENT_NODE_AUTH_TOKEN": "from-env"}) == {"jobs": ""}
+
+
+def test_preflight_ingress_check_skips_telegram_instances(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, {"a": {"port": 8001, "token_env": "TG_A", "agent_node": True}})
+
+    assert _run(tmp_path, specs, _TOKENS) == {"a": "token-a"}
+
+
 def test_preflight_still_checks_tokens_of_telegram_instances(tmp_path: Path) -> None:
+    _write_agent_node(tmp_path, auth_token="secret")
     specs = _specs(
         tmp_path,
         {
