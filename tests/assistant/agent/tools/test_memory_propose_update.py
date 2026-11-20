@@ -59,6 +59,18 @@ async def test_creates_pending_confirmation_with_note() -> None:
     assert "User prefers tea." in pending.summary_for_user
 
 
+async def test_a_requester_error_propagates_out_of_the_tool() -> None:
+    """S14: the requester call is deliberately not wrapped (#59 must stay loud)."""
+
+    async def refusing(draft: ConfirmationDraft) -> ConfirmationRequestResult:
+        raise RuntimeError("tool is not in CONFIRMATION_TOOL_NAMES")
+
+    ctx = _ctx(None)
+    ctx.deps = TurnDeps(confirmation_requester=refusing)
+    with pytest.raises(RuntimeError, match="CONFIRMATION_TOOL_NAMES"):
+        await _propose(ctx)
+
+
 async def test_same_proposal_is_deduplicated_even_with_new_intent_id() -> None:
     service = ConfirmationService(ConfirmationHandlerRegistry())
     first = await _propose(_ctx(service))
