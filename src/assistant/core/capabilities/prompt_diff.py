@@ -24,8 +24,8 @@ Rendering:
 - a line longer than one part is split across parts; its continuation pieces start with
   the same marker followed by ``…`` (``+…``, ``-…``, `` …``) instead of a space;
 - a part never starts with a blank context line (it could then be blank as a whole,
-  which a message cannot carry): it starts with an empty continuation (``+…``, `` …``,
-  ...) of the previous part's last line instead.
+  which a message cannot carry): it starts with the ``(continued)`` label line instead,
+  which no content line or hunk header can look like.
 
 Bounds: each side may have at most ``MAX_PROMPT_LINES`` lines (``PromptDiffTooLargeError``
 otherwise), and the diff is computed with ``difflib.SequenceMatcher`` (default autojunk)
@@ -41,6 +41,7 @@ from assistant.core.capabilities.text_safety import escape_unsafe, utf16_len
 CONTEXT_LINES = 3
 MAX_PROMPT_LINES = 5000
 _CONTINUATION = "…"
+CONTINUED_LABEL = "(continued)"
 # A line that must be split anyway only fills the rest of a part if this much is left.
 _MIN_SPLIT_ROOM = 64
 
@@ -159,30 +160,28 @@ def split_parts(lines: tuple[str, ...] | list[str], max_units: int) -> list[str]
 
     No part after the first starts with a whitespace-only piece (an empty or all-space
     context line): such a part could be entirely blank, which a message cannot carry
-    (``ConfirmationAttachment`` refuses it). The part starts with an empty continuation
-    of the previous part's last line instead (its marker and ``…``, nothing after), so
-    every part has visible text and joining the continuations back still gives
-    ``lines`` exactly. The first part starts with ``lines[0]`` (a hunk header in a diff).
+    (``ConfirmationAttachment`` refuses it). The part starts with a
+    ``CONTINUED_LABEL`` line instead, so every part has visible text; dropping the label
+    lines and joining the continuations back still gives ``lines`` exactly. The first
+    part starts with ``lines[0]`` (a hunk header in a diff).
     """
     if max_units < _MIN_SPLIT_ROOM:
         raise ValueError(f"max_units must be at least {_MIN_SPLIT_ROOM}")
     parts: list[str] = []
     current: list[str] = []
     used = 0
-    last = ""  # the last piece placed
-    pinned = False  # current holds only an empty continuation: it must not be flushed
+    pinned = False  # current holds only the label: it must not be flushed
     for line in lines:
         piece = line
         while True:
             if not current and parts and not piece.strip():
-                marker = last[:1] + _CONTINUATION
-                current, used, pinned = [marker], utf16_len(marker), True
+                current, used, pinned = [CONTINUED_LABEL], utf16_len(CONTINUED_LABEL), True
             sep = 1 if current else 0
             width = utf16_len(piece)
             if used + sep + width <= max_units:
                 current.append(piece)
                 used += sep + width
-                last, pinned = piece, False
+                pinned = False
                 break
             room = max_units - used - sep
             if current and not pinned and (width <= max_units or room < _MIN_SPLIT_ROOM):
@@ -192,7 +191,7 @@ def split_parts(lines: tuple[str, ...] | list[str], max_units: int) -> list[str]
             head, rest = _cut(piece, room)
             current.append(head)
             parts.append("\n".join(current))
-            current, used, last, pinned = [], 0, head, False
+            current, used, pinned = [], 0, False
             piece = piece[:1] + _CONTINUATION + rest
     if current:
         parts.append("\n".join(current))

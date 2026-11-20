@@ -439,8 +439,8 @@ that fits one part is never split. A longer line fills the rest of the current p
 continues in the next ones, each continuation piece starting with `+…` / `-…` / ` …`. A
 part never starts with a blank context line (an empty prompt line renders as two spaces, and
 a part of only those would be an invisible message that `ConfirmationAttachment` refuses):
-such a part starts with an empty continuation of the previous part's last line (`+…`, ` …`,
-nothing after it) instead. No line is dropped. The
+such a part starts with a `(continued)` label line instead, which no content line or hunk
+header can look like. No line is dropped. The
 parts travel with the confirmation as a `ConfirmationAttachment` (`domains/agent.md`, "User
 Confirmations"). Telegram sends them as separate plain-text messages before the buttons, each
 headed `Prompt change for <capability_id> — part i/N (confirmation <first 8 hex of the id>)`
