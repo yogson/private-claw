@@ -99,7 +99,10 @@ class TelegramEgress:
         sent_chunks = 0
         total_chunks = len(formatted_chunks)
         base_reply_markup = self._build_reply_markup(response)
-        for attempt in range(1, self._max_attempts + 1):
+        attempt_limit = self._max_attempts
+        attempt = 0
+        while attempt < attempt_limit:
+            attempt += 1
             attempts_made = attempt
             if self._audit_logger is not None:
                 self._audit_logger.log_egress_attempt(
@@ -169,7 +172,7 @@ class TelegramEgress:
                         retry_after=exc.retry_after,
                         error=last_error,
                     )
-                if attempt < self._max_attempts:
+                if attempt < attempt_limit:
                     await asyncio.sleep(float(exc.retry_after))
                 continue
             except TelegramNetworkError as exc:
@@ -196,8 +199,10 @@ class TelegramEgress:
                     and _PARSE_ENTITIES_ERROR in last_error.lower()
                     and not plain_fallback
                 ):
-                    # Markup rejected by Telegram: resend the same text once, unformatted.
+                    # Markup rejected by Telegram: resend the same text once, unformatted,
+                    # on an extra attempt so it works even when retries are used up.
                     plain_fallback = True
+                    attempt_limit += 1
                     logger.warning(
                         "telegram.egress.plain_text_fallback",
                         chat_id=chat_id,
@@ -224,7 +229,7 @@ class TelegramEgress:
                     )
                 break
 
-            if attempt < self._max_attempts:
+            if attempt < attempt_limit:
                 delay = self._base_delay * (self._backoff_factor**attempt)
                 await asyncio.sleep(delay)
 

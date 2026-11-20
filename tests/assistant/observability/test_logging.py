@@ -121,7 +121,9 @@ def test_configure_logging_keeps_tracebacks_without_structlog_warning(
     assert "boom-structlog" in by_event["structlog failed"]["exception"]
     assert "boom-stdlib" in by_event["stdlib failed"]["exception"]
     console = capsys.readouterr().err
-    assert "Traceback" in console or "boom-structlog" in console
+    assert "Logging error" not in console
+    assert "format_exc_info" not in console
+    assert "boom-structlog" in console
     assert "boom-stdlib" in console
 
 
