@@ -27,7 +27,10 @@ and `.venv` and share one config dir (the active `ASSISTANT_CONFIG_DIR`, e.g.
 
 The **main instance does not change**: `make start` / `make stop` (port 8000, `./data`,
 token in `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`). The launcher only manages the extra
-instances and never touches the main one.
+instances and never touches the main one. The main instance is not listed in
+`instances.yaml`: its channels come from the shared config as before (`enabled` in
+`channel.telegram.yaml` and `agent_node.yaml`, or `ASSISTANT_CHANNEL_TELEGRAM_ENABLED` /
+`ASSISTANT_AGENT_NODE_ENABLED`).
 
 ### Add a bot
 
@@ -47,13 +50,45 @@ instances:
     token_env: TG_BOT_TOKEN_RESEARCH    # variable name, never the token itself
     # data_dir: data/instances/research # default: data/instances/<name>
     # instance_name: research           # label in logs / "System started (research)."
-    # agent_node: false                 # agent_node ingress, off by default
+    # telegram: true                    # Telegram channel, on by default
+    # agent_node: false                 # agent_node HTTP ingress, off by default
     # env:                              # optional extra non-secret overrides
     #   ASSISTANT_MEMORY_DEFAULT_USER_ID: research
 ```
 
 The allowlist comes from the shared `channel.telegram.yaml`, so the same users can use
 every bot. Extra instances always bind `127.0.0.1`.
+
+### Channels per instance: Telegram and HTTP ingress
+
+Each instance switches its two inputs independently:
+
+- `telegram` (default `true`): the instance polls its own bot. `token_env` is required.
+  With `telegram: false` there is no bot: `token_env` is optional and ignored, the token
+  checks below are skipped, and the bot token override is set to empty, so no bot token
+  (not even the main one from `.env` or `channel.telegram.yaml`) reaches the instance.
+- `agent_node` (default `false`): the agent-node HTTP ingress (`/jobs`) on the instance's
+  own port, `http://127.0.0.1:<port>`. It uses the shared `agent_node.yaml` (`auth_token`,
+  `repositories`, ...). The app's own checks still apply: if that file is missing the
+  ingress stays off, and with an empty `auth_token` the app logs `agent_node.disabled` and
+  serves no `/jobs`.
+
+An instance with both off would serve nothing, so the launcher rejects `instances.yaml`.
+
+```yaml
+instances:
+  writing:                              # Telegram only (the defaults)
+    port: 8002
+    token_env: TG_BOT_TOKEN_WRITING
+  jobs:                                 # HTTP ingress only: no bot, no token
+    port: 8003
+    telegram: false
+    agent_node: true
+  research:                             # both
+    port: 8001
+    token_env: TG_BOT_TOKEN_RESEARCH
+    agent_node: true
+```
 
 ### Commands
 
@@ -65,7 +100,8 @@ make down [NAME=...]     # stop all extra instances (or one); the main instance 
 ```
 
 `make up` first checks **all** instances and starts **none** if any check fails:
-- the token variable is missing or empty, or its name starts with `ASSISTANT_`;
+- the token variable is missing or empty, or its name starts with `ASSISTANT_`
+  (instances with `telegram: true` only);
 - two instances share a token, or an instance uses the main instance's token;
 - a port is used twice, is already taken, or is 8000;
 - two instances share a data dir, or one uses the main data dir (`./data`).
@@ -80,12 +116,13 @@ mechanism; they show up as `env_override` in `/admin/config/effective`):
 | Variable | Value |
 |---|---|
 | `ASSISTANT_CONFIG_DIR` | the shared config dir |
-| `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN` | the value of `token_env` |
+| `ASSISTANT_CHANNEL_TELEGRAM_ENABLED` | `telegram` (`true` / `false`) |
+| `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN` | the value of `token_env`; empty with `telegram: false` |
 | `ASSISTANT_APP_DATA_ROOT` | the instance data dir |
 | `ASSISTANT_APP_INSTANCE_NAME` | `instance_name` (default: the instance name) |
-| `ASSISTANT_AGENT_NODE_ENABLED` | `false`, unless `agent_node: true` |
+| `ASSISTANT_AGENT_NODE_ENABLED` | `agent_node` (`true` / `false`, default `false`) |
 | `LOGFIRE_SERVICE_NAME` | `private-claw-<name>` |
-| `env:` entries | as given |
+| `env:` entries | as given (the `ASSISTANT_*` variables above are reserved: use the YAML keys) |
 
 `make down` sends SIGTERM to the PID in the PID file, but only if `ps` still shows this
 instance's uvicorn on its port, so a reused PID is never killed. It waits up to 30 s for

@@ -36,14 +36,14 @@ def preflight(
 
     Cross-instance rules (unique ports, tokens, data dirs; main instance reserved)
     apply to the whole file. Token presence and free ports are checked for the
-    instances about to start. Raises LauncherError listing every problem.
+    instances about to start. Instances with ``telegram: false`` have no token: they
+    skip the token checks and get ``""``. Raises LauncherError listing every problem.
     """
     problems: list[str] = []
-    starting = {s.name for s in to_start}
-    tokens = {s.name: lookup.get(s.token_env, "").strip() for s in specs}
+    tokens = {s.name: lookup.get(s.token_env, "").strip() for s in specs if s.token_env}
 
     for spec in to_start:
-        if not tokens[spec.name]:
+        if spec.token_env and not tokens[spec.name]:
             problems.append(
                 f"{spec.name}: {spec.token_env} is not set or empty (process env or .env)"
             )
@@ -56,7 +56,7 @@ def preflight(
     seen_ports: dict[int, str] = {}
     seen_dirs: dict[Path, str] = {}
     for spec in specs:
-        token = tokens[spec.name]
+        token = tokens.get(spec.name, "")
         if token and token in main_tokens:
             problems.append(f"{spec.name}: {spec.token_env} is the main instance's bot token")
         elif token and token in seen_tokens:
@@ -76,7 +76,7 @@ def preflight(
 
     if problems:
         raise LauncherError(problems)
-    return {name: token for name, token in tokens.items() if name in starting}
+    return {s.name: tokens.get(s.name, "") for s in to_start}
 
 
 def port_in_use(port: int) -> bool:
