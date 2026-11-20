@@ -329,6 +329,8 @@ class TestSessionRecapService:
             assert marker in RECAP_PROMPT
         assert "same language as the conversation" in RECAP_PROMPT
         assert "Output only the recap." in RECAP_PROMPT
+        assert "Earlier context" in RECAP_PROMPT
+        assert "nothing remains" in RECAP_PROMPT
 
     @pytest.mark.parametrize("prompt", ["", "   "])
     def test_empty_prompt_uses_default(self, prompt: str) -> None:

@@ -34,6 +34,10 @@ command", "the fix for duplicate log entries" — so every line makes sense with
 knowing the project's internals. If the conversation touches several topics, focus
 on the main one.
 
+The input may begin with an "Earlier context" block — a summary of the older part of
+this same conversation. Use it as background; where it differs from the dialogue that
+follows, the dialogue shows the current state.
+
 Write in the same language as the conversation, in plain, natural phrasing.
 
 Format:
@@ -42,6 +46,7 @@ Format:
 • <up to 5 short bullets — key results so far>
 ⏭ Next:
 • <up to 3 short bullets — what remains to finish the task>
+If the task is finished and nothing remains, end the recap after the ✅ Done section.
 
 Output only the recap.\
 """
