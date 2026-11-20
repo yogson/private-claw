@@ -449,11 +449,12 @@ such a part starts with a `(continued)` label line instead, which no content lin
 header can look like. No line is dropped. The
 parts travel with the confirmation as a `ConfirmationAttachment` (`domains/agent.md`, "User
 Confirmations"). Telegram sends them as separate plain-text messages before the buttons, each
-headed `Prompt change for <capability_id> — part i/N (confirmation <first 8 hex of the id>)`
+headed `Prompt change for <capability_id> — part i/N (confirmation <tag>)`
 (`domains/telegram.md`). The bot sends the parts directly above the buttons, and the button
-message is a reply to the real part 1. The agent's own text comes before the parts. The tool
-result gives the agent the confirmation id, so its text can imitate a part header and appear
-above the real parts. It cannot change, remove or reorder the real parts. Read the parts
+message is a reply to the real part 1. The agent's own text comes before the parts. It can
+imitate the header layout, but not the tag: the tag is an HMAC of the confirmation id under a
+per-process key the agent never sees, so a fake header carries a different tag than the
+button message. It cannot change, remove or reorder the real parts. Read the parts
 directly above the buttons (the reply preview of the button message points to part 1).
 Nothing is ever cut. A prompt change that needs more than
 `app.capability_edit_max_prompt_parts` parts (default 8, up to 50) is `rejected_invalid`, and

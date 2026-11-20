@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from assistant.channels.telegram.confirmation_render import (
     NO_LONGER_VALID_TEXT,
     NOT_DELIVERED_TEXT,
+    confirmation_tag,
     render_confirmation_prompt,
     render_resolved_text,
     status_text,
@@ -99,3 +100,18 @@ def test_failed_not_delivered_status_is_neutral_other_failures_show_detail() -> 
 
     apply_failed = _request("s", status=ConfirmationStatus.FAILED, detail="Apply failed: disk")
     assert status_text(apply_failed) == "⚠️ Failed: Apply failed: disk"
+
+
+def test_confirmation_tag_is_keyed_not_a_prefix_of_the_id() -> None:
+    # S12 of #64: the agent knows the confirmation id, so the tag on the parts and the
+    # button message must not be computable from it.
+    import re
+    import uuid
+
+    ids = [uuid.uuid4().hex for _ in range(50)]
+    tags = [confirmation_tag(_request("s").model_copy(update={"confirmation_id": i})) for i in ids]
+    assert all(re.fullmatch(r"[0-9a-f]{8}", t) for t in tags)
+    assert sum(t == i[:8] for t, i in zip(tags, ids, strict=True)) == 0
+    assert len(set(tags)) == len(tags)
+    request = _request("s")
+    assert confirmation_tag(request) == confirmation_tag(request)  # stable for re-renders

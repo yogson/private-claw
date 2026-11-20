@@ -20,6 +20,7 @@ from assistant.channels.telegram.confirmation_render import (
     NO_LONGER_VALID_TEXT,
     NOT_DELIVERED_TEXT,
     NOT_OWNER_TEXT,
+    confirmation_tag,
 )
 from assistant.channels.telegram.models import (
     CallbackQueryMeta,
@@ -766,9 +767,11 @@ async def test_parts_are_sent_before_the_buttons_which_reply_to_part_1() -> None
     service = _service()
     parts = ["+ " + "я" * 3698, "+ " + "🧠" * 1849, "- last line"]
     request = await _pending_with_parts(service, parts)
-    short = request.confirmation_id[:8]
+    short = confirmation_tag(request)
 
     await _deliver(adapter, service, request)
+    # S12 of #64: the tag is not derived from the id the agent knows.
+    assert not any(request.confirmation_id[:8] in m.text for m in sends)
 
     assert len(sends) == 4
     *part_msgs, buttons = sends

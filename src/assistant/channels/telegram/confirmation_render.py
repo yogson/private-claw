@@ -9,6 +9,10 @@ already split into parts; this module only adds a header to each part. The parts
 sent before the button message, which replies to part 1 (confirmation_handler).
 """
 
+import hashlib
+import hmac
+import secrets
+
 from assistant.core.confirmation import (
     NOT_DELIVERED_OUTCOME_STATUS,
     ConfirmationRequest,
@@ -36,11 +40,17 @@ _DETAIL_MAX_CHARS = 150
 _TELEGRAM_MAX_UTF16 = 4096
 _STATUS_RESERVE_UTF16 = 300
 _TRUNCATED_NOTE = "\n… [truncated]"
+# Key of the tag on attachment parts and the button message. The agent knows the
+# confirmation id (tool result), never this key, so its own text cannot reproduce the
+# tag of a real part. Per process: confirmations are not persisted across restarts.
+_TAG_KEY = secrets.token_bytes(32)
 
 
-def short_confirmation_id(request: ConfirmationRequest) -> str:
-    """The id shown on attachment parts and the button message (first 8 hex chars)."""
-    return request.confirmation_id[:8]
+def confirmation_tag(request: ConfirmationRequest) -> str:
+    """The tag shown on attachment parts and the button message: 8 hex chars of an
+    HMAC of the confirmation id under a per-process key."""
+    digest = hmac.new(_TAG_KEY, request.confirmation_id.encode(), hashlib.sha256)
+    return digest.hexdigest()[:8]
 
 
 def render_confirmation_prompt(request: ConfirmationRequest) -> str:
@@ -59,20 +69,20 @@ def _attachments_note(request: ConfirmationRequest) -> str:
     )
     return (
         f"📎 Sent in full above: {sent}. This message is a reply to part 1 "
-        f"(confirmation {short_confirmation_id(request)}); read every part before deciding."
+        f"(confirmation {confirmation_tag(request)}); read every part before deciding."
     )
 
 
 def render_attachment_messages(request: ConfirmationRequest) -> list[str]:
     """One plain-text message per attachment part, in delivery order, each headed
-    ``<title> — part i/N (confirmation <short id>)``. Never truncated: a message that
+    ``<title> — part i/N (confirmation <tag>)``. Never truncated: a message that
     would not fit Telegram's limit is reported by :func:`message_fits`."""
-    short = short_confirmation_id(request)
+    tag = confirmation_tag(request)
     messages: list[str] = []
     for attachment in request.attachments:
         total = len(attachment.parts)
         for index, part in enumerate(attachment.parts, start=1):
-            header = f"{attachment.title} — part {index}/{total} (confirmation {short})"
+            header = f"{attachment.title} — part {index}/{total} (confirmation {tag})"
             messages.append(f"{header}\n\n{part}")
     return messages
 
