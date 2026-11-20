@@ -11,7 +11,8 @@ instances:
   main:                                   # name: [a-z][a-z0-9_-]{0,31}
     port: 8000                            # unique, free (8000 is an ordinary port)
     token_env: TG_BOT_TOKEN_MAIN          # must not start with ASSISTANT_
-    data_dir: data                        # the classic ./data (keeps existing sessions, memory)
+    data_dir: data                        # migrating: the old instance's data root, see
+                                          # docs/DEVELOPMENT.md (empty sessions if wrong)
   research:
     port: 8001
     token_env: TG_BOT_TOKEN_RESEARCH

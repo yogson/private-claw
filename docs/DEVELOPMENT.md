@@ -28,7 +28,8 @@ active `ASSISTANT_CONFIG_DIR`, e.g. `config.local/`). This is not strict isolati
 There are two modes, chosen by whether `<ASSISTANT_CONFIG_DIR>/instances.yaml` exists:
 
 - **No `instances.yaml`: single process, as before.** `make start` runs one instance in
-  the foreground (`0.0.0.0:8000`, `./data`, token in `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`,
+  the foreground (`0.0.0.0:8000`, data root from `ASSISTANT_APP_DATA_ROOT` or `data_root`
+  in `app.yaml`, token in `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`,
   channels from the shared config: `enabled` in `channel.telegram.yaml` and
   `agent_node.yaml`). `make stop` stops whatever listens on port 8000.
 - **`instances.yaml` exists: the launcher manages every instance.** All instances are
@@ -160,8 +161,8 @@ a graceful shutdown, then sends SIGKILL. It does not stop processes it did not s
 ### Migrating from a "main" instance plus extra instances
 
 Before this change the main instance ran outside the launcher (`make start`, port 8000,
-`./data`, `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`). To bring it under the launcher without
-losing its sessions or memory:
+its data root, `ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`). To bring it under the launcher
+without losing its sessions or memory:
 
 1. Stop the old main instance while `make stop` still works (before updating the
    checkout), or afterwards with `kill -TERM $(lsof -ti :8000)`. Otherwise `make up`
@@ -179,12 +180,17 @@ losing its sessions or memory:
        data_dir: data
    ```
 
+   Set `data_dir` to the data root the old main instance used: `ASSISTANT_APP_DATA_ROOT`
+   (process env or `.env`) if set, else `data_root` in the config dir's `app.yaml`
+   (`./data` in the example config). Under the launcher `data_dir` replaces both. If it
+   points elsewhere, nothing is deleted, but `main` starts with empty sessions and memory.
+
 4. `make up NAME=main`, then `make status`.
 
 Differences from `make start`: the instance binds `127.0.0.1` instead of `0.0.0.0` (it is
 no longer reachable from other machines on port 8000), runs detached with its log in
-`data/logs/uvicorn-<date>.log` (the same file as before), says "System started (main)."
-and reports to Logfire as `private-claw-main`.
+`<data_dir>/logs/uvicorn-<date>.log` (with `data_dir: data`, the same file as before), says
+"System started (main)." and reports to Logfire as `private-claw-main`.
 
 ### What is per instance
 
