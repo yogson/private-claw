@@ -271,6 +271,27 @@ def test_is_usage_request_returns_false_for_other_commands() -> None:
     assert adapter.is_usage_request(event) is False
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("/wtf", True), ("/wtf@my_bot", True), ("/compact", False), ("wtf", False)],
+)
+def test_is_wtf_request(text: str, expected: bool) -> None:
+    """is_wtf_request matches only the /wtf command (with or without bot suffix)."""
+    adapter = TelegramAdapter(_make_config())
+    event = NormalizedEvent(
+        event_id="ev-wtf",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-wtf",
+        text=text,
+        metadata={"chat_id": 123},
+    )
+    assert adapter.is_wtf_request(event) is expected
+
+
 class TestTelegramAdapterEgress:
     @pytest.mark.asyncio
     async def test_send_response_delegates_to_egress(self) -> None:

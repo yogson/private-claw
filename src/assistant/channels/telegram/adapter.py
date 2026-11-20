@@ -545,6 +545,10 @@ class TelegramAdapter:
         """Return True when the event text is the /compact command."""
         return extract_supported_command(event.text) == TelegramCommand.COMPACT
 
+    def is_wtf_request(self, event: NormalizedEvent) -> bool:
+        """Return True when the event text is the /wtf command."""
+        return extract_supported_command(event.text) == TelegramCommand.WTF
+
     def is_session_new_request(self, event: NormalizedEvent) -> bool:
         """Return True when the event text is the /new command."""
         return extract_supported_command(event.text) == TelegramCommand.NEW

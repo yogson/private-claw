@@ -22,6 +22,7 @@ from assistant.core.config.schemas import (
     McpServersConfig,
     MemoryConfig,
     ModelConfig,
+    RecapConfig,
     RuntimeConfig,
     SchedulerConfig,
     StoreConfig,
@@ -48,11 +49,12 @@ _DOMAIN_MAP: dict[str, tuple[str, type[BaseModel], str]] = {
     "store": ("store.yaml", StoreConfig, "ASSISTANT_STORE"),
     "memory": ("memory.yaml", MemoryConfig, "ASSISTANT_MEMORY"),
     "compaction": ("compaction.yaml", CompactionConfig, "ASSISTANT_COMPACTION"),
+    "recap": ("recap.yaml", RecapConfig, "ASSISTANT_RECAP"),
     "agent_node": ("agent_node.yaml", AgentNodeConfig, "ASSISTANT_AGENT_NODE"),
 }
 
 # Domains that default silently when config file is absent.
-_OPTIONAL_DOMAINS: set[str] = {"compaction"}
+_OPTIONAL_DOMAINS: set[str] = {"compaction", "recap"}
 
 # Domains whose absence is meaningful: a missing file loads as None (feature disabled).
 _ABSENT_IS_NONE_DOMAINS: set[str] = {"agent_node"}

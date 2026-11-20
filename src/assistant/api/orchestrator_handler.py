@@ -178,6 +178,8 @@ def _build_orchestrator_handler(
             )
         if adapter.is_compact_request(event):
             return await _handle_compact_request(event, orchestrator)
+        if adapter.is_wtf_request(event):
+            return await _handle_wtf_request(event, orchestrator)
         if adapter.is_session_resume_request(event):
             chat_id = int(event.metadata.get("chat_id", 0))
             return await adapter.build_session_menu_response(
@@ -519,6 +521,44 @@ async def _handle_compact_request(
                 if compacted
                 else "Nothing to compact: history is too short."
             )
+    return build_text_channel_response(
+        text=text, session_id=event.session_id, trace_id=event.trace_id
+    )
+
+
+RECAP_EMPTY_TEXT = "Nothing here yet."
+RECAP_DISABLED_TEXT = "Session recap is disabled."
+RECAP_FAILED_TEXT = "Couldn't build a recap right now."
+
+
+async def _handle_wtf_request(
+    event: NormalizedEvent, orchestrator: Orchestrator
+) -> ChannelResponse:
+    """Handle the /wtf command: reply with a short recap of the active session.
+
+    Unlike /compact, this never takes the session turn lock: it reads a snapshot of
+    the persisted history, so it answers immediately even while a turn is running.
+    Turn records are persisted when a turn finishes, so an in-flight turn is not yet
+    covered by the recap. The recap is sent to the chat only and never persisted.
+    """
+    if not orchestrator.recap_enabled:
+        text = RECAP_DISABLED_TEXT
+    else:
+        try:
+            recap = await orchestrator.recap_session(event.session_id, event.trace_id)
+        except Exception as exc:
+            logger.warning("recap.failed", trace_id=event.trace_id, error=str(exc))
+            text = RECAP_FAILED_TEXT
+        else:
+            if recap is None:
+                text = RECAP_EMPTY_TEXT
+            elif not recap:
+                logger.warning("recap.failed", trace_id=event.trace_id, error="empty output")
+                text = RECAP_FAILED_TEXT
+            else:
+                text = recap
+    # No parse_mode: egress converts Markdown to entities, like regular agent replies,
+    # so model output cannot break Telegram parsing.
     return build_text_channel_response(
         text=text, session_id=event.session_id, trace_id=event.trace_id
     )

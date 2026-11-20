@@ -138,6 +138,7 @@ the Telegram transport only.
   - `/new` - start a fresh session for the current chat,
   - `/reset` - clear context for the currently active session,
   - `/compact` - manually compact the active session (summarize older turns, keep the last `keep_recent_turns` verbatim); bypasses `token_threshold`, `min_turns_before_compact` and `max_compactions` but still honors `enabled`,
+  - `/wtf` - recap the active session in a few lines (one-shot LLM call over user/assistant dialogue only, tool calls excluded; model and budget in `config/recap.yaml`). Reads history without the session lock, so it answers during an active turn; the recap is never persisted or added to the agent context,
   - `/sessions` - list recent sessions and resume one via inline callbacks,
   - `/model` - select LLM model for the current session,
   - `/usage` - show token and cost usage statistics for current session, today (UTC), and this month (UTC).

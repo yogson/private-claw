@@ -17,6 +17,9 @@ from assistant.store.models import (
     UserMessagePayload,
 )
 
+# Assistant message content written for turns that failed before producing a reply.
+FAILED_TURN_PLACEHOLDER = "[Request failed]"
+
 
 async def persist_turn_initial(
     sessions: SessionStoreInterface,
@@ -135,7 +138,7 @@ async def persist_turn_failed(
         source_event_id=turn_id,
         user_id=user_id,
     )
-    content = assistant_content if assistant_content is not None else "[Request failed]"
+    content = assistant_content if assistant_content is not None else FAILED_TURN_PLACEHOLDER
     records: list[SessionRecord] = [
         SessionRecord(
             session_id=session_id,

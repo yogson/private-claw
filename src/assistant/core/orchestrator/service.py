@@ -31,7 +31,12 @@ from assistant.core.capabilities.catalog import CapabilityCatalog
 from assistant.core.capabilities.edit_service import CapabilityEditService
 from assistant.core.capabilities.interfaces import CapabilityCatalogInterface
 from assistant.core.capabilities.snapshot import CapabilitySnapshot
-from assistant.core.config.schemas import CapabilitiesPolicyConfig, CompactionConfig, RuntimeConfig
+from assistant.core.config.schemas import (
+    CapabilitiesPolicyConfig,
+    CompactionConfig,
+    RecapConfig,
+    RuntimeConfig,
+)
 from assistant.core.confirmation import (
     CONFIRMATION_TOOL_NAMES,
     ConfirmationDraft,
@@ -62,6 +67,7 @@ from assistant.core.orchestrator.persistence import (
     persist_turn_terminal,
     persist_turn_terminal_failed,
 )
+from assistant.core.orchestrator.recap import SessionRecapService
 from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.core.session.factory import SessionContextFactory
 from assistant.extensions.mcp.toolsets import is_mcp_tool_name
@@ -206,6 +212,15 @@ class Orchestrator:
                 model_id=self._compaction_config.summarizer_model_id,
                 max_tokens=self._compaction_config.summarizer_max_tokens,
                 prompt=self._compaction_config.compaction_prompt,
+            )
+        self._recap_config: RecapConfig = config.recap
+        self._recap_service: SessionRecapService | None = None
+        if self._recap_config.enabled:
+            self._recap_service = SessionRecapService(
+                model_id=self._recap_config.model_id,
+                max_tokens=self._recap_config.max_tokens,
+                max_input_chars=self._recap_config.max_input_chars,
+                prompt=self._recap_config.prompt,
             )
 
     async def execute_turn(
@@ -1016,6 +1031,26 @@ class Orchestrator:
         ctx = await self._session_factory.resume(session_id)
         async with ctx:
             return await self._compact_session(session_id, trace_id, user_id, enforce_limit=False)
+
+    @property
+    def recap_enabled(self) -> bool:
+        """Whether the /wtf session recap is configured and available."""
+        return self._recap_service is not None
+
+    async def recap_session(self, session_id: str, trace_id: str) -> str | None:
+        """Recap the session's dialogue in a few lines (the /wtf command).
+
+        Deliberately lock-free: reads a snapshot via ``read_session`` instead of
+        resuming the session, so it answers while a turn is in flight (the in-flight
+        turn is not yet persisted, so it is not covered). Never writes to the session.
+
+        Returns None when recap is disabled or there is no dialogue to recap (no LLM
+        call). LLM errors propagate to the caller.
+        """
+        if self._recap_service is None:
+            return None
+        records = await self._store.sessions.read_session(session_id)
+        return await self._recap_service.recap(records, trace_id)
 
     async def _should_compact_session(self, session_id: str) -> list[SessionRecord] | None:
         """Check whether the session needs compaction based on token usage and turn count.

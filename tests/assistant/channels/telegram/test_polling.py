@@ -170,6 +170,7 @@ async def test_configure_bot_commands_menu_registers_expected_commands() -> None
         "/new",
         "/reset",
         "/compact",
+        "/wtf",
         "/sessions",
         "/model",
         "/capabilities",

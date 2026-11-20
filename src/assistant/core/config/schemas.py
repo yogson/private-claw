@@ -373,6 +373,26 @@ class CompactionConfig(BaseModel):
     )
 
 
+class RecapConfig(BaseModel):
+    """Session recap (/wtf command) configuration (config/recap.yaml)."""
+
+    enabled: bool = True
+    model_id: str = "claude-haiku-4-5"
+    max_tokens: int = Field(default=512, ge=64)
+    max_input_chars: int = Field(
+        default=30_000,
+        ge=1_000,
+        description="Dialogue character budget; the most recent messages are kept.",
+    )
+    prompt: str = Field(
+        default="",
+        description=(
+            "Custom system prompt for the recap LLM. "
+            "When empty the built-in default prompt is used."
+        ),
+    )
+
+
 class AgentNodeRepositoryConfig(BaseModel):
     """One repository the agent-node HTTP ingress may run jobs against."""
 
@@ -463,5 +483,6 @@ class RuntimeConfig(BaseModel):
     store: StoreConfig
     memory: MemoryConfig
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+    recap: RecapConfig = Field(default_factory=RecapConfig)
     agent_node: AgentNodeConfig | None = None  # None: config/agent_node.yaml absent
     config_dir: Path | None = None  # Injected by loader; used for capability/tool resolution
