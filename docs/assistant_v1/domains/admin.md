@@ -75,7 +75,10 @@ Effective-config view rules:
 All configuration changes must follow a controlled, auditable workflow:
 
 1. **Load** current effective config through API.
-2. **Edit** only allowlisted mutable keys for v1.
+2. **Edit** only allowlisted mutable keys for v1. The edit form is pre-filled with the
+   domain file's own values (or schema defaults), not with env overrides, because it
+   submits every field: saving must never write a process's `ASSISTANT_*` overrides into
+   the (possibly shared) config file. Env-overridden fields are marked in the form.
 3. **Validate** payload server-side against canonical config schema.
 4. **Preview diff** (before/after, impacted domains, restart requirement flag).
 5. **Confirm apply** for high-risk changes (policy, MCP, scheduler/store runtime knobs).

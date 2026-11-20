@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from markupsafe import escape as html_escape
@@ -24,6 +24,8 @@ from assistant.api.routers.config import (
     ValidateRequest,
     apply_config,
     diff_config,
+    editable_file_values,
+    get_effective_config,
     validate_config,
 )
 
@@ -134,11 +136,20 @@ def _redirect(path: str, status_code: int = 302) -> RedirectResponse:
     return RedirectResponse(path, status_code=status_code)
 
 
-def _build_fields(allowed_keys: set[str], current: dict[str, Any]) -> list[dict[str, Any]]:
-    """Builds a list of field descriptor dicts for rendering the edit form."""
+def _build_fields(
+    allowed_keys: set[str],
+    current: dict[str, Any],
+    env_overridden: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Builds a list of field descriptor dicts for rendering the edit form.
+
+    ``env_overridden`` names the fields this process overrides from the env; the form
+    marks them, since it edits the shared file value, not the live one.
+    """
     fields = []
     for key in sorted(allowed_keys):
-        value = current.get(key, "")
+        value = current.get(key)
+        value = "" if value is None else value
         defn = _FIELD_DEFS.get(key, {"type": "text"})
         display_value: Any = value
         encoding = defn.get("encoding")
@@ -157,6 +168,7 @@ def _build_fields(allowed_keys: set[str], current: dict[str, Any]) -> list[dict[
                 "options": defn.get("options", []),
                 "encoding": encoding,
                 "value": display_value,
+                "env_override": key in (env_overridden or set()),
             }
         )
     return fields
@@ -259,8 +271,6 @@ async def config_dashboard(request: Request) -> Response:
     if not is_authenticated(request):
         return _redirect("/admin/login")
 
-    from assistant.api.routers.config import get_effective_config
-
     effective = await get_effective_config()
 
     domains = []
@@ -302,11 +312,20 @@ async def domain_form(request: Request, domain: str) -> Response:
             "has no editable keys in v1.</div>"
         )
 
-    from assistant.api.routers.config import get_effective_config
-
+    # Pre-fill with the domain file's own values (or schema defaults), never the
+    # effective ones: the form submits every field, so env overrides of this process
+    # (e.g. from the instance launcher) would otherwise be written to the shared file.
+    try:
+        file_values = editable_file_values(domain)
+    except HTTPException as exc:
+        return HTMLResponse(
+            f'<div class="alert alert-danger m-2">{html_escape(str(exc.detail))}</div>'
+        )
     effective = await get_effective_config()
-    domain_cfg = effective.config.get(domain, {})
-    fields = _build_fields(allowed_keys, domain_cfg)
+    env_overridden = {
+        key for key in allowed_keys if effective.provenance.get(f"{domain}.{key}") == "env_override"
+    }
+    fields = _build_fields(allowed_keys, file_values, env_overridden)
 
     return _templates.TemplateResponse(
         request,

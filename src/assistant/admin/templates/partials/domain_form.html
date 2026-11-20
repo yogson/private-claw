@@ -5,6 +5,8 @@
   result is swapped into #diff-{domain}.
   The "Apply" button (rendered inside the diff partial) posts to
   /admin/config/{domain}/apply using hx-include to carry the form values.
+  Fields are pre-filled from the domain file (or schema defaults), not from env
+  overrides, so saving never writes this instance's env values to the shared file.
 #}
 
 <form id="form-{{ domain }}" class="px-1">
@@ -18,6 +20,10 @@
         <small class="text-muted ms-1">— one per line</small>
       {% elif field.encoding == "int_list" %}
         <small class="text-muted ms-1">— one integer per line</small>
+      {% endif %}
+      {% if field.env_override %}
+        <span class="badge bg-warning-lt text-warning border provenance-env ms-1"
+              title="Overridden by an env variable on this instance. The form shows and edits the shared config file value.">env</span>
       {% endif %}
     </label>
 

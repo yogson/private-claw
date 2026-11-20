@@ -135,6 +135,18 @@ def _file_value(raw: dict[str, Any], schema_cls: type[BaseModel] | None, key: st
     return field.get_default(call_default_factory=True)
 
 
+def editable_file_values(domain: str) -> dict[str, Any]:
+    """The domain's allowlisted keys as its YAML file stores them, without env overrides.
+
+    Keys the file omits get the schema default (None if required). This is what an edit
+    form should start from: submitting it unchanged writes nothing new to the file.
+    Raises HTTPException if the file exists but cannot be read.
+    """
+    raw = _read_domain_file_or_raise(ConfigLoader(), domain)
+    schema_cls = _domain_schema(domain)
+    return {key: _file_value(raw, schema_cls, key) for key in _ALLOWLISTED_KEYS.get(domain, ())}
+
+
 @router.get(
     "/effective",
     response_model=EffectiveConfigResponse,
