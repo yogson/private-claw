@@ -387,12 +387,14 @@ is deliberately simple, and its invariants are property-tested
   included. A line that sets `delegation_allowed_backends` or `delegation_model_allowlist`
   to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. Removing a
   tool override field, or a whole override (`tool_overrides.<tool>`, `tool_overrides`,
-  `tools[<tool>].params_override`), does not clear it: the value from another override of
+  `tools[<tool>].params_override`, or a whole `tools[<tool>]` binding, which drops its
+  `params_override`), does not clear it: the value from another override of
   the tool, else tools.yaml, applies (`agent/tools/registry.py` merges them). Such a line
   gets `[note: a removed tool override is inherited, not cleared: another override of this
   tool or tools.yaml applies]`, plus what the field means when it is set nowhere if that is
   wide: `delegation_default_permission_mode` → the built-in `auto` (the second-widest
-  mode), the delegation allowlists → NO restriction, the delegation token caps → no cap.
+  mode), the delegation allowlists → NO restriction, the delegation token caps → no cap,
+  `delegation_max_concurrent_tasks` → no task-count limit.
 - **Never cut.** If the ⚠ lines do not all fit the summary cap, the proposal is
   `rejected_invalid` and the agent is asked for smaller edits (or to let the user edit by
   hand); a ⚠ line is never truncated or dropped in favour of another.

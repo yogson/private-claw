@@ -356,6 +356,32 @@ def test_removed_field_without_a_wider_default_gets_the_plain_inherited_note() -
     assert line.endswith(f"5 → {ABSENT}{INHERITED_NOTE}]")
 
 
+def test_removed_concurrency_limit_says_set_nowhere_means_no_limit() -> None:
+    # N20 of #67: unset everywhere, the coordinator admits any number of tasks.
+    before = _cap(tool_overrides={"d": {"delegation_max_concurrent_tasks": 2}})
+    (line,) = _sensitive_lines(_summary(before, _cap(tool_overrides={"d": {}})))
+    assert line.endswith(
+        f"2 → {ABSENT}{INHERITED_NOTE}; delegation_max_concurrent_tasks set nowhere: "
+        "no task-count limit]"
+    ), line
+
+
+def test_removing_a_whole_tool_binding_notes_its_params_override() -> None:
+    # N20 of #67: the binding's params_override is dropped with it (and falls back).
+    binding = {
+        "tool_id": "delegate_subagent_task",
+        "params_override": {"delegation_default_permission_mode": "plan"},
+    }
+    before = _cap(tools=[binding, {"tool_id": "shell_execute"}])
+    (line,) = _sensitive_lines(_summary(before, _cap(tools=[{"tool_id": "shell_execute"}])))
+    assert line.startswith(f"{SENSITIVE_PREFIX}tools[delegate_subagent_task]: ")
+    assert line.endswith(f"{ABSENT}{INHERITED_NOTE}{_PERMISSION_UNSET}"), line
+    # A binding without params_override sets no field: no note.
+    before = _cap(tools=[{"tool_id": "delegate_subagent_task"}, {"tool_id": "shell_execute"}])
+    (line,) = _sensitive_lines(_summary(before, _cap(tools=[{"tool_id": "shell_execute"}])))
+    assert "[note:" not in line, line
+
+
 def test_removing_an_entry_or_a_non_override_field_has_no_inherited_note() -> None:
     entries = [{"id": "ls", "command_pattern": "ls"}, {"id": "rm", "command_pattern": "rm"}]
     before = _cap(

@@ -91,6 +91,7 @@ UNSET_MEANS = {
     "delegation_per_task_token_cap": "no cap",
     "delegation_per_session_token_cap": "no cap",
     "delegation_global_token_cap": "no cap",
+    "delegation_max_concurrent_tasks": "no task-count limit",
 }
 REASON_MAX_CHARS = 300
 # Body of one prompt-change part (UTF-16 units). The channel adds a header of at most
@@ -555,6 +556,10 @@ def inherited_note(keys: tuple[str, ...], old: Any) -> str:
 
 def _override_fields(keys: tuple[str, ...], old: Any) -> set[str]:
     """Names of the CapabilityToolOverride fields removed at ``keys``."""
+    if keys[:1] == ("tools",) and len(keys) == 2:
+        # A whole tools[<tool>] binding removed: its params_override goes with it.
+        params = old.get("params_override") if isinstance(old, dict) else None
+        return {str(k) for k in params} if isinstance(params, dict) else set()
     if keys[:1] == ("tool_overrides",):
         depth = 2  # tool_overrides.<tool>.<field>
     elif keys[:1] == ("tools",) and keys[2:3] == ("params_override",):
