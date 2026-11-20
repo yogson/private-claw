@@ -385,7 +385,11 @@ is deliberately simple, and its invariants are property-tested
 - **Nothing is skipped.** A key or entry present on one side only is shown with its full
   value against `(absent)`, so every field of an added block is listed, `[]`, `{}` and `null`
   included. A line that sets `delegation_allowed_backends` or `delegation_model_allowlist`
-  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. Removing a
+  to `[]` gets `[note: an empty delegation allowlist means NO restriction]`. A line that sets
+  `delegation_default_permission_mode` wider than before (than the built-in `auto` where it
+  was not set), e.g. to `bypassPermissions`, gets `[note: this RAISES the sub-agent
+  permission ceiling]`, and the proposal logs a `capability_edit.permission_ceiling_raised`
+  warning. Removing a
   tool override field, or a whole override (`tool_overrides.<tool>`, `tool_overrides`,
   `tools[<tool>].params_override`, or a whole `tools[<tool>]` binding, which drops its
   `params_override`), does not clear it: the value from another override of

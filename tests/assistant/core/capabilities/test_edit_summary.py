@@ -17,6 +17,7 @@ from assistant.core.capabilities.edit_summary import (
     ABSENT,
     INHERITED_NOTE,
     NO_CHANGES_TEXT,
+    PERMISSION_RAISED_NOTE,
     SECRET_CHANGED_NOTE,
     SENSITIVE_PREFIX,
     SENSITIVE_WARNING,
@@ -395,7 +396,7 @@ def test_removing_an_entry_or_a_non_override_field_has_no_inherited_note() -> No
     # Changing (not removing) a field is not a fallback either.
     before = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "plan"}})
     after = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "auto"}})
-    assert "[note:" not in _summary(before, after)
+    assert INHERITED_NOTE not in _summary(before, after)
 
 
 # --- sub-agent permission ceiling (master #47): a capability override can raise it ------
@@ -415,9 +416,35 @@ def test_raising_the_subagent_permission_mode_is_a_full_sensitive_line() -> None
     text = _summary(before, after)
     assert (
         "⚠ tool_overrides.delegate_subagent_task.delegation_default_permission_mode: "
-        '"acceptEdits" → "bypassPermissions"'
+        '"acceptEdits" → "bypassPermissions"' + PERMISSION_RAISED_NOTE
     ) in text
     assert SENSITIVE_WARNING in text
+    assert PERMISSION_RAISED_NOTE.isascii()
+    # Lowering it is not a raise.
+    assert "RAISES" not in _summary(after, before)
+
+
+def test_permission_raise_compares_with_the_built_in_default_where_unset() -> None:
+    # A binding added with a mode wider than the built-in auto is a raise ...
+    binding = {
+        "tool_id": "delegate_subagent_task",
+        "params_override": {"delegation_default_permission_mode": "bypassPermissions"},
+    }
+    (line,) = _sensitive_lines(_summary(_cap(), _cap(tools=[binding])))
+    assert line.endswith(PERMISSION_RAISED_NOTE), line
+    # ... one up to auto is not, and neither is an unrelated field of the binding.
+    binding["params_override"] = {"delegation_default_permission_mode": "auto"}
+    assert "RAISES" not in _summary(_cap(), _cap(tools=[binding]))
+    before = _cap(tool_overrides={"d": {"delegation_default_permission_mode": "bypassPermissions"}})
+    after = _cap(
+        tool_overrides={
+            "d": {
+                "delegation_default_permission_mode": "bypassPermissions",
+                "max_timeout_seconds": 5,
+            }
+        }
+    )
+    assert "RAISES" not in _summary(before, after)
 
 
 def test_added_subagent_permission_mode_shows_the_normalised_value() -> None:

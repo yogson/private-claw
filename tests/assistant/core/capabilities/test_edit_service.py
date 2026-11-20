@@ -544,6 +544,32 @@ def test_added_delegation_block_with_empty_allowlists_is_visible(
     ) in proposal.summary
 
 
+def test_raising_the_subagent_permission_ceiling_is_noted_and_logged(
+    service: CapabilityEditService,
+) -> None:
+    block = (
+        "tool_overrides:\n  delegate_subagent_task:\n"
+        "    delegation_default_permission_mode: bypassPermissions\n"
+    )
+    with capture_logs() as logs:
+        proposal = _propose(service, "tools:\n", block + "tools:\n")
+    assert (
+        "⚠ tool_overrides.delegate_subagent_task: (absent) → "
+        '{"delegation_default_permission_mode": "bypassPermissions"} [note: this RAISES the '
+        "sub-agent permission ceiling]"
+    ) in proposal.summary
+    (warning,) = [e for e in logs if e["event"] == "capability_edit.permission_ceiling_raised"]
+    assert warning["log_level"] == "warning" and warning["capability_id"] == "editable"
+    assert warning["paths"] == ["tool_overrides.delegate_subagent_task"]
+    # A narrower mode is neither noted nor logged.
+    with capture_logs() as logs:
+        proposal = _propose(
+            service, "tools:\n", block.replace("bypassPermissions", "plan") + "tools:\n"
+        )
+    assert "RAISES" not in proposal.summary
+    assert not [e for e in logs if e["event"] == "capability_edit.permission_ceiling_raised"]
+
+
 _SECRET = "ghp_SECRETVALUE123"
 _WITH_ENV = (
     EDITABLE

@@ -67,6 +67,7 @@ from typing import Any
 from assistant.core.capabilities.prompt_diff import prompt_diff, split_parts
 from assistant.core.capabilities.schemas import CapabilityDefinition
 from assistant.core.capabilities.text_safety import escape_char, escape_unsafe, utf16_len
+from assistant.subagents.permission_modes import DEFAULT_PERMISSION_MODE, PERMISSION_MODE_RANK
 
 SENSITIVE_WARNING = (
     "⚠ Security-sensitive changes (tools / overrides / MCP / permissions): every ⚠ line "
@@ -83,6 +84,10 @@ INHERITED_NOTE = (
     " [note: a removed tool override is inherited, not cleared: another override of this "
     "tool or tools.yaml applies"
 )
+# A line that sets a wider sub-agent permission mode than before (the built-in default
+# when it was not set): the mode is the sub-agents' ceiling, up to bypassPermissions.
+PERMISSION_RAISED_NOTE = " [note: this RAISES the sub-agent permission ceiling]"
+_PERMISSION_FIELD = "delegation_default_permission_mode"
 # What a removed field means when nothing else sets it, where that is wider than expected.
 UNSET_MEANS = {
     "delegation_default_permission_mode": "the built-in auto, the second-widest mode",
@@ -539,7 +544,40 @@ def render_change(change: _Change) -> str:
         line += UNRESTRICTED_NOTE
     if change.new is _ABSENT:
         line += inherited_note(change.keys, change.old)
+    if raises_permission_mode(change):
+        line += PERMISSION_RAISED_NOTE
     return line
+
+
+def raises_permission_mode(change: _Change) -> bool:
+    """``change`` sets a ``delegation_default_permission_mode`` wider than the old one
+    at the same place (the built-in default where there was none)."""
+    old = _permission_modes(change.keys, change.old)
+    default = PERMISSION_MODE_RANK[DEFAULT_PERMISSION_MODE]
+    return any(
+        PERMISSION_MODE_RANK.get(mode, -1) > PERMISSION_MODE_RANK.get(old.get(keys, ""), default)
+        for keys, mode in _permission_modes(change.keys, change.new).items()
+    )
+
+
+def permission_raises(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    """Paths of the changes between two manifest dumps that raise a permission mode."""
+    return [c.path for c in diff_manifests(old, new) if c.sensitive and raises_permission_mode(c)]
+
+
+def _permission_modes(keys: tuple[str, ...], value: Any) -> dict[tuple[str, ...], Any]:
+    """Every ``delegation_default_permission_mode`` value at or below ``keys``."""
+    if keys and keys[-1] == _PERMISSION_FIELD:
+        return {keys: value}
+    found: dict[tuple[str, ...], Any] = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found.update(_permission_modes((*keys, str(key)), item))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            ident = item.get("tool_id") if isinstance(item, dict) else None
+            found.update(_permission_modes((*keys, str(ident or index)), item))
+    return found
 
 
 def inherited_note(keys: tuple[str, ...], old: Any) -> str:
