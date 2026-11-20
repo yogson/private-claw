@@ -37,6 +37,11 @@ from assistant.store.models import (
 )
 from assistant.store.runtime.manager import StoreRuntimeManager
 
+# Records that carry a synthetic turn_id and never get a TURN_TERMINAL; not real turns.
+_NON_TURN_RECORD_TYPES = frozenset(
+    {SessionRecordType.COMPACTION_SUMMARY, SessionRecordType.SYSTEM_MESSAGE}
+)
+
 
 class StoreFacade(StoreFacadeInterface):
     """
@@ -196,6 +201,8 @@ class StoreFacade(StoreFacadeInterface):
             turn_ids: set[str] = set()
             terminal_turns: set[str] = set()
             for record in records:
+                if record.record_type in _NON_TURN_RECORD_TYPES:
+                    continue
                 turn_ids.add(record.turn_id)
                 if record.record_type == SessionRecordType.TURN_TERMINAL:
                     terminal_turns.add(record.turn_id)

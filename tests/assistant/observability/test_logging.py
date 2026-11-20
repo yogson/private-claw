@@ -2,6 +2,9 @@
 
 import json
 import logging
+import subprocess
+import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -95,3 +98,44 @@ def test_configure_logging_omits_instance_by_default(app_config: AppConfig) -> N
     structlog.get_logger("test").info("plain")
     parsed = json.loads(log_path.read_text().strip())
     assert "instance" not in parsed
+
+
+def test_configure_logging_keeps_tracebacks_without_structlog_warning(
+    app_config: AppConfig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No format_exc_info/pretty-exceptions UserWarning; file and console keep tracebacks."""
+    log_path = configure_logging(app_config)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            raise ValueError("boom-structlog")
+        except ValueError:
+            structlog.get_logger("test").exception("structlog failed")
+        try:
+            raise ValueError("boom-stdlib")
+        except ValueError:
+            logging.getLogger("foreign").exception("stdlib failed")
+
+    lines = [json.loads(line) for line in log_path.read_text().splitlines()]
+    by_event = {line["event"]: line for line in lines}
+    assert "boom-structlog" in by_event["structlog failed"]["exception"]
+    assert "boom-stdlib" in by_event["stdlib failed"]["exception"]
+    console = capsys.readouterr().err
+    assert "Traceback" in console or "boom-structlog" in console
+    assert "boom-stdlib" in console
+
+
+def test_asyncio_iscoroutinefunction_deprecation_is_suppressed() -> None:
+    """Importing the logging bootstrap filters only the uvloop-originated warning."""
+    code = (
+        "import asyncio, warnings\n"
+        "warnings.simplefilter('always')\n"
+        "import assistant.observability.logging\n"
+        "asyncio.iscoroutinefunction(lambda: None)\n"
+        "warnings.warn('other deprecation', DeprecationWarning)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    assert "other deprecation" in result.stderr
+    assert "iscoroutinefunction" not in result.stderr
