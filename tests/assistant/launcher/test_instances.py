@@ -68,6 +68,27 @@ def test_parse_empty_file_has_no_instances(tmp_path: Path) -> None:
     assert parse_instances({"instances": None}, tmp_path) == []
 
 
+def test_parse_accepts_the_classic_port_and_data_dir(tmp_path: Path) -> None:
+    """Any instance may take port 8000 and ./data (migrating the old main instance)."""
+    (spec,) = parse_instances(
+        {"instances": {"main": {"port": 8000, "token_env": "TG_MAIN", "data_dir": "data"}}},
+        tmp_path,
+    )
+
+    assert spec.port == 8000
+    assert spec.data_dir == (tmp_path / "data").resolve()
+    assert spec.pid_file == (tmp_path / "data/run/uvicorn.pid").resolve()
+
+
+def test_example_file_parses(tmp_path: Path) -> None:
+    example = Path(__file__).parents[3] / "config" / "instances.example.yaml"
+
+    specs = parse_instances(yaml.safe_load(example.read_text()), tmp_path)
+
+    main = next(s for s in specs if s.name == "main")
+    assert (main.port, main.data_dir) == (8000, (tmp_path / "data").resolve())
+
+
 def test_parse_reports_every_problem(tmp_path: Path) -> None:
     problems = _problems(
         {
@@ -92,7 +113,7 @@ def test_parse_reports_every_problem(tmp_path: Path) -> None:
     assert "noport: port must be an integer" in text
     assert "prefixed: token_env 'ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN_X' must not start" in text
     assert "lowerprefix: token_env 'assistant_tok' must not start" in text
-    assert "host: unknown key 'host' (extra instances always bind 127.0.0.1)" in text
+    assert "host: unknown key 'host' (instances always bind 127.0.0.1)" in text
     assert "reserved: env key 'ASSISTANT_APP_DATA_ROOT' is set by the launcher" in text
     assert "boolport: port must be an integer" in text
     assert "notmap: expected a mapping" in text

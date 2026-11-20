@@ -1,7 +1,7 @@
 """
 Component ID: CMP_OPS_INSTANCE_LAUNCHER
 
-Process handling for extra instances: PID files, checking that a PID still belongs
+Process handling for launcher instances: PID files, checking that a PID still belongs
 to the instance's uvicorn, spawning detached uvicorn processes, stopping them, and
 polling ``/health/live``.
 """
