@@ -229,3 +229,46 @@ class TestAgentNodeDomain:
 
         cfg = AgentNodeConfig(**raw)
         assert cfg.enabled is False
+
+
+class TestRecapDomain:
+    """recap.yaml is optional: absent means built-in defaults (recap on, Haiku)."""
+
+    def test_missing_file_loads_defaults(self, config_dir: Path) -> None:
+        assert not (config_dir / "recap.yaml").exists()
+        cfg = ConfigLoader(config_dir).load()
+        assert cfg.recap.enabled is True
+        assert cfg.recap.model_id == "claude-haiku-4-5"
+
+    def test_yaml_override_is_honored(self, config_dir: Path) -> None:
+        (config_dir / "recap.yaml").write_text(
+            yaml.dump(
+                {
+                    "enabled": False,
+                    "model_id": "claude-sonnet-4-6",
+                    "max_tokens": 256,
+                    "max_input_chars": 5000,
+                    "prompt": "Recap briefly.",
+                }
+            )
+        )
+        cfg = ConfigLoader(config_dir).load()
+        assert cfg.recap.enabled is False
+        assert cfg.recap.model_id == "claude-sonnet-4-6"
+        assert cfg.recap.max_tokens == 256
+        assert cfg.recap.max_input_chars == 5000
+        assert cfg.recap.prompt == "Recap briefly."
+
+    def test_invalid_present_file_fails_startup(self, config_dir: Path) -> None:
+        (config_dir / "recap.yaml").write_text(yaml.dump({"max_tokens": 1}))
+        with pytest.raises(ConfigLoadError, match="recap.yaml"):
+            ConfigLoader(config_dir).load()
+
+    def test_repo_config_is_valid(self) -> None:
+        raw = yaml.safe_load(Path("config/recap.yaml").read_text())
+        from assistant.core.config.schemas import RecapConfig
+
+        cfg = RecapConfig(**raw)
+        assert cfg.enabled is True
+        assert cfg.model_id == "claude-haiku-4-5"
+        assert cfg.prompt == ""
