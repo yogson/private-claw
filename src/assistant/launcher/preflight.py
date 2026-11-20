@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from assistant.launcher.instances import (
+    _RESERVED_ENV,
     INSTANCE_HOST,
     InstanceSpec,
     LauncherError,
@@ -36,8 +37,19 @@ def preflight(
     get ``""``; if they are also ingress-only (``agent_node: true``), the agent-node
     config must be usable, or they would serve nothing. Raises LauncherError listing
     every problem.
+
+    The app reads ``ASSISTANT_*`` overrides case-insensitively, and the child's
+    ``load_dotenv()`` re-adds ``.env`` keys, so a variant such as
+    ``assistant_app_data_root`` would beat the launcher's own variable: refuse it.
     """
     problems: list[str] = []
+    for key in sorted(lookup):
+        reserved = key.upper().split("__")[0]
+        if key not in _RESERVED_ENV and reserved in _RESERVED_ENV:
+            problems.append(
+                f"'{key}' (process env or .env) would override {reserved}, "
+                "which the launcher sets per instance; remove it"
+            )
     tokens = {s.name: lookup.get(s.token_env, "").strip() for s in specs if s.token_env}
 
     for spec in to_start:

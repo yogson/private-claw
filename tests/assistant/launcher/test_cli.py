@@ -225,6 +225,44 @@ def test_up_notes_a_leftover_bare_bot_token_and_does_not_pass_it_on(
     assert tokens == [_SECRET_A, _SECRET_B]
 
 
+@pytest.mark.parametrize(
+    ("key", "reserved"),
+    [
+        ("assistant_channel_telegram_bot_token", "ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"),
+        ("assistant_app_data_root", "ASSISTANT_APP_DATA_ROOT"),
+        ("Assistant_Channel_Telegram_Enabled", "ASSISTANT_CHANNEL_TELEGRAM_ENABLED"),
+        ("assistant_agent_node_enabled", "ASSISTANT_AGENT_NODE_ENABLED"),
+        ("assistant_app_instance_name", "ASSISTANT_APP_INSTANCE_NAME"),
+        ("ASSISTANT_APP_DATA_ROOT__X", "ASSISTANT_APP_DATA_ROOT"),
+    ],
+)
+@pytest.mark.parametrize("in_dotenv", [True, False])
+def test_up_refuses_case_variants_of_launcher_variables(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+    reserved: str,
+    in_dotenv: bool,
+) -> None:
+    """The app matches ASSISTANT_* case-insensitively and the child's load_dotenv() adds
+    the variant after the launcher's variable, so it would win: refuse it up front."""
+    calls = _spawn_recorder(monkeypatch)
+    environ: dict[str, str] = {}
+    if in_dotenv:
+        with (repo / ".env").open("a") as env_file:
+            env_file.write(f"{key}=333:leaked\n")
+    else:
+        environ[key] = "333:leaked"
+
+    assert cli.main(["up"], environ=environ, repo_root=repo) == 2
+
+    assert calls == []
+    err = capsys.readouterr().err
+    assert f"'{key}' (process env or .env) would override {reserved}" in err
+    assert "leaked" not in err
+
+
 @pytest.mark.parametrize("target", ["start", "stop"])
 def test_check_single_refuses_when_instances_file_exists(
     repo: Path, capsys: pytest.CaptureFixture[str], target: str

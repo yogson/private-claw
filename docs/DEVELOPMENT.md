@@ -128,7 +128,10 @@ make down [NAME=...]     # stop all instances (or one)
   `ASSISTANT_AGENT_NODE_AUTH_TOKEN`), so it would serve nothing;
 - two instances share a port, or a port is already taken (for example by a process left
   over from `make start`);
-- two instances share a data dir.
+- two instances share a data dir;
+- the process env or `.env` has a case variant of a variable the launcher sets (see the
+  table below), e.g. `assistant_app_data_root`: the app reads `ASSISTANT_*` names
+  case-insensitively, so it would override the launcher's value.
 
 Instances that are already running are skipped. Tokens are looked up in the process env
 first, then in `.env`. `make status` prints token variable names, never token values.
