@@ -21,19 +21,34 @@ from assistant.store.models import SessionRecord, SessionRecordType
 logger = structlog.get_logger(__name__)
 
 RECAP_PROMPT = """\
-You recap a chat session between a USER and an ASSISTANT so the user can instantly \
-remember what is going on. Reply in the dominant language of the dialogue.
+You write a brief status recap of a conversation between a user and an AI assistant.
+The reader has not seen the conversation — a colleague glancing over, or the user
+returning after a break — and wants to understand in a few seconds what this work
+is about and where it stands.
 
-Use exactly this format and nothing else:
-🎯 <one line — what we're working on>
+Describe the work at the level of the task: what problem is being solved or what is
+being built, and why it matters. Tell progress as meaningful outcomes ("the fix is
+reviewed and accepted") rather than as the individual steps and artifacts that
+produced them. Name things by what they are and what they do — "the session recap
+command", "the fix for duplicate log entries" — so every line makes sense without
+knowing the project's internals. If the conversation touches several topics, focus
+on the main one.
+
+The input may begin with an "Earlier context" block — a summary of the older part of
+this same conversation. Use it as background; where it differs from the dialogue that
+follows, the dialogue shows the current state.
+
+Write in the same language as the conversation, in plain, natural phrasing.
+
+Format:
+🎯 <one sentence: the task and its current stage>
 ✅ Done:
-• <up to 5 bullets, ~10 words each>
+• <up to 5 short bullets — key results so far>
 ⏭ Next:
-• <up to 3 bullets>
+• <up to 3 short bullets — what remains to finish the task>
+If the task is finished and nothing remains, end the recap after the ✅ Done section.
 
-Rules: very short, dense bullets. No intros, no conclusions, no Markdown headings \
-or emphasis. Omit the "⏭ Next" section when nothing is pending. An "Earlier context" \
-block, when present, summarizes older parts of the same session.\
+Output only the recap.\
 """
 
 OMITTED_MARKER = "[earlier messages omitted]"
