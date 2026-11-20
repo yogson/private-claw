@@ -156,6 +156,69 @@ async def test_run_polling_stops_on_stop_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_polling_retries_delete_webhook_then_logs_started() -> None:
+    """A transient delete_webhook failure is retried and polling still logs started."""
+    config = _make_config()
+    adapter = TelegramAdapter(config)
+    stop = asyncio.Event()
+    stop.set()
+
+    with (
+        patch("assistant.channels.telegram.polling.Bot") as mock_bot_cls,
+        patch("assistant.channels.telegram.polling.asyncio.sleep", new_callable=AsyncMock),
+        capture_logs() as logs,
+    ):
+        mock_bot = MagicMock()
+        mock_bot.get_updates = AsyncMock(return_value=[])
+        mock_bot.delete_webhook = AsyncMock(
+            side_effect=[TelegramNetworkError(MagicMock(), "reset by peer"), True]
+        )
+        mock_bot.set_my_commands = AsyncMock()
+        mock_bot.set_chat_menu_button = AsyncMock()
+        mock_bot.session.close = AsyncMock()
+        mock_bot_cls.return_value = mock_bot
+
+        await run_polling(adapter, config, AsyncMock(), stop_event=stop)
+
+    assert mock_bot.delete_webhook.call_count == 2
+    events = [entry["event"] for entry in logs]
+    assert events.count("telegram.polling.delete_webhook_failed") == 1
+    assert "telegram.polling.started" in events
+
+
+@pytest.mark.asyncio
+async def test_run_polling_logs_started_even_when_delete_webhook_always_fails() -> None:
+    """After exhausting retries polling still starts and logs telegram.polling.started."""
+    config = _make_config()
+    adapter = TelegramAdapter(config)
+    stop = asyncio.Event()
+    stop.set()
+
+    with (
+        patch("assistant.channels.telegram.polling.Bot") as mock_bot_cls,
+        patch("assistant.channels.telegram.polling.asyncio.sleep", new_callable=AsyncMock),
+        capture_logs() as logs,
+    ):
+        mock_bot = MagicMock()
+        mock_bot.get_updates = AsyncMock(return_value=[])
+        mock_bot.delete_webhook = AsyncMock(
+            side_effect=TelegramNetworkError(MagicMock(), "reset by peer")
+        )
+        mock_bot.set_my_commands = AsyncMock()
+        mock_bot.set_chat_menu_button = AsyncMock()
+        mock_bot.session.close = AsyncMock()
+        mock_bot_cls.return_value = mock_bot
+
+        await run_polling(adapter, config, AsyncMock(), stop_event=stop)
+
+    assert mock_bot.delete_webhook.call_count == 3
+    events = [entry["event"] for entry in logs]
+    assert events.count("telegram.polling.delete_webhook_failed") == 3
+    assert "telegram.polling.started" in events
+    mock_bot.set_my_commands.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_configure_bot_commands_menu_registers_expected_commands() -> None:
     """Verifies native Telegram commands menu is configured on startup."""
     bot = MagicMock()

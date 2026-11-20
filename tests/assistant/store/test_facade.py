@@ -142,6 +142,52 @@ async def test_recovery_scan_repairs_incomplete_turns(data_root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_recovery_scan_ignores_compaction_summary_records(data_root: Path) -> None:
+    """A compaction summary has a synthetic turn_id and no terminal; it is not repaired."""
+    store = StoreFacade(data_root)
+    await store.initialize()
+
+    now = datetime.now(UTC)
+    await store.sessions.append(
+        [
+            SessionRecord(
+                session_id="test-session",
+                sequence=0,
+                event_id="compaction-1",
+                turn_id="compaction-2026-01-01T00:00:00",
+                timestamp=now,
+                record_type=SessionRecordType.COMPACTION_SUMMARY,
+                payload={"message_id": "s1", "content": "summary", "scope": "session"},
+            ),
+            SessionRecord(
+                session_id="test-session",
+                sequence=1,
+                event_id="event-1",
+                turn_id="turn-1",
+                timestamp=now,
+                record_type=SessionRecordType.USER_MESSAGE,
+                payload={"message_id": "m1", "content": "hello"},
+            ),
+            SessionRecord(
+                session_id="test-session",
+                sequence=2,
+                event_id="event-2",
+                turn_id="turn-1",
+                timestamp=now,
+                record_type=SessionRecordType.TURN_TERMINAL,
+                payload={"status": "completed"},
+            ),
+        ]
+    )
+
+    marker = await store.run_recovery_scan()
+
+    assert marker.issues_found == 0
+    assert marker.issues_repaired == 0
+    assert len(await store.sessions.read_session("test-session")) == 3
+
+
+@pytest.mark.asyncio
 async def test_recovery_scan_multiple_incomplete_turns(data_root: Path) -> None:
     """Recovery scan repairs all incomplete turns in a session."""
     store = StoreFacade(data_root)

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import EditMessageText, SendMessage
+from structlog.testing import capture_logs
 
 from assistant.channels.telegram.egress import TelegramEgress, TelegramSendError
 from assistant.channels.telegram.models import ActionButton, ChannelResponse, MessageType
@@ -73,6 +74,77 @@ class TestTelegramEgresSend:
         assert result is True
         kwargs = mock_send.call_args.kwargs
         assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_parse_entities_error_is_retried_once_as_plain_text(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=3, base_delay=0.0)
+        response = _make_text_response().model_copy(
+            update={"text": "bad *markdown_", "parse_mode": "Markdown"}
+        )
+        parse_error = TelegramBadRequest(
+            _send_method(), "Bad Request: can't parse entities: Can't find end of the entity"
+        )
+        with (
+            patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send,
+            capture_logs() as logs,
+        ):
+            mock_send.side_effect = [parse_error, None]
+            result = await egress.send(response, chat_id=123)
+
+        assert result is True
+        assert mock_send.call_count == 2
+        assert mock_send.call_args_list[0].kwargs["parse_mode"] == "Markdown"
+        retry_kwargs = mock_send.call_args_list[1].kwargs
+        assert retry_kwargs["text"] == "bad *markdown_"
+        assert "parse_mode" not in retry_kwargs
+        assert "entities" not in retry_kwargs
+        assert any(entry["event"] == "telegram.egress.plain_text_fallback" for entry in logs)
+
+    @pytest.mark.asyncio
+    async def test_parse_entities_error_with_single_attempt_still_resends_plain_text(
+        self,
+    ) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=1)
+        response = _make_text_response().model_copy(
+            update={"text": "bad *markdown_", "parse_mode": "Markdown"}
+        )
+        parse_error = TelegramBadRequest(_send_method(), "Bad Request: can't parse entities")
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            mock_send.side_effect = [parse_error, None]
+            result = await egress.send(response, chat_id=123)
+
+        assert result is True
+        assert mock_send.call_count == 2
+        retry_kwargs = mock_send.call_args_list[1].kwargs
+        assert "parse_mode" not in retry_kwargs
+        assert "entities" not in retry_kwargs
+
+    @pytest.mark.asyncio
+    async def test_parse_entities_error_on_last_attempt_still_resends_plain_text(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", base_delay=0.0)
+        response = _make_text_response().model_copy(
+            update={"text": "bad *markdown_", "parse_mode": "Markdown"}
+        )
+        network_error = TelegramNetworkError(_send_method(), "network down")
+        parse_error = TelegramBadRequest(_send_method(), "Bad Request: can't parse entities")
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            mock_send.side_effect = [network_error, network_error, parse_error, None]
+            result = await egress.send(response, chat_id=123)
+
+        assert result is True
+        assert mock_send.call_count == 4
+        assert "parse_mode" not in mock_send.call_args_list[3].kwargs
+
+    @pytest.mark.asyncio
+    async def test_parse_entities_error_on_plain_text_fails_without_second_fallback(self) -> None:
+        egress = TelegramEgress(bot_token="12345:test-token", max_attempts=3, base_delay=0.0)
+        response = _make_text_response().model_copy(update={"parse_mode": "Markdown"})
+        parse_error = TelegramBadRequest(_send_method(), "Bad Request: can't parse entities")
+        with patch.object(egress._bot, "send_message", new_callable=AsyncMock) as mock_send:
+            mock_send.side_effect = parse_error
+            with pytest.raises(TelegramSendError):
+                await egress.send(response, chat_id=123)
+        assert mock_send.call_count == 2
 
     @pytest.mark.asyncio
     async def test_long_text_send_is_split_into_multiple_messages(self) -> None:

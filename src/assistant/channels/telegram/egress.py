@@ -34,6 +34,7 @@ logger = structlog.get_logger(__name__)
 _MAX_RETRY_ATTEMPTS = 3
 _RETRY_BASE_DELAY_SECONDS = 1.0
 _RETRY_BACKOFF_FACTOR = 2.0
+_PARSE_ENTITIES_ERROR: Final[str] = "can't parse entities"
 _CALLBACK_ACK_TEXT: Final[str] = "Received."
 _TELEGRAM_MAX_MESSAGE_LENGTH: Final[int] = 4096
 _CALLBACK_ANSWER_MAX_LENGTH: Final[int] = 200
@@ -94,10 +95,14 @@ class TelegramEgress:
             text_chunks = self._split_text(response.text)
             formatted_chunks = [(chunk, []) for chunk in text_chunks]
 
+        plain_fallback = False
         sent_chunks = 0
         total_chunks = len(formatted_chunks)
         base_reply_markup = self._build_reply_markup(response)
-        for attempt in range(1, self._max_attempts + 1):
+        attempt_limit = self._max_attempts
+        attempt = 0
+        while attempt < attempt_limit:
+            attempt += 1
             attempts_made = attempt
             if self._audit_logger is not None:
                 self._audit_logger.log_egress_attempt(
@@ -117,7 +122,9 @@ class TelegramEgress:
                         "text": chunk_text,
                         "reply_markup": reply_markup,
                     }
-                    if chunk_entities:
+                    if plain_fallback:
+                        pass
+                    elif chunk_entities:
                         send_kwargs["entities"] = chunk_entities
                     else:
                         send_kwargs["parse_mode"] = response.parse_mode
@@ -165,7 +172,7 @@ class TelegramEgress:
                         retry_after=exc.retry_after,
                         error=last_error,
                     )
-                if attempt < self._max_attempts:
+                if attempt < attempt_limit:
                     await asyncio.sleep(float(exc.retry_after))
                 continue
             except TelegramNetworkError as exc:
@@ -187,6 +194,24 @@ class TelegramEgress:
                     )
             except TelegramAPIError as exc:
                 last_error = str(exc)
+                if (
+                    isinstance(exc, TelegramBadRequest)
+                    and _PARSE_ENTITIES_ERROR in last_error.lower()
+                    and not plain_fallback
+                ):
+                    # Markup rejected by Telegram: resend the same text once, unformatted,
+                    # on an extra attempt so it works even when retries are used up.
+                    plain_fallback = True
+                    attempt_limit += 1
+                    logger.warning(
+                        "telegram.egress.plain_text_fallback",
+                        chat_id=chat_id,
+                        response_id=response.response_id,
+                        trace_id=response.trace_id,
+                        attempt=attempt,
+                        error=last_error,
+                    )
+                    continue
                 if self._audit_logger is not None:
                     self._audit_logger.log_egress_api_error(
                         chat_id=chat_id,
@@ -204,7 +229,7 @@ class TelegramEgress:
                     )
                 break
 
-            if attempt < self._max_attempts:
+            if attempt < attempt_limit:
                 delay = self._base_delay * (self._backoff_factor**attempt)
                 await asyncio.sleep(delay)
 

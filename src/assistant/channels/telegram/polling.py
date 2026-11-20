@@ -29,6 +29,8 @@ TelegramEventHandler = Callable[[NormalizedEvent], Awaitable[ChannelResponse | N
 _BACKOFF_MIN_SECONDS = 1.0
 _BACKOFF_MAX_SECONDS = 60.0
 _BACKOFF_FACTOR = 1.5
+_DELETE_WEBHOOK_ATTEMPTS = 3
+_DELETE_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 
 
 class CancellationRegistry:
@@ -84,12 +86,19 @@ async def run_polling(
     bot = Bot(token=config.bot_token)
     # One-time webhook disable: required for polling to receive updates.
     # (Webhook endpoint and registration are removed; this is bootstrap-only.)
-    try:
-        await bot.delete_webhook(drop_pending_updates=config.startup_drop_pending_updates)
-        logger.info("telegram.polling.started", drop_pending=config.startup_drop_pending_updates)
-    except (TelegramAPIError, TelegramNetworkError) as exc:
-        logger.warning("telegram.polling.delete_webhook_failed", error=str(exc))
-        # Continue anyway; polling may still work if no webhook was set
+    # Retried with a short backoff: simultaneous instance starts can reset connections.
+    for attempt in range(1, _DELETE_WEBHOOK_ATTEMPTS + 1):
+        try:
+            await bot.delete_webhook(drop_pending_updates=config.startup_drop_pending_updates)
+            break
+        except (TelegramAPIError, TelegramNetworkError) as exc:
+            logger.warning(
+                "telegram.polling.delete_webhook_failed", error=str(exc), attempt=attempt
+            )
+            if attempt < _DELETE_WEBHOOK_ATTEMPTS:
+                await asyncio.sleep(_DELETE_WEBHOOK_RETRY_DELAY_SECONDS * attempt)
+    # Polling starts even if delete_webhook failed; it works when no webhook was set.
+    logger.info("telegram.polling.started", drop_pending=config.startup_drop_pending_updates)
     await _configure_bot_commands_menu(bot)
 
     offset: int | None = None

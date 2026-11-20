@@ -7,6 +7,7 @@ handler. One log file per app run, stored under data_root/logs/.
 
 import logging
 import os
+import warnings
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
@@ -17,6 +18,15 @@ import structlog
 
 from assistant.core.config.schemas import AppConfig, LogLevel
 from assistant.observability.correlation import get_trace_id_from_context
+
+# uvloop (uvicorn[standard]) calls the deprecated asyncio.iscoroutinefunction inside
+# run_in_executor, so the warning fires once per asyncio.to_thread call on Python 3.14.
+# Suppress only that message; remove once uvloop uses inspect.iscoroutinefunction.
+warnings.filterwarnings(
+    "ignore",
+    message=r"'asyncio\.iscoroutinefunction' is deprecated",
+    category=DeprecationWarning,
+)
 
 
 def _log_level_to_int(level: LogLevel) -> int:
@@ -87,7 +97,6 @@ def configure_logging(app_config: AppConfig) -> Path:
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
     ]
     # Foreign pre-chain: same but WITHOUT filter_by_level. Third-party loggers
@@ -100,7 +109,6 @@ def configure_logging(app_config: AppConfig) -> Path:
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
     ]
 
@@ -117,6 +125,8 @@ def configure_logging(app_config: AppConfig) -> Path:
         foreign_pre_chain=foreign_pre_chain,  # type: ignore[arg-type]
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            # JSONRenderer does not render exc_info itself; ConsoleRenderer does.
+            structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ],
     )
