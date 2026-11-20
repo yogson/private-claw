@@ -325,7 +325,7 @@ class TestSessionRecapService:
         assert SessionRecapService(model_id="claude-haiku-4-5") is not None
 
     def test_default_prompt_requests_structure_and_language(self) -> None:
-        for marker in ("🎯", "✅ Done:", "⏭ Next:", "3–5 bullets", "up to 3 bullets"):
+        for marker in ("🎯", "✅ Done:", "⏭ Next:", "up to 5 bullets", "up to 3 bullets"):
             assert marker in RECAP_PROMPT
         assert "language of the dialogue" in RECAP_PROMPT
         assert "No intros" in RECAP_PROMPT

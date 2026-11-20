@@ -27,7 +27,7 @@ remember what is going on. Reply in the dominant language of the dialogue.
 Use exactly this format and nothing else:
 🎯 <one line — what we're working on>
 ✅ Done:
-• <3–5 bullets max, ~10 words each>
+• <up to 5 bullets, ~10 words each>
 ⏭ Next:
 • <up to 3 bullets>
 
