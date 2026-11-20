@@ -566,7 +566,10 @@ def permission_raises(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
 
 
 def _permission_modes(keys: tuple[str, ...], value: Any) -> dict[tuple[str, ...], Any]:
-    """Every ``delegation_default_permission_mode`` value at or below ``keys``."""
+    """Every ``delegation_default_permission_mode`` value at or below ``keys``, only
+    where it is a setting (not inside free-form ``claude_code_settings`` JSON)."""
+    if keys and keys[0] not in ("tool_overrides", "tools"):
+        return {}
     if keys and keys[-1] == _PERMISSION_FIELD:
         return {keys: value}
     found: dict[tuple[str, ...], Any] = {}

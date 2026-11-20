@@ -8,6 +8,7 @@ is refused. The diff is near-linear and bounded (no ``difflib.ndiff``).
 import random
 import re
 import signal
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -321,12 +322,19 @@ def _time_box(seconds: float) -> Iterator[None]:
         signal.signal(signal.SIGALRM, previous)
 
 
-@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="needs SIGALRM")
-def test_a_part_that_would_start_blank_starts_with_the_continued_label() -> None:
+@pytest.fixture(autouse=True)
+def _fail_fast_instead_of_hanging() -> Iterator[None]:
     # The pinned-label guard keeps split_parts from looping forever; a regression must
-    # fail fast, not hang the suite (N19 of #64).
-    with _time_box(5):
-        _check_continued_label()
+    # fail fast, not hang the suite (N19 of #64). No time box where SIGALRM is unusable.
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    with _time_box(10):
+        yield
+
+
+def test_a_part_that_would_start_blank_starts_with_the_continued_label() -> None:
+    _check_continued_label()
 
 
 def _check_continued_label() -> None:

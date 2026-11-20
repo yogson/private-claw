@@ -570,6 +570,20 @@ def test_raising_the_subagent_permission_ceiling_is_noted_and_logged(
     assert not [e for e in logs if e["event"] == "capability_edit.permission_ceiling_raised"]
 
 
+@pytest.mark.parametrize("value", ["[a]", "{a: 1}", "bypassPermissions"])
+def test_permission_field_inside_mcp_server_json_is_not_a_setting(
+    service: CapabilityEditService, config_dir: Path, value: str
+) -> None:
+    # Free-form MCP JSON may use the key: no crash (list/dict), no false RAISES note.
+    _manifest(config_dir).write_text(_SERVER)
+    new = f"n: 1\n      delegation_default_permission_mode: {value}\n"
+    with capture_logs() as logs:
+        proposal = _propose(service, "n: 1\n", new)
+    assert "delegation_default_permission_mode" in proposal.summary
+    assert "RAISES" not in proposal.summary
+    assert not [e for e in logs if e["event"] == "capability_edit.permission_ceiling_raised"]
+
+
 _SECRET = "ghp_SECRETVALUE123"
 _WITH_ENV = (
     EDITABLE
