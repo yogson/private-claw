@@ -357,7 +357,7 @@ class TestRecapConfig:
         cfg = RecapConfig()
         assert cfg.enabled is True
         assert cfg.model_id == "claude-haiku-4-5"
-        assert cfg.max_tokens == 512
+        assert cfg.max_tokens == 1024
         assert cfg.max_input_chars == 30_000
         assert cfg.prompt == ""
 

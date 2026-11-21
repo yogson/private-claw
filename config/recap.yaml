@@ -2,7 +2,7 @@
 # current session's dialogue in a few lines. Never persisted, never added to agent context.
 enabled: true
 model_id: claude-haiku-4-5
-max_tokens: 512
+max_tokens: 1024
 # Dialogue character budget sent to the recap model; the most recent messages are kept.
 max_input_chars: 30000
 # Custom recap system prompt. Leave empty to use the built-in default prompt.

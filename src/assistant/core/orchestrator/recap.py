@@ -172,7 +172,7 @@ class SessionRecapService:
     def __init__(
         self,
         model_id: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         max_input_chars: int = 30_000,
         prompt: str = "",
     ) -> None:
