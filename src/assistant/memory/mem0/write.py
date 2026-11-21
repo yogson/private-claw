@@ -9,6 +9,7 @@ from pathlib import Path
 from mem0 import MemoryClient
 
 from assistant.core.config.schemas import MemoryConfig
+from assistant.memory.mem0.scope import check_configured_scope
 from assistant.memory.write.intent_audit import append_audit, load_seen_intent_ids
 from assistant.memory.write.models import (
     MemoryUpdateAction,
@@ -49,8 +50,9 @@ class Mem0MemoryWriteService:
         self._data_root = Path(data_root)
         self._seen_intent_ids = load_seen_intent_ids(self._data_root)
         # mem0ai 2.x resolves org/project from the API key; the constructor no longer
-        # accepts org_id/project_id.
+        # accepts org_id/project_id, so configured values are verified instead.
         self._client = MemoryClient(api_key=config.api_key)
+        check_configured_scope(self._client, config)
         self._min_confidence = 0.5
 
     def apply_intent(self, intent: MemoryUpdateIntent, user_id: str | None = None) -> WriteAudit:
@@ -115,6 +117,8 @@ class Mem0MemoryWriteService:
             "memory_type": intent.memory_type.value,
             "intent_id": intent.intent_id,
         }
+        if intent.reason.strip():
+            metadata["reason"] = intent.reason.strip()[:300]
         if cand.tags:
             metadata["tags"] = cand.tags
         if cand.entities:

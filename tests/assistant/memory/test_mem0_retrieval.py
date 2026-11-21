@@ -59,6 +59,8 @@ def test_retrieve_maps_query_to_mem0_search(mock_client_class: MagicMock) -> Non
 @patch("assistant.memory.mem0.retrieval.MemoryClient")
 def test_client_init_ignores_org_and_project_ids(mock_client_class: MagicMock) -> None:
     """mem0ai 2.x MemoryClient no longer accepts org_id/project_id."""
+    mock_client_class.return_value.org_id = "org-1"
+    mock_client_class.return_value.project_id = "proj-1"
     config = MemoryConfig(api_key="test-key", org_id="org-1", project_id="proj-1")
     Mem0RetrievalService(config)
     mock_client_class.assert_called_once_with(api_key="test-key")

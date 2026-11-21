@@ -10,6 +10,7 @@ import structlog
 from mem0 import MemoryClient
 
 from assistant.core.config.schemas import MemoryConfig
+from assistant.memory.mem0.scope import check_configured_scope
 from assistant.memory.retrieval.models import (
     RecoveryDiagnostics,
     RetrievalAudit,
@@ -37,8 +38,9 @@ class Mem0RetrievalService:
             )
         self._config = config
         # mem0ai 2.x resolves org/project from the API key; the constructor no longer
-        # accepts org_id/project_id.
+        # accepts org_id/project_id, so configured values are verified instead.
         self._client = MemoryClient(api_key=config.api_key)
+        check_configured_scope(self._client, config)
 
     def retrieve(self, query: RetrievalQuery) -> RetrievalResult:
         """Retrieve relevant memories via Mem0 search."""

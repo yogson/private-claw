@@ -367,11 +367,11 @@ class MemoryConfig(BaseModel):
     )
     org_id: str | None = Field(
         default=None,
-        description="Unused: mem0ai 2.x resolves the org from the API key",
+        description="Must match the org the API key resolves to (checked at startup)",
     )
     project_id: str | None = Field(
         default=None,
-        description="Unused: mem0ai 2.x resolves the project from the API key",
+        description="Must match the project the API key resolves to (checked at startup)",
     )
 
 

@@ -39,7 +39,7 @@ class FakeMem0Api:
         path = request.url.path
         if request.method == "GET" and path == "/v1/ping/":
             return httpx.Response(
-                200, json={"org_id": "org-1", "project_id": "proj-1", "user_email": None}
+                200, json={"org_id": "org-x", "project_id": "proj-x", "user_email": None}
             )
         if request.method == "POST" and path == "/v3/memories/search/":
             return httpx.Response(
@@ -129,6 +129,7 @@ def test_add_uses_v3_endpoint_and_handles_event_response(
     assert payload["metadata"] == {
         "memory_type": "facts",
         "intent_id": "intent-1",
+        "reason": "user asked to remember",
         "tags": ["work"],
     }
     # One user message with only the confirmed text: no filler, no reason suffix (#58, D14).
@@ -154,3 +155,13 @@ def test_delete_uses_v1_memory_endpoint(fake_api: FakeMem0Api, tmp_path: Path) -
     request = fake_api.last("DELETE", "/v1/memories/mem-1/")
     assert "org_id" not in request.url.params
     assert audit.status == WriteStatus.DELETED
+
+
+def test_configured_project_id_mismatch_raises(fake_api: FakeMem0Api, tmp_path: Path) -> None:
+    """A configured project_id that differs from the key's resolved one fails at startup."""
+    config = MemoryConfig(api_key="test-key", project_id="proj-other")
+
+    with pytest.raises(ValueError, match="memory.project_id='proj-other' is ignored"):
+        Mem0RetrievalService(config)
+    with pytest.raises(ValueError, match="memory.project_id='proj-other' is ignored"):
+        Mem0MemoryWriteService(config, data_root=tmp_path)

@@ -83,9 +83,33 @@ def test_client_init_ignores_org_and_project_ids(
     mock_client_class: MagicMock, tmp_path: Path
 ) -> None:
     """mem0ai 2.x MemoryClient no longer accepts org_id/project_id."""
+    mock_client_class.return_value.org_id = "org-1"
+    mock_client_class.return_value.project_id = "proj-1"
     config = MemoryConfig(api_key="test-key", org_id="org-1", project_id="proj-1")
     Mem0MemoryWriteService(config, data_root=tmp_path)
     mock_client_class.assert_called_once_with(api_key="test-key")
+
+
+@patch("assistant.memory.mem0.write.MemoryClient")
+def test_upsert_without_reason_adds_no_reason_metadata(
+    mock_client_class: MagicMock, tmp_path: Path
+) -> None:
+    """An empty/blank intent reason is not stored as metadata.reason."""
+    mock_client = MagicMock()
+    mock_client.add.return_value = [{"id": "mem-1"}]
+    mock_client_class.return_value = mock_client
+    svc = Mem0MemoryWriteService(MemoryConfig(api_key="test-key"), data_root=tmp_path)
+    intent = MemoryUpdateIntent(
+        intent_id="i-noreason",
+        action=MemoryUpdateAction.UPSERT,
+        memory_type=MemoryType.FACTS,
+        reason="  ",
+        candidate=MemoryUpdateIntentCandidate(confidence=0.9, body_markdown="Fact."),
+    )
+
+    svc.apply_intent(intent, user_id="alice")
+
+    assert "reason" not in mock_client.add.call_args[1]["metadata"]
 
 
 @patch("assistant.memory.mem0.write.MemoryClient")
