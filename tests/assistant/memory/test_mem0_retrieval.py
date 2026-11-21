@@ -51,6 +51,30 @@ def test_retrieve_maps_query_to_mem0_search(mock_client_class: MagicMock) -> Non
     call_args = mock_client.search.call_args
     assert call_args[0][0] == "What are my preferences?"
     assert call_args[1]["filters"]["user_id"] == "alice"
+    # mem0ai 2.x rejects top-level entity params in search(); they must be in filters.
+    assert "user_id" not in call_args[1]
+    assert call_args[1]["top_k"] == 10
+
+
+@patch("assistant.memory.mem0.retrieval.MemoryClient")
+def test_client_init_ignores_org_and_project_ids(mock_client_class: MagicMock) -> None:
+    """mem0ai 2.x MemoryClient no longer accepts org_id/project_id."""
+    config = MemoryConfig(api_key="test-key", org_id="org-1", project_id="proj-1")
+    Mem0RetrievalService(config)
+    mock_client_class.assert_called_once_with(api_key="test-key")
+
+
+@patch("assistant.memory.mem0.retrieval.MemoryClient")
+def test_retrieve_whitespace_query_uses_default_query(mock_client_class: MagicMock) -> None:
+    """mem0ai 2.x rejects whitespace-only queries, so fall back to the default query."""
+    mock_client = MagicMock()
+    mock_client.search.return_value = {"results": []}
+    mock_client_class.return_value = mock_client
+
+    svc = Mem0RetrievalService(MemoryConfig(api_key="test-key"))
+    svc.retrieve(RetrievalQuery(user_id="alice", user_query_text="   "))
+
+    assert mock_client.search.call_args[0][0] == "relevant memories"
 
 
 @patch("assistant.memory.mem0.retrieval.MemoryClient")
