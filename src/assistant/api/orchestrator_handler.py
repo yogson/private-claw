@@ -299,9 +299,11 @@ def _build_orchestrator_handler(
                 update={"capabilities_override": capabilities_override}
             )
         notifier = None
-        if chat_id and verbose_state is not None and verbose_state.is_enabled(chat_id):
+        if chat_id and verbose_state is not None:
+            # Verbose state is checked per tool call (not once here): /verbose toggled
+            # while this turn runs applies to the remaining tool calls of the turn.
             notifier = _build_tool_call_notifier(
-                adapter, chat_id, orch_event.session_id, event.trace_id
+                adapter, chat_id, orch_event.session_id, event.trace_id, verbose_state
             )
         text_notifier = None
         if chat_id:
@@ -432,11 +434,17 @@ def _build_tool_call_notifier(
     chat_id: int,
     session_id: str,
     trace_id: str,
+    verbose_state: VerboseStateService,
 ) -> "Callable[[str, str], Awaitable[None]]":
-    """Build an async notifier that sends a verbose tool-call message to Telegram."""
-    import json as _json
+    """Build an async notifier that sends a verbose tool-call message to Telegram.
+
+    Verbose mode is checked on every call, so a toggle during a running turn applies to
+    the tool calls that follow it. A failed send never breaks the turn but is logged.
+    """
 
     async def _notifier(tool_name: str, args_json: str) -> None:
+        if not verbose_state.is_enabled(chat_id):
+            return
         try:
             args = _json.loads(args_json) if args_json and args_json != "{}" else {}
         except Exception:
@@ -452,8 +460,17 @@ def _build_tool_call_notifier(
             session_id=session_id,
             trace_id=trace_id,
         )
-        with suppress(Exception):
+        try:
             await adapter.send_response(response, chat_id=chat_id)
+        except Exception as exc:
+            logger.warning(
+                "telegram.verbose_tool_call.send_failed",
+                chat_id=chat_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                tool_name=tool_name,
+                error=str(exc),
+            )
 
     return _notifier
 

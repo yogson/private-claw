@@ -238,8 +238,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             confirmation_service=confirmations,
             capability_edit_service=capability_edit_service,
         )
+        verbose_state = VerboseStateService(
+            storage_path=data_root / "runtime" / "verbose_state.json"
+        )
         telegram_completion = _build_delegation_feedback_handler(
-            orchestrator, adapter, confirmations
+            orchestrator, adapter, confirmations, verbose_state=verbose_state
         )
         delegation_coordinator.set_question_relay_callback(_build_question_relay_handler(adapter))
 
@@ -249,9 +252,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             default_model_id=runtime_config.model.default_model_id,
         )
         cancellation_registry = CancellationRegistry()
-        verbose_state = VerboseStateService(
-            storage_path=data_root / "runtime" / "verbose_state.json"
-        )
         handler = _build_orchestrator_handler(
             adapter,
             orchestrator,
