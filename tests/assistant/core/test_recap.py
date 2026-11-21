@@ -325,12 +325,21 @@ class TestSessionRecapService:
         assert SessionRecapService(model_id="claude-haiku-4-5") is not None
 
     def test_default_prompt_requests_structure_and_language(self) -> None:
-        for marker in ("🎯", "✅ Done:", "⏭ Next:", "up to 5", "up to 3"):
+        markers = (
+            "🎯",
+            "📍",
+            "✅ Done:",
+            "⏭ Next:",
+            "2–4 sentences",
+            "up to 5",
+            "up to 3",
+            "same language as the conversation",
+            "Earlier context",
+            "nothing remains",
+            "Output only the recap.",
+        )
+        for marker in markers:
             assert marker in RECAP_PROMPT
-        assert "same language as the conversation" in RECAP_PROMPT
-        assert "Output only the recap." in RECAP_PROMPT
-        assert "Earlier context" in RECAP_PROMPT
-        assert "nothing remains" in RECAP_PROMPT
 
     @pytest.mark.parametrize("prompt", ["", "   "])
     def test_empty_prompt_uses_default(self, prompt: str) -> None:
@@ -348,7 +357,7 @@ class TestRecapConfig:
         cfg = RecapConfig()
         assert cfg.enabled is True
         assert cfg.model_id == "claude-haiku-4-5"
-        assert cfg.max_tokens == 512
+        assert cfg.max_tokens == 1024
         assert cfg.max_input_chars == 30_000
         assert cfg.prompt == ""
 

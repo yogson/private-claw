@@ -378,7 +378,7 @@ class RecapConfig(BaseModel):
 
     enabled: bool = True
     model_id: str = "claude-haiku-4-5"
-    max_tokens: int = Field(default=512, ge=64)
+    max_tokens: int = Field(default=1024, ge=64)
     max_input_chars: int = Field(
         default=30_000,
         ge=1_000,
