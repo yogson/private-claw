@@ -38,6 +38,8 @@ _COORDINATOR_SLEEP_SECONDS = 1.0
 _DEFAULT_MAX_WORKERS = 3
 _DEFAULT_BUDGET_WINDOW_SECONDS = 86400
 _DEFAULT_BACKEND = "claude_code"
+# Without a directory these would run in the process cwd: the live primary checkout.
+_DIRECTORY_REQUIRED_BACKENDS = frozenset({"claude_code", "claude_code_streaming"})
 # Timeout for waiting on an AskUserQuestion relay answer from the user.
 # claude_code_streaming.py derives its SDK stdin-close timeout from this value.
 DELEGATION_RELAY_TIMEOUT_S = 300
@@ -189,6 +191,16 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         backend_id = self._resolve_backend(request)
         if backend_id not in self._backends:
             return self._rejected("rejected_invalid", f"backend '{backend_id}' is not available")
+        raw_params = request.get("backend_params")
+        directory = raw_params.get("directory") if isinstance(raw_params, dict) else None
+        if backend_id in _DIRECTORY_REQUIRED_BACKENDS and not (
+            isinstance(directory, str) and directory.strip()
+        ):
+            return self._rejected(
+                "rejected_invalid",
+                f"directory is required for backend '{backend_id}': pass the absolute path "
+                "of the project (or folder) the sub-agent should work in",
+            )
 
         tool_params = request.get("tool_params", {})
         model_id = self._resolve_model_id(request, tool_params)
@@ -306,7 +318,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
     ) -> ResolvedWorkspace | None:
         """Apply the workspace mode; rewrites ``backend_params["directory"]`` to the cwd.
 
-        Requests without a directory keep the old behaviour (no workspace handling).
+        Requests without a directory (non-Claude-Code backends only) get no workspace.
         """
         workspace_request = WorkspaceRequest.parse(request.get("workspace"))
         directory = backend_params.get("directory")

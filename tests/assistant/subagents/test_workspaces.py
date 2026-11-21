@@ -206,6 +206,27 @@ async def test_explicit_base_and_default_base_config(tmp_path: Path, repo: Path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base",
+    ["origin/+master:refs/heads/victim", "origin/--upload-pack=touch {marker};false"],
+)
+async def test_base_cannot_act_as_refspec_or_option(tmp_path: Path, repo: Path, base: str) -> None:
+    git(repo, "checkout", "-q", "-b", "victim")
+    victim_sha = commit(repo, "local-only.txt")
+    git(repo, "checkout", "-q", "master")
+    push_from_other_clone(tmp_path, "upstream.txt")
+    marker = tmp_path / "marker"
+    mgr = manager(tmp_path)
+
+    with pytest.raises(WorkspaceError, match="invalid base"):
+        await resolve(mgr, "t1", repo, branch="feat/x", base=base.format(marker=marker))
+
+    assert git(repo, "rev-parse", "refs/heads/victim") == victim_sha
+    assert not marker.exists()
+    assert len(git(repo, "worktree", "list").splitlines()) == 1  # nothing was created
+
+
+@pytest.mark.asyncio
 async def test_auto_branch_name_and_subdirectory(tmp_path: Path, repo: Path) -> None:
     mgr = manager(tmp_path)
     ws = await resolve(mgr, "dlg-abc", repo / "pkg")
@@ -333,6 +354,11 @@ async def test_different_branches_get_different_worktrees(tmp_path: Path, repo: 
         ({"mode": "in_place", "base": "origin/master"}, "only to workspace_mode 'worktree'"),
         ({"mode": 3}, "must be a string"),
         ("worktree", "must be an object"),
+        ({"base": "origin/+master:refs/heads/victim"}, "invalid base"),
+        ({"base": "origin/--upload-pack=touch x"}, "invalid base"),
+        ({"base": "-master"}, "invalid base"),
+        ({"base": "origin/a..b"}, "invalid base"),
+        ({"base": "origin/master^{tree}"}, "invalid base"),
     ],
 )
 def test_workspace_request_validation(raw: object, message: str) -> None:
@@ -525,6 +551,24 @@ async def test_uncommitted_changes_block_cleanup(tmp_path: Path, repo: Path) -> 
     (Path(ws.directory) / "new-untracked.txt").write_text("x")
     assert [r.reason for r in await mgr.reconcile()] == ["uncommitted changes"]
     assert Path(ws.directory).exists()
+
+
+@pytest.mark.asyncio
+async def test_untracked_file_blocks_ttl_cleanup_whatever_git_config(
+    tmp_path: Path, repo: Path
+) -> None:
+    git(repo, "config", "status.showUntrackedFiles", "no")
+    mgr = manager(tmp_path)
+    ws = await resolve(mgr, "t1", repo, branch="feat/precious")
+    precious = Path(ws.directory) / "precious.txt"
+    precious.write_text("x")
+    await mgr.release("t1")
+    age_state(mgr, ws, days=30)
+
+    assert [(r.action, r.reason) for r in await mgr.reconcile()] == [
+        ("kept", "uncommitted changes")
+    ]
+    assert precious.exists()
 
 
 @pytest.mark.asyncio
@@ -767,8 +811,8 @@ async def test_coordinator_workspace_validation(tmp_path: Path, repo: Path) -> N
     )
     try:
         no_dir = await _enqueue(coordinator, None, mode="worktree")
-        assert no_dir["status"] == "rejected_workspace"
-        assert "need a directory" in no_dir["rejection_reason"]
+        assert no_dir["status"] == "rejected_invalid"
+        assert "directory is required" in no_dir["rejection_reason"]
         bad_mode = await _enqueue(coordinator, repo, mode="scratch")
         assert bad_mode["status"] == "rejected_workspace"
         readonly = await _enqueue(coordinator, repo, mode="readonly")
@@ -776,9 +820,56 @@ async def test_coordinator_workspace_validation(tmp_path: Path, repo: Path) -> N
         assert task is not None
         assert task.metadata["backend_params"]["directory"] == str(repo)
         assert task.metadata["workspace"]["mode"] == "readonly"
-        legacy = await _enqueue(coordinator, None)
-        legacy_task = await coordinator.get_task(legacy["task_id"])
-        assert legacy_task is not None and "workspace" not in legacy_task.metadata
+    finally:
+        await store.shutdown()
+
+
+class _OtherBackend(_RecordingBackend):
+    @property
+    def backend_id(self) -> str:
+        return "other_backend"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_id", ["claude_code", "claude_code_streaming"])
+async def test_claude_code_delegation_without_directory_is_rejected(
+    tmp_path: Path, backend_id: str
+) -> None:
+    class _Backend(_RecordingBackend):
+        @property
+        def backend_id(self) -> str:
+            return backend_id
+
+    store = StoreFacade(data_root=tmp_path / "data")
+    await store.initialize()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=make_config(tmp_path / "data"),
+        backends=[_Backend(), _OtherBackend()],
+        workspaces=manager(tmp_path),
+    )
+    try:
+        for backend_params in (None, {}, {"directory": "  "}):
+            request: dict[str, Any] = {"objective": "Do it", "backend": backend_id}
+            if backend_params is not None:
+                request["backend_params"] = backend_params
+            result = await coordinator.enqueue_from_tool(
+                session_id="tg:1", turn_id="turn", trace_id="trace", user_id="u", request=request
+            )
+            assert result["status"] == "rejected_invalid"
+            assert "directory is required" in result["rejection_reason"]
+        assert await store.tasks.list_by_status(TaskStatus.PENDING) == []
+        # Other backends keep running without a directory (no workspace handling).
+        other = await coordinator.enqueue_from_tool(
+            session_id="tg:1",
+            turn_id="turn",
+            trace_id="trace",
+            user_id="u",
+            request={"objective": "Do it", "backend": "other_backend"},
+        )
+        assert other["accepted"] is True
+        other_task = await coordinator.get_task(other["task_id"])
+        assert other_task is not None and "workspace" not in other_task.metadata
     finally:
         await store.shutdown()
 

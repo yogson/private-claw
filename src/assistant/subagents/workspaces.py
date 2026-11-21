@@ -75,6 +75,18 @@ class WorkspaceError(Exception):
         self.retryable = retryable
 
 
+_UNSAFE_REF_PARTS = ("..", "@{", ":", "+", "~", "^", "?", "*", "[", "\\")
+
+
+def _is_safe_ref(ref: str) -> bool:
+    """A plain ref name that git can never read as an option or a refspec."""
+    return (
+        not ref.startswith("-")
+        and not any(ch.isspace() or not ch.isprintable() for ch in ref)
+        and not any(part in ref for part in _UNSAFE_REF_PARTS)
+    )
+
+
 class WorkspaceRequest(BaseModel):
     """The ``workspace`` part of a delegation request."""
 
@@ -102,6 +114,9 @@ class WorkspaceRequest(BaseModel):
         if mode is not None and mode not in {m.value for m in WorkspaceMode}:
             allowed = ", ".join(m.value for m in WorkspaceMode)
             raise WorkspaceError(f"unknown workspace_mode '{mode}' (allowed: {allowed})")
+        base = values.get("base")
+        if base is not None and not _is_safe_ref(base):
+            raise WorkspaceError(f"invalid base '{base}': expected a branch like origin/main")
         request = cls(**values)
         if request.mode not in (None, WorkspaceMode.WORKTREE) and (request.branch or request.base):
             raise WorkspaceError("branch and base apply only to workspace_mode 'worktree'")
@@ -479,7 +494,8 @@ class WorkspaceManager:
                 repo_root,
                 "fetch",
                 remote,
-                remote_branch,
+                "--end-of-options",
+                _fetch_refspec(remote, remote_branch),
                 timeout=git_inspect.GIT_FETCH_TIMEOUT_SECONDS,
             )
             if not fetched.ok:
@@ -506,7 +522,8 @@ class WorkspaceManager:
                     repo_root,
                     "fetch",
                     origin,
-                    branch,
+                    "--end-of-options",
+                    _fetch_refspec(origin, branch),
                     timeout=git_inspect.GIT_FETCH_TIMEOUT_SECONDS,
                 )
                 if await git_inspect.resolve_ref(repo_root, f"refs/remotes/{origin}/{branch}"):
@@ -829,7 +846,7 @@ class WorkspaceManager:
                 return report("kept", "uncommitted changes"), gh_available
             if await self._has_unpushed(str(worktree), pr):
                 return report("kept", "unpushed commits"), gh_available
-            if not await git_inspect.worktree_remove(repo_root, str(worktree)):
+            if not await git_inspect.worktree_remove_clean(repo_root, str(worktree)):
                 return report("kept", "git worktree remove failed"), gh_available
             self._forget(worktree)
             why = f"PR {pr_state.lower()}" if pr_state in ("MERGED", "CLOSED") else "TTL expired"
@@ -897,6 +914,11 @@ class WorkspaceManager:
             return int(out) > 0
         except ValueError:
             return True
+
+
+def _fetch_refspec(remote: str, branch: str) -> str:
+    """Fetch only ``branch`` into its remote-tracking ref, never into a local branch."""
+    return f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
 
 
 def _parse_time(value: object) -> datetime | None:

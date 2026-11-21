@@ -112,6 +112,11 @@ async def worktree_remove(repo: str, worktree: str) -> bool:
     return await _git(repo, "worktree", "remove", "--force", worktree) is not None
 
 
+async def worktree_remove_clean(repo: str, worktree: str) -> bool:
+    """Remove the worktree only if git agrees it is clean (no ``--force``)."""
+    return await _git(repo, "worktree", "remove", worktree) is not None
+
+
 async def diff_stat(path: str, before: str, after: str) -> str | None:
     stat = await _git(path, "diff", "--stat", f"{before}..{after}")
     return stat or None
@@ -152,7 +157,10 @@ async def worktree_list(repo: str) -> list[dict[str, str]] | None:
 
 async def has_uncommitted_changes(path: str) -> bool | None:
     """Modified, staged or untracked (not ignored) files in ``path``; None if unknown."""
-    result = await run_git(path, "status", "--porcelain")
+    # Explicit flags so status.showUntrackedFiles / submodule config cannot hide changes.
+    result = await run_git(
+        path, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"
+    )
     if not result.ok:
         return None
     return bool(result.stdout)
