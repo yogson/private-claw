@@ -7,7 +7,9 @@ from assistant.api.confirmation_handler import (
     deliver_with_confirmations,
     discard_confirmations_on_error,
 )
+from assistant.api.orchestrator_handler import _build_tool_call_notifier
 from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
+from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.confirmation import ConfirmationService
 from assistant.core.events.models import (
     SYSTEM_USER_ID,
@@ -24,6 +26,7 @@ def _build_delegation_feedback_handler(
     orchestrator: Orchestrator,
     adapter: TelegramAdapter,
     confirmations: ConfirmationService | None = None,
+    verbose_state: VerboseStateService | None = None,
 ) -> Callable[[TaskRecord], Awaitable[None]]:
     async def _handler(task: TaskRecord) -> None:
         session_id = task.parent_session_id
@@ -68,6 +71,12 @@ def _build_delegation_feedback_handler(
             metadata={"delegation_feedback": True, "task_id": task.task_id},
             capabilities_override=capabilities_override,
         )
+        chat_id = DelegationCoordinator._chat_id_from_session(session_id)
+        # The follow-up turn runs the full agent with tools: in verbose mode its tool calls
+        # must be shown like those of a user-initiated turn.
+        notifier = None
+        if chat_id and verbose_state is not None and verbose_state.is_enabled(chat_id):
+            notifier = _build_tool_call_notifier(adapter, chat_id, session_id, trace_id)
         logfire_ctx = task.metadata.get("logfire_context")
         with ExitStack() as stack:
             if isinstance(logfire_ctx, dict) and logfire_ctx:
@@ -77,11 +86,10 @@ def _build_delegation_feedback_handler(
                     stack.enter_context(logfire.attach_context(logfire_ctx))
                 except Exception:
                     pass
-            result_msg = await orchestrator.execute_turn(event)
+            result_msg = await orchestrator.execute_turn(event, tool_call_notifier=notifier)
         if result_msg is None:
             return
         async with discard_confirmations_on_error(confirmations, result_msg.confirmations):
-            chat_id = DelegationCoordinator._chat_id_from_session(session_id)
             response: ChannelResponse | None = None
             if result_msg.pending_ask is not None:
                 prompt_text = result_msg.pending_ask.question

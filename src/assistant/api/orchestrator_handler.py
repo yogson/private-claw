@@ -17,6 +17,7 @@ from assistant.channels.telegram import ChannelResponse, NormalizedEvent, Telegr
 from assistant.channels.telegram.models import EventType
 from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
+from assistant.core.capabilities.text_safety import utf16_len
 from assistant.core.confirmation import ConfirmationService
 from assistant.core.events.mapper import NormalizedEventMapper
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
@@ -427,33 +428,90 @@ def _build_turn_response(
     return build_text_channel_response(text=response_text, session_id=session_id, trace_id=trace_id)
 
 
+# Room for the tool-call args preview, in UTF-16 units (how Telegram measures a message).
+# Keeps every verbose tool-call message to a single Telegram message (limit 4096) so a
+# large argument cannot fan out into many sends that trip flood control or get rejected.
+_TOOL_CALL_ARGS_PREVIEW_MAX_UTF16 = 3000
+_TOOL_CALL_ARGS_TRUNCATED = "… [truncated]"
+
+
+def _fit_tool_args_preview(text: str) -> str:
+    if utf16_len(text) <= _TOOL_CALL_ARGS_PREVIEW_MAX_UTF16:
+        return text
+    budget = _TOOL_CALL_ARGS_PREVIEW_MAX_UTF16 - utf16_len(_TOOL_CALL_ARGS_TRUNCATED)
+    used = cut = 0
+    for char in text:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if used + width > budget:
+            break
+        used += width
+        cut += 1
+    return text[:cut] + _TOOL_CALL_ARGS_TRUNCATED
+
+
+def _tool_args_preview(args_json: str) -> str:
+    """Compact one-line rendering of a tool call's args ('' when there are none)."""
+    if not args_json or args_json == "{}":
+        return ""
+    try:
+        args = _json.loads(args_json)
+    except ValueError:
+        # Not valid JSON (e.g. malformed model output): still show what the model sent.
+        return _fit_tool_args_preview(args_json)
+    if not args:
+        return ""
+    return _fit_tool_args_preview(_json.dumps(args, ensure_ascii=False, indent=None))
+
+
 def _build_tool_call_notifier(
     adapter: TelegramAdapter,
     chat_id: int,
     session_id: str,
     trace_id: str,
 ) -> "Callable[[str, str], Awaitable[None]]":
-    """Build an async notifier that sends a verbose tool-call message to Telegram."""
-    import json as _json
+    """Build an async notifier that sends a verbose tool-call message to Telegram.
+
+    Verbose mode must show every tool call, so a failed send is not dropped silently:
+    it is logged and retried once as plain text (no markup).
+    """
 
     async def _notifier(tool_name: str, args_json: str) -> None:
-        try:
-            args = _json.loads(args_json) if args_json and args_json != "{}" else {}
-        except Exception:
-            args = {}
-        if args:
-            pretty = _json.dumps(args, ensure_ascii=False, indent=None)
-            text = f"⚙️ `{tool_name}`\n```\n{pretty}\n```"
-        else:
-            text = f"⚙️ `{tool_name}`"
+        pretty = _tool_args_preview(args_json)
+        text = f"⚙️ `{tool_name}`\n```\n{pretty}\n```" if pretty else f"⚙️ `{tool_name}`"
         response = build_text_channel_response(
             text=text,
             parse_mode="Markdown",
             session_id=session_id,
             trace_id=trace_id,
         )
-        with suppress(Exception):
+        try:
             await adapter.send_response(response, chat_id=chat_id)
+            return
+        except Exception as exc:
+            logger.warning(
+                "telegram.verbose_tool_call.send_failed",
+                chat_id=chat_id,
+                tool_name=tool_name,
+                trace_id=trace_id,
+                error=str(exc),
+            )
+        plain = response.model_copy(
+            update={
+                "text": f"⚙️ {tool_name}\n{pretty}" if pretty else f"⚙️ {tool_name}",
+                "parse_mode": None,
+                "plain_text": True,
+            }
+        )
+        try:
+            await adapter.send_response(plain, chat_id=chat_id)
+        except Exception as exc:
+            logger.error(
+                "telegram.verbose_tool_call.dropped",
+                chat_id=chat_id,
+                tool_name=tool_name,
+                trace_id=trace_id,
+                error=str(exc),
+            )
 
     return _notifier
 
