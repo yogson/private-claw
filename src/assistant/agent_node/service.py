@@ -427,6 +427,8 @@ class AgentNodeService:
                             ),
                         },
                         "tool_params": self._tool_params(run_seconds),
+                        # The job's own worktree / scratch dir is its workspace already.
+                        "workspace": {"mode": "in_place"},
                         "task_metadata": {
                             "source": AGENT_NODE_SOURCE,
                             "job_id": job_id,

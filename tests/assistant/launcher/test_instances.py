@@ -214,6 +214,29 @@ def test_child_env_has_exactly_the_instance_overrides(tmp_path: Path) -> None:
     assert env_b["ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN"] == "token-b"
 
 
+def test_build_child_env_sets_one_shared_data_root(tmp_path: Path) -> None:
+    specs = parse_instances(
+        {
+            "instances": {
+                "a": {"port": 8001, "token_env": "TG_A"},
+                "b": {"port": 8002, "token_env": "TG_B"},
+            }
+        },
+        tmp_path,
+    )
+    base = {"TG_A": "token-a", "TG_B": "token-b"}
+    shared = tmp_path / "data"
+    env_a = build_child_env(specs[0], "token-a", base, tmp_path, specs, shared_data_root=shared)
+    env_b = build_child_env(specs[1], "token-b", base, tmp_path, specs, shared_data_root=shared)
+    assert env_a["ASSISTANT_APP_SHARED_DATA_ROOT"] == str(shared)
+    assert env_b["ASSISTANT_APP_SHARED_DATA_ROOT"] == str(shared)
+    assert env_a["ASSISTANT_APP_DATA_ROOT"] != env_b["ASSISTANT_APP_DATA_ROOT"]
+    # An explicit value in the launcher env wins.
+    explicit = {**base, "ASSISTANT_APP_SHARED_DATA_ROOT": "/srv/shared"}
+    env = build_child_env(specs[0], "token-a", explicit, tmp_path, specs, shared_data_root=shared)
+    assert env["ASSISTANT_APP_SHARED_DATA_ROOT"] == "/srv/shared"
+
+
 def test_parse_rejects_nested_variants_of_reserved_env_keys(tmp_path: Path) -> None:
     env = {"ASSISTANT_APP_DATA_ROOT__X": "x", "assistant_channel_telegram_bot_token__y": "y"}
     problems = _problems({"a": {"port": 8001, "token_env": "TG_A", "env": env}}, tmp_path)

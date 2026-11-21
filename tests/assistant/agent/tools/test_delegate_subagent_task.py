@@ -147,7 +147,17 @@ def test_delegate_subagent_task_exposes_no_permission_mode_argument() -> None:
     import inspect
 
     params = set(inspect.signature(delegate_subagent_task).parameters)
-    assert params == {"ctx", "objective", "model_id", "directory", "backend", "plugin_dirs"}
+    assert params == {
+        "ctx",
+        "objective",
+        "model_id",
+        "directory",
+        "backend",
+        "plugin_dirs",
+        "workspace_mode",
+        "branch",
+        "base",
+    }
     assert not {"permission_mode", "backend_params", "effort"} & params
 
 
@@ -168,3 +178,32 @@ async def test_delegate_subagent_task_never_forwards_permission_mode(tmp_path: P
     assert set(payload["backend_params"]) == {"directory", "plugin_dirs"}
     assert "permission_mode" not in payload
     assert "permission_mode" not in payload["backend_params"]
+
+
+@pytest.mark.asyncio
+async def test_delegate_subagent_task_forwards_workspace_params(tmp_path: Path) -> None:
+    ctx = _Ctx(_make_deps())
+    result = await delegate_subagent_task(
+        ctx,
+        objective="Fix the bug",
+        directory=str(tmp_path),
+        workspace_mode="worktree",
+        branch="fix/bug-1",
+        base="origin/main",
+    )
+    payload = result["payload_echo"]
+    assert payload["workspace"] == {
+        "mode": "worktree",
+        "branch": "fix/bug-1",
+        "base": "origin/main",
+    }
+    assert payload["backend_params"] == {"directory": str(tmp_path)}
+
+
+@pytest.mark.asyncio
+async def test_delegate_subagent_task_omits_workspace_when_unset(tmp_path: Path) -> None:
+    ctx = _Ctx(_make_deps())
+    result = await delegate_subagent_task(
+        ctx, objective="Fix the bug", directory=str(tmp_path), branch=""
+    )
+    assert "workspace" not in result["payload_echo"]

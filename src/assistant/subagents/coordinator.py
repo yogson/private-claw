@@ -15,7 +15,7 @@ from typing import Any
 import structlog
 
 from assistant.core.config.schemas import RuntimeConfig
-from assistant.store.filesystem.task_log import read_log_tail, task_log_path
+from assistant.store.filesystem.task_log import append_log_line, read_log_tail, task_log_path
 from assistant.store.interfaces import StoreFacadeInterface
 from assistant.store.models import TaskRecord, TaskStatus
 from assistant.subagents.contracts import DelegationAcceptResult, DelegationRun
@@ -24,6 +24,13 @@ from assistant.subagents.interfaces import (
     DelegationCoordinatorInterface,
 )
 from assistant.subagents.permission_modes import clamp_permission_mode, resolve_permission_mode
+from assistant.subagents.workspaces import (
+    ResolvedWorkspace,
+    WorkspaceError,
+    WorkspaceManager,
+    WorkspaceRequest,
+    environment_block,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -55,6 +62,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         config: RuntimeConfig,
         backends: list[DelegationBackendAdapterInterface],
         completion_callback: Callable[[TaskRecord], Awaitable[None]] | None = None,
+        workspaces: WorkspaceManager | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -85,17 +93,29 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         self._cancel_requested: set[str] = set()
         self._max_workers = self._default_max_workers()
         self._worker_sem = asyncio.Semaphore(self._max_workers)
+        # Per-task workspaces (worktree / readonly / in_place), see subagents/workspaces.py.
+        self._workspaces = workspaces or WorkspaceManager(config)
+        self._reconcile_task: asyncio.Task[Any] | None = None
 
     async def start(self) -> None:
         """Start the background polling loop."""
         if self._worker_task is not None:
             return
         await self._recover_inflight_tasks()
+        await self._reclaim_pending_workspaces()
+        # One-shot startup cleanup (git worktree prune + reconcile); not a worker.
+        self._reconcile_task = asyncio.create_task(self._startup_reconcile())
         self._stop.clear()
         self._worker_task = asyncio.create_task(self._worker_loop())
 
     async def stop(self) -> None:
         """Stop the background polling loop."""
+        if self._reconcile_task is not None:
+            if not self._reconcile_task.done():
+                self._reconcile_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reconcile_task
+            self._reconcile_task = None
         if self._worker_task is None:
             return
         self._stop.set()
@@ -212,9 +232,18 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             )
 
         ttl_seconds = self._resolve_ttl_seconds(tool_params)
-        now = datetime.now(UTC)
         task_id = str(request.get("task_id") or f"dlg-{uuid.uuid4().hex[:12]}")
-        metadata = {
+        backend_params = self._resolve_backend_params(
+            request,
+            tool_params,
+            log_context={"task_id": task_id, "trace_id": trace_id, "session_id": session_id},
+        )
+        try:
+            workspace = await self._resolve_workspace(task_id, request, backend_params)
+        except WorkspaceError as exc:
+            return self._rejected("rejected_workspace", exc.reason, retryable=exc.retryable)
+        now = datetime.now(UTC)
+        metadata: dict[str, Any] = {
             "kind": "delegation",
             "backend": backend_id,
             "objective": objective,
@@ -225,12 +254,10 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             "trace_id": trace_id,
             "chat_id": self._chat_id_from_session(session_id),
             "projected_tokens": projected_tokens,
-            "backend_params": self._resolve_backend_params(
-                request,
-                tool_params,
-                log_context={"task_id": task_id, "trace_id": trace_id, "session_id": session_id},
-            ),
+            "backend_params": backend_params,
         }
+        if workspace is not None:
+            metadata["workspace"] = workspace.model_dump(mode="json")
         logfire_ctx = request.get("logfire_context")
         if isinstance(logfire_ctx, dict) and logfire_ctx:
             metadata["logfire_context"] = logfire_ctx
@@ -251,7 +278,11 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             expires_at=now + timedelta(seconds=ttl_seconds),
             metadata=metadata,
         )
-        await self._store.tasks.create(task)
+        try:
+            await self._store.tasks.create(task)
+        except BaseException:
+            await self._workspaces.release(task_id)
+            raise
         accepted = DelegationAcceptResult(
             accepted=True,
             task_id=task_id,
@@ -264,8 +295,68 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             model_id=model_id,
             backend=backend_id,
             projected_tokens=projected_tokens,
+            workspace_mode=workspace.mode.value if workspace is not None else None,
+            directory=backend_params.get("directory"),
+            branch=workspace.branch if workspace is not None else None,
         )
         return accepted.model_dump()
+
+    async def _resolve_workspace(
+        self, task_id: str, request: dict[str, Any], backend_params: dict[str, Any]
+    ) -> ResolvedWorkspace | None:
+        """Apply the workspace mode; rewrites ``backend_params["directory"]`` to the cwd.
+
+        Requests without a directory keep the old behaviour (no workspace handling).
+        """
+        workspace_request = WorkspaceRequest.parse(request.get("workspace"))
+        directory = backend_params.get("directory")
+        if not isinstance(directory, str) or not directory.strip():
+            if not workspace_request.is_empty:
+                raise WorkspaceError("workspace_mode, branch and base need a directory")
+            return None
+        workspace = await self._workspaces.resolve(
+            task_id=task_id,
+            directory=directory,
+            request=workspace_request,
+            is_task_active=self._is_task_active,
+        )
+        backend_params["directory"] = workspace.directory
+        return workspace
+
+    async def _is_task_active(self, task_id: str) -> bool:
+        task = await self._store.tasks.get(task_id)
+        return task is not None and task.status not in _TERMINAL_TASK_STATUSES
+
+    @staticmethod
+    def _task_workspace(task: TaskRecord) -> ResolvedWorkspace | None:
+        raw = task.metadata.get("workspace")
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return ResolvedWorkspace.model_validate(raw)
+        except ValueError:
+            logger.warning("subagent.workspace.invalid_metadata", task_id=task.task_id)
+            return None
+
+    async def _reclaim_pending_workspaces(self) -> None:
+        """After a restart, pending worktree tasks take their worktree ownership back."""
+        for task in await self._store.tasks.list_by_status(TaskStatus.PENDING):
+            workspace = self._task_workspace(task) if task.task_type == "delegation" else None
+            if workspace is None:
+                continue
+            try:
+                await self._workspaces.ensure_owned(task.task_id, workspace)
+            except WorkspaceError as exc:
+                # The task fails with this reason when the worker picks it up.
+                logger.warning(
+                    "subagent.workspace.reclaim_failed", task_id=task.task_id, reason=exc.reason
+                )
+
+    async def _startup_reconcile(self) -> None:
+        try:
+            await self._workspaces.reconcile(prune=True)
+        except Exception:
+            logger.exception("subagent.workspace.reconcile_failed")
 
     async def get_task(self, task_id: str, *, session_id: str | None = None) -> TaskRecord | None:
         """Fetch a task by id.
@@ -324,6 +415,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             final = await self._store.tasks.update_status(
                 task_id, TaskStatus.CANCELLED, error="Cancelled by user"
             )
+        await self._workspaces.release(task_id)
         return final
 
     async def read_task_log(
@@ -377,7 +469,40 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             task = await self._store.tasks.get(task_id)
             if task is None:
                 return
-            await self._execute_task(task)
+            try:
+                workspace = self._task_workspace(task)
+                if workspace is None:
+                    await self._execute_task(task)
+                    return
+                try:
+                    await self._workspaces.ensure_owned(task_id, workspace)
+                    lock = self._workspaces.in_place_lock(
+                        task_id,
+                        workspace,
+                        on_wait=lambda holder: self._log_lock_wait(task_id, holder),
+                    )
+                    async with lock:
+                        await self._execute_task(task)
+                except WorkspaceError as exc:
+                    await self._fail_workspace(task, exc.reason)
+            finally:
+                # The worktree outlives the task; only its ownership ends here.
+                await self._workspaces.release(task_id)
+
+    async def _log_lock_wait(self, task_id: str, holder: dict[str, Any]) -> None:
+        line = f"[workspace] waiting for the in_place lock (held by {holder.get('task_id')})"
+        await append_log_line(task_log_path(self._log_dir, task_id), line)
+
+    async def _fail_workspace(self, task: TaskRecord, reason: str) -> None:
+        latest = await self._store.tasks.get(task.task_id)
+        if latest is not None and latest.status in _TERMINAL_TASK_STATUSES:
+            return
+        updated = await self._store.tasks.update_status(
+            task.task_id, TaskStatus.FAILED, error=f"workspace: {reason}"
+        )
+        logger.warning("subagent.run.failed", task_id=task.task_id, error=reason)
+        if updated is not None:
+            await self._notify_completion(updated)
 
     async def _execute_task(self, task: TaskRecord) -> None:
         backend_id = str(task.metadata.get("backend", "")).strip()
@@ -407,6 +532,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             model_id=task.metadata.get("model_id"),
         )
         objective = str(task.metadata.get("objective", ""))
+        workspace = self._task_workspace(task)
+        if workspace is not None:
+            objective = f"{environment_block(workspace)}\n{objective}"
         latest = await self._store.tasks.get(task.task_id)
         if latest is not None and latest.status == TaskStatus.CANCELLED:
             logger.info("subagent.run.cancelled", task_id=task.task_id)

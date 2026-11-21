@@ -142,6 +142,72 @@ Coordinator enforcement rules:
 - SDK streaming backend: `ClaudeCodeStreamingBackendAdapter`
   (`src/assistant/subagents/backends/claude_code_streaming.py`), with the AskUserQuestion relay.
 
+### Workspaces (worktree / readonly / in_place)
+
+Where a task runs is decided in code (`src/assistant/subagents/workspaces.py`, used by the
+coordinator), not by prompt text. It applies to every request with a `directory`; a request
+without one keeps the old behaviour (the backend's default cwd). `delegate_subagent_task`
+takes `workspace_mode`, `branch` and `base`; a refusal has status `rejected_workspace`.
+
+| Mode | When | cwd | Guard |
+| --- | --- | --- | --- |
+| `worktree` | default for a git directory | coordinator-managed worktree of the repo for `branch` | one owning task per worktree (file lock, cross-instance) |
+| `readonly` | explicit | `directory` as given | none: label plus prompt rules only |
+| `in_place` | explicit; default for a non-git directory | `directory` as given | per-checkout file lock for a git directory; none otherwise |
+
+- **worktree**: the worktree for a branch lives at
+  `<worktrees_root>/<repo-name>-<hash of repo path>/<branch-slug>` (`worktrees_root` defaults to
+  `<shared_data_root>/subagent_worktrees`; the repo level keeps two repos with the same branch
+  name apart; a branch name changed by sanitizing, e.g. `feat/x`, gets a short hash suffix:
+  `feat-x-1a2b3c`). The repo is the main repository of `directory` (also when `directory` is a
+  linked worktree or a subdirectory; a subdirectory maps to the same subdirectory of the
+  worktree).
+  - Exists and unowned: reused as is (`.venv`, uncommitted changes, test artifacts survive), so
+    implement, review and fix rounds of one PR share one worktree.
+  - Owned by another pending/running task (this or another instance): rejected with that
+    task's id, `retryable: true`; not queued.
+  - Missing: cleanup runs first (see below), then the base is fetched (`git fetch <remote>
+    <branch>`; on failure the task still starts and the environment block says the base may be
+    stale) and the worktree is created: an existing local branch is attached, a remote one
+    (`origin/<branch>`) is checked out with tracking, otherwise `git worktree add --no-track -b
+    <branch> <path> <base>`.
+  - `branch` omitted: the branch of `directory` when it is a linked worktree (continue there),
+    otherwise `subagent/<task_id>`.
+  - `base` omitted: `delegation_worktree_default_base`, else the repo's `origin/HEAD`, else the
+    first of `origin/master`, `origin/main`, `master`, `main` that exists.
+  - A branch checked out in a worktree the coordinator does not manage (e.g. the primary
+    checkout's `master`) is rejected; use another branch or `in_place` there.
+  - Ownership is taken at enqueue and released when the task ends (completed, failed,
+    cancelled); a pending task re-takes it after a restart. The worktree itself stays.
+- **in_place**: the lock file lives in `<shared_data_root>/locks/subagent_in_place/`, keyed by
+  the checkout's toplevel. A task waits for it before it starts (status stays `pending`, one
+  line in its activity log) and fails after `delegation_in_place_lock_timeout_seconds`
+  (default 1800). `in_place` on a coordinator-managed worktree runs as `worktree` mode on it, so
+  the single-owner rule cannot be bypassed. agent_node jobs use `in_place` on their own job
+  worktree / scratch dir.
+- Every run's objective starts with a code-generated `--- Environment ---` block (mode,
+  working directory, branch, base, rules); the stored objective is unchanged.
+
+`shared_data_root` (`app.yaml`, default `data_root`) must be the same for all instances so the
+locks work across them; `make up` sets `ASSISTANT_APP_SHARED_DATA_ROOT=<repo>/data`.
+
+**Cleanup** (`WorkspaceManager.reconcile`) is not driven by task status and has no background
+worker: it runs once at startup (`git worktree prune` for every known repo, then the rules
+below) and right before a new worktree is created. It only considers worktrees the coordinator
+created (a state file in `<worktrees_root>/.state/`, path inside the root); user-created
+worktrees, also inside the root, are never touched. A worktree is removed only if
+1. its branch's PR is merged or closed (`gh pr list --head <branch>`; when `gh` is missing,
+   unauthenticated or offline, this check is skipped for the run and only the TTL applies), or
+   it was not used for `delegation_worktree_ttl_days` (default 7), **and**
+2. it has no owner task (in this or another instance), no uncommitted changes (`git status
+   --porcelain`, untracked files included) and no unpushed commits (commits of `HEAD` that no
+   remote branch contains, unless the PR head contains them, e.g. after a squash merge with the
+   remote branch deleted).
+
+Otherwise it is kept and the reason is logged (`subagent.workspace.cleanup`). Branches are kept,
+except that the local branch of a PR that was merged is deleted with its worktree
+(`delegation_worktree_delete_merged_branches`, default true).
+
 ### Claude Code permission mode
 
 Both Claude Code backends start every run with an explicit `--permission-mode`. The coordinator

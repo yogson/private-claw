@@ -17,6 +17,7 @@ from pathlib import Path
 
 from assistant.launcher.instances import (
     BOT_TOKEN_ENV,
+    DATA_DIR,
     INSTANCE_HOST,
     INSTANCES_FILENAME,
     InstanceSpec,
@@ -73,7 +74,14 @@ def cmd_up(ctx: LauncherContext, selected: list[InstanceSpec]) -> int:
         if states[spec.name][0] is InstanceState.STALE:
             spec.pid_file.unlink(missing_ok=True)
             ctx.out(f"{spec.name}: removed stale PID file")
-        env = build_child_env(spec, tokens[spec.name], ctx.base_env, ctx.config_dir, ctx.specs)
+        env = build_child_env(
+            spec,
+            tokens[spec.name],
+            ctx.base_env,
+            ctx.config_dir,
+            ctx.specs,
+            shared_data_root=ctx.repo_root / DATA_DIR,
+        )
         started.append((spec, spawn(spec, env, ctx.repo_root)))
 
     exit_code = 0
