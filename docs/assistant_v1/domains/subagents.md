@@ -198,7 +198,8 @@ created (a state file in `<worktrees_root>/.state/`, path inside the root); user
 worktrees, also inside the root, are never touched. A worktree is removed only if
 1. its branch's PR is merged or closed (`gh pr list --head <branch>`; when `gh` is missing,
    unauthenticated or offline, this check is skipped for the run and only the TTL applies), or
-   it was not used for `delegation_worktree_ttl_days` (default 7), **and**
+   it has no open PR and was not used for `delegation_worktree_ttl_days` (default 7); a
+   worktree whose PR is open is always kept, **and**
 2. it has no owner task (in this or another instance), no uncommitted changes (`git status
    --porcelain`, untracked files included) and no unpushed commits (commits of `HEAD` that no
    remote branch contains, unless the PR head contains them, e.g. after a squash merge with the
@@ -206,7 +207,9 @@ worktrees, also inside the root, are never touched. A worktree is removed only i
 
 Otherwise it is kept and the reason is logged (`subagent.workspace.cleanup`). Branches are kept,
 except that the local branch of a PR that was merged is deleted with its worktree
-(`delegation_worktree_delete_merged_branches`, default true).
+(`delegation_worktree_delete_merged_branches`, default true), and only if the branch tip itself
+(not the worktree's `HEAD`, which may be on another branch) has no commits that are missing
+from every remote branch and from the PR head; otherwise the branch is kept.
 
 ### Claude Code permission mode
 

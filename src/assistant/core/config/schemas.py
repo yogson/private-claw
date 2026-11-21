@@ -208,10 +208,11 @@ class ToolDefaultParams(BaseModel):
     # Base for new worktree branches when the call sets none; default: the repo's
     # origin/HEAD, else origin/master, origin/main, master, main.
     delegation_worktree_default_base: str | None = None
-    # A clean, fully pushed managed worktree unused for this long is removed (default 7).
+    # A clean, fully pushed managed worktree without an open PR unused for this long is
+    # removed (default 7).
     delegation_worktree_ttl_days: int | None = Field(default=None, ge=1)
     # Delete the local branch when a managed worktree is removed because its PR was
-    # merged (default true). Branches are never deleted otherwise.
+    # merged and the branch tip is pushed (default true). Branches are never deleted otherwise.
     delegation_worktree_delete_merged_branches: bool | None = None
     # How long an in_place task waits for the checkout lock before failing (default 1800).
     delegation_in_place_lock_timeout_seconds: int | None = Field(default=None, ge=1)
