@@ -55,6 +55,37 @@ def test_upsert_maps_intent_to_mem0_add(mock_client_class: MagicMock, tmp_path: 
     assert call_kwargs["metadata"]["memory_type"] == "facts"
     assert call_kwargs["metadata"]["intent_id"] == "i1"
     assert call_kwargs["infer"] is False
+    assert mock_client.add.call_args[0][0] == [{"role": "user", "content": "Important fact."}]
+
+
+@patch("assistant.memory.mem0.write.MemoryClient")
+def test_upsert_handles_v3_async_add_response(mock_client_class: MagicMock, tmp_path: Path) -> None:
+    """mem0ai 2.x add() returns {"event_id", "status"}: no memory id, so use the fallback id."""
+    mock_client = MagicMock()
+    mock_client.add.return_value = {"event_id": "evt-1", "status": "PENDING"}
+    mock_client_class.return_value = mock_client
+
+    svc = Mem0MemoryWriteService(MemoryConfig(api_key="test-key"), data_root=tmp_path)
+    intent = MemoryUpdateIntent(
+        intent_id="i5",
+        action=MemoryUpdateAction.UPSERT,
+        memory_type=MemoryType.FACTS,
+        candidate=MemoryUpdateIntentCandidate(confidence=0.9, body_markdown="A fact."),
+    )
+    audit = svc.apply_intent(intent, user_id="alice")
+
+    assert audit.status == WriteStatus.WRITTEN
+    assert audit.memory_id == "facts-i5"
+
+
+@patch("assistant.memory.mem0.write.MemoryClient")
+def test_client_init_ignores_org_and_project_ids(
+    mock_client_class: MagicMock, tmp_path: Path
+) -> None:
+    """mem0ai 2.x MemoryClient no longer accepts org_id/project_id."""
+    config = MemoryConfig(api_key="test-key", org_id="org-1", project_id="proj-1")
+    Mem0MemoryWriteService(config, data_root=tmp_path)
+    mock_client_class.assert_called_once_with(api_key="test-key")
 
 
 @patch("assistant.memory.mem0.write.MemoryClient")

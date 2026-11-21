@@ -36,17 +36,15 @@ class Mem0RetrievalService:
                 "configure api_key in config/memory.yaml"
             )
         self._config = config
-        kwargs: dict[str, str] = {"api_key": config.api_key}
-        if config.org_id:
-            kwargs["org_id"] = config.org_id
-        if config.project_id:
-            kwargs["project_id"] = config.project_id
-        self._client = MemoryClient(**kwargs)
+        # mem0ai 2.x resolves org/project from the API key; the constructor no longer
+        # accepts org_id/project_id.
+        self._client = MemoryClient(api_key=config.api_key)
 
     def retrieve(self, query: RetrievalQuery) -> RetrievalResult:
         """Retrieve relevant memories via Mem0 search."""
         user_id = _resolve_user_id(query, self._config)
-        search_query = query.user_query_text or "relevant memories"
+        # mem0ai 2.x rejects empty/whitespace-only queries client-side.
+        search_query = (query.user_query_text or "").strip() or "relevant memories"
         filters: dict[str, str] = {"user_id": user_id}
         try:
             raw = self._client.search(search_query, filters=filters, top_k=10)

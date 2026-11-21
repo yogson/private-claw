@@ -365,8 +365,14 @@ class MemoryConfig(BaseModel):
         default="default",
         description="Fallback user_id when session has no user_id",
     )
-    org_id: str | None = Field(default=None, description="Mem0 org ID (optional)")
-    project_id: str | None = Field(default=None, description="Mem0 project ID (optional)")
+    org_id: str | None = Field(
+        default=None,
+        description="Unused: mem0ai 2.x resolves the org from the API key",
+    )
+    project_id: str | None = Field(
+        default=None,
+        description="Unused: mem0ai 2.x resolves the project from the API key",
+    )
 
 
 class StoreConfig(BaseModel):
