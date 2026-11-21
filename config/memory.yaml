@@ -4,5 +4,7 @@
 
 api_key: ""
 default_user_id: "default"
+# org_id / project_id must match the org/project the API key resolves to
+# (checked at startup; mem0ai 2.x always uses the key's org/project).
 # org_id: null
 # project_id: null

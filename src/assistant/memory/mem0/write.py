@@ -9,6 +9,7 @@ from pathlib import Path
 from mem0 import MemoryClient
 
 from assistant.core.config.schemas import MemoryConfig
+from assistant.memory.mem0.scope import check_configured_scope
 from assistant.memory.write.intent_audit import append_audit, load_seen_intent_ids
 from assistant.memory.write.models import (
     MemoryUpdateAction,
@@ -23,19 +24,17 @@ def _resolve_user_id(user_id: str | None, config: MemoryConfig) -> str:
 
 
 def _intent_to_messages(intent: MemoryUpdateIntent) -> list[dict[str, str]]:
-    """Convert memory intent to Mem0 add messages format."""
+    """Convert memory intent to Mem0 add messages format.
+
+    Exactly one user message with only the confirmed text (#58, D14): with
+    infer=False the v3 add endpoint stores every message as a separate memory.
+    """
     if not intent.candidate:
         return []
     body = intent.candidate.body_markdown.strip()
     if not body:
         return []
-    user_content = body
-    if intent.reason:
-        user_content = f"{body}\n\n(Reason: {intent.reason})"
-    return [
-        {"role": "user", "content": user_content},
-        {"role": "assistant", "content": "I'll remember that."},
-    ]
+    return [{"role": "user", "content": body}]
 
 
 class Mem0MemoryWriteService:
@@ -50,12 +49,10 @@ class Mem0MemoryWriteService:
         self._config = config
         self._data_root = Path(data_root)
         self._seen_intent_ids = load_seen_intent_ids(self._data_root)
-        kwargs: dict[str, str] = {"api_key": config.api_key}
-        if config.org_id:
-            kwargs["org_id"] = config.org_id
-        if config.project_id:
-            kwargs["project_id"] = config.project_id
-        self._client = MemoryClient(**kwargs)
+        # mem0ai 2.x resolves org/project from the API key; the constructor no longer
+        # accepts org_id/project_id, so configured values are verified instead.
+        self._client = MemoryClient(api_key=config.api_key)
+        check_configured_scope(self._client, config)
         self._min_confidence = 0.5
 
     def apply_intent(self, intent: MemoryUpdateIntent, user_id: str | None = None) -> WriteAudit:
@@ -120,6 +117,8 @@ class Mem0MemoryWriteService:
             "memory_type": intent.memory_type.value,
             "intent_id": intent.intent_id,
         }
+        if intent.reason.strip():
+            metadata["reason"] = intent.reason.strip()[:300]
         if cand.tags:
             metadata["tags"] = cand.tags
         if cand.entities:
