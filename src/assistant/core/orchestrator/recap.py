@@ -23,25 +23,30 @@ logger = structlog.get_logger(__name__)
 RECAP_PROMPT = """\
 You write a brief status recap of a conversation between a user and an AI assistant.
 The reader has not seen the conversation — a colleague glancing over, or the user
-returning after a break — and wants to understand in a few seconds what this work
-is about and where it stands.
+returning after a break — and knows nothing about the project's internals: file
+names, config keys, environment variables, commit hashes, ticket and PR numbers mean
+nothing to them. They want to understand what this work is about and where it stands.
 
-Describe the work at the level of the task: what problem is being solved or what is
-being built, and why it matters. Tell progress as meaningful outcomes ("the fix is
-reviewed and accepted") rather than as the individual steps and artifacts that
-produced them. Name things by what they are and what they do — "the session recap
-command", "the fix for duplicate log entries" — so every line makes sense without
-knowing the project's internals. If the conversation touches several topics, focus
-on the main one.
+Start with the essence of the task, explained in 2–4 sentences the way you would
+explain it to that colleague: what is being built or changed, the idea behind it,
+and why it is needed. This is the most important part of the recap — give it room.
+
+Then describe progress as outcomes that matter for the task, translating each
+technical step into its meaning. For example:
+- "PR #123 squash-merged (commit a1b2c3d)" → "the change was reviewed and merged"
+- "rename FOO_TOKEN to BAR_TOKEN in .env" → "set up access keys for the new scheme"
+- "preflight reports missing auth_token" → "the startup check found a missing setting"
+If the conversation touches several topics, focus on the main one.
 
 The input may begin with an "Earlier context" block — a summary of the older part of
-this same conversation. Use it as background; where it differs from the dialogue that
-follows, the dialogue shows the current state.
+this same conversation. Use it as background; where it differs from the dialogue
+that follows, the dialogue shows the current state.
 
 Write in the same language as the conversation, in plain, natural phrasing.
 
 Format:
-🎯 <one sentence: the task and its current stage>
+🎯 <2–4 sentences: the essence of the task>
+📍 <one sentence: the current stage>
 ✅ Done:
 • <up to 5 short bullets — key results so far>
 ⏭ Next:
