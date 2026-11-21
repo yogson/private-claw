@@ -5,7 +5,7 @@ Tool for enqueueing reusable delegated background tasks.
 """
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from pydantic_ai import RunContext
@@ -22,6 +22,9 @@ async def delegate_subagent_task(
     directory: str | None = None,
     backend: str | None = None,
     plugin_dirs: list[str] | None = None,
+    workspace_mode: Literal["worktree", "readonly", "in_place"] | None = None,
+    branch: str | None = None,
+    base: str | None = None,
 ) -> dict[str, Any]:
     """Create a delegated background task and return immediate acknowledgement.
     Use this when you need to delegate coding work to a background sub-agent (e.g. Claude Code).
@@ -31,12 +34,32 @@ async def delegate_subagent_task(
         model_id: Optional model override (e.g. "claude-sonnet-4"). Omit to use the default model.
         directory: Optional workspace path for the sub-agent. Must be an existing
             directory; if invalid, the task is rejected. MUST be specified for Claude Code.
+            For a git repository pass the repo (e.g. its main checkout); where the sub-agent
+            actually runs depends on workspace_mode.
         backend: Optional backend selector. Use "claude_code" for fire-and-forget one shot
             simple task or "claude_code_streaming" for complex tasks with feedback loop.
             Omit to use the default backend - "claude_code".
         plugin_dirs: Optional list of local Claude Code plugin directories to load for this
             run only (e.g. a checked-out plugin providing extra Skills). Each entry must be
             an existing directory; if invalid, the task is rejected.
+        workspace_mode: How the sub-agent uses ``directory``. Omit for the default:
+            "worktree" for a git repository, "in_place" for any other directory.
+            - "worktree": the coordinator runs the task in its own git worktree of the
+              repository for ``branch``, created from a freshly fetched ``base``. Later
+              tasks on the same branch (review, fix rounds) reuse that worktree with its
+              state. A worktree has one running task at a time: a second task on the same
+              branch is rejected, so use different branches for parallel work.
+            - "readonly": run in ``directory`` itself for analysis/review without changes.
+            - "in_place": run in ``directory`` itself and change it there, under an
+              exclusive per-checkout lock (tasks wait for each other). Only for work that
+              must happen in that checkout, e.g. fast-forwarding the main checkout after
+              a merge or editing gitignored local config.
+        branch: Worktree mode only. Branch to work on: an existing local or remote branch
+            is checked out, a new one is created from ``base``. Pass the same branch to
+            continue on an earlier task's worktree. Omit for a new branch
+            "subagent/<task_id>".
+        base: Worktree mode only, for a new branch. Omit for the repo default
+            (origin/master or the remote's default branch).
     """
     handler = ctx.deps.delegation_enqueue_handler
     if handler is None:
@@ -63,6 +86,11 @@ async def delegate_subagent_task(
                     "rejection_reason": f"plugin_dirs entry does not exist: {path}",
                 }
         backend_params["plugin_dirs"] = list(plugin_dirs)
+    workspace = {
+        key: value
+        for key, value in (("mode", workspace_mode), ("branch", branch), ("base", base))
+        if isinstance(value, str) and value.strip()
+    }
     request: dict[str, Any] = {
         "objective": objective,
         "model_id": model_id,
@@ -70,6 +98,8 @@ async def delegate_subagent_task(
         "backend_params": backend_params,
         "backend": backend,
     }
+    if workspace:
+        request["workspace"] = workspace
     result = await handler(request)
     logger.info(
         "provider.tool_call.delegate_subagent_task",

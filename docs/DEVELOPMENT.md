@@ -229,6 +229,11 @@ dir may contain another instance's (e.g. `data` and the default `data/instances/
 - **Delegation token caps** are computed per instance, so the effective global cap is
   N × `delegation_global_token_cap`.
 - Code, `.venv`, prompts. Each instance is a full app process with its own sub-agents.
+- **Sub-agent workspaces**: `make up` gives every instance the same `shared_data_root`
+  (`<repo>/data`, env `ASSISTANT_APP_SHARED_DATA_ROOT`), which holds the coordinator-managed
+  worktrees (`subagent_worktrees/`) and the in_place locks (`locks/subagent_in_place/`). So a
+  worktree has one writer across all instances, and in_place tasks on one checkout run one
+  after another. See "Workspaces" in `docs/assistant_v1/domains/subagents.md`.
 
 ### Telegram routing and 409 Conflict
 

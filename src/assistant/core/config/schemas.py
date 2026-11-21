@@ -69,6 +69,15 @@ class AppConfig(BaseModel):
     # (set per instance via ASSISTANT_APP_INSTANCE_NAME). Shown in logs and the
     # "System started" message; empty keeps the default output.
     instance_name: str = ""
+    # Root for data shared by all instances on this machine (sub-agent worktrees and the
+    # cross-instance in_place lock). Empty: data_root (a single process shares with
+    # itself). The launcher (make up) sets it to <repo>/data via
+    # ASSISTANT_APP_SHARED_DATA_ROOT unless that variable is already set.
+    shared_data_root: str = ""
+
+    @property
+    def effective_shared_data_root(self) -> str:
+        return self.shared_data_root.strip() or self.data_root
 
 
 class TelegramChannelConfig(BaseModel):
@@ -191,6 +200,21 @@ class ToolDefaultParams(BaseModel):
     # unset means "auto".  It is also the ceiling: a per-request mode may only be
     # as restrictive or more.  "bypassPermissions" only when set explicitly.
     delegation_default_permission_mode: SubagentPermissionModeSetting | None = None
+    # Sub-agent workspaces (worktree / readonly / in_place, see docs domains/subagents.md).
+    # Read from the tools.yaml defaults only: capability overrides of these keys are ignored,
+    # so every task and the startup cleanup agree on one worktree root.
+    # Where coordinator-managed worktrees live; default <shared_data_root>/subagent_worktrees.
+    delegation_worktrees_root: str | None = None
+    # Base for new worktree branches when the call sets none; default: the repo's
+    # origin/HEAD, else origin/master, origin/main, master, main.
+    delegation_worktree_default_base: str | None = None
+    # A clean, fully pushed managed worktree unused for this long is removed (default 7).
+    delegation_worktree_ttl_days: int | None = Field(default=None, ge=1)
+    # Delete the local branch when a managed worktree is removed because its PR was
+    # merged (default true). Branches are never deleted otherwise.
+    delegation_worktree_delete_merged_branches: bool | None = None
+    # How long an in_place task waits for the checkout lock before failing (default 1800).
+    delegation_in_place_lock_timeout_seconds: int | None = Field(default=None, ge=1)
 
     @field_validator("command_allowlist", mode="before")
     @classmethod

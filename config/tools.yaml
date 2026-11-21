@@ -81,6 +81,13 @@ tools:
       # dontAsk also denies AskUserQuestion, so the streaming backend's question
       # relay does not work in it.
       delegation_default_permission_mode: auto
+      # Sub-agent workspaces (workspace_mode worktree | readonly | in_place). These keys
+      # are read from here only, not from capability overrides.
+      # delegation_worktrees_root: <shared_data_root>/subagent_worktrees
+      # delegation_worktree_default_base: origin/master  # default: origin/HEAD, origin/master, ...
+      # delegation_worktree_ttl_days: 7                  # unused clean+pushed worktrees removed
+      # delegation_worktree_delete_merged_branches: true # local branch deleted after PR merge
+      # delegation_in_place_lock_timeout_seconds: 1800   # wait for the per-checkout lock
 
   - tool_id: check_subagent_status
     entrypoint: assistant.agent.tools.check_subagent_status:check_subagent_status

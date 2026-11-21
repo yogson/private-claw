@@ -21,6 +21,7 @@ INSTANCES_FILENAME = "instances.yaml"
 
 CONFIG_DIR_ENV = "ASSISTANT_CONFIG_DIR"
 DATA_ROOT_ENV = "ASSISTANT_APP_DATA_ROOT"
+SHARED_DATA_ROOT_ENV = "ASSISTANT_APP_SHARED_DATA_ROOT"
 INSTANCE_NAME_ENV = "ASSISTANT_APP_INSTANCE_NAME"
 AGENT_NODE_ENABLED_ENV = "ASSISTANT_AGENT_NODE_ENABLED"
 TELEGRAM_ENABLED_ENV = "ASSISTANT_CHANNEL_TELEGRAM_ENABLED"
@@ -207,6 +208,7 @@ def build_child_env(
     base_env: Mapping[str, str],
     config_dir: Path,
     all_specs: Iterable[InstanceSpec],
+    shared_data_root: Path | None = None,
 ) -> dict[str, str]:
     """Environment for one instance: ``base_env`` plus the per-instance overrides.
 
@@ -216,6 +218,10 @@ def build_child_env(
     off and the bot token override is empty. Either way the override replaces any bare
     ``ASSISTANT_CHANNEL_TELEGRAM_BOT_TOKEN`` from the env or ``.env`` and the shared YAML
     ``bot_token``, so no instance inherits a token it was not given.
+
+    ``shared_data_root`` (sub-agent worktrees, cross-instance locks) is the same for every
+    instance; an ``ASSISTANT_APP_SHARED_DATA_ROOT`` already in the env (or the instance's
+    ``env:``) wins.
     """
     token_envs = {s.token_env for s in all_specs if s.token_env}
     env = {k: v for k, v in base_env.items() if k not in token_envs}
@@ -227,6 +233,8 @@ def build_child_env(
     env[AGENT_NODE_ENABLED_ENV] = _env_bool(spec.agent_node)
     env[DATA_ROOT_ENV] = str(spec.data_dir)
     env[INSTANCE_NAME_ENV] = spec.instance_name
+    if shared_data_root is not None:
+        env.setdefault(SHARED_DATA_ROOT_ENV, str(shared_data_root))
     return env
 
 

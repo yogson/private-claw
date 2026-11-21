@@ -30,6 +30,13 @@ from assistant.subagents.coordinator import DelegationCoordinator
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 
 
+@pytest.fixture(autouse=True)
+def _directory_not_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests cover enqueue/execute mechanics with directory-less requests; the
+    # "Claude Code needs a directory" rule is tested in test_workspaces.py.
+    monkeypatch.setattr("assistant.subagents.coordinator._DIRECTORY_REQUIRED_BACKENDS", frozenset())
+
+
 class _FakeBackend(DelegationBackendAdapterInterface):
     @property
     def backend_id(self) -> str:

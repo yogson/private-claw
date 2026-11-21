@@ -12,3 +12,6 @@ capability_history_retention: 50  # manifest versions kept per capability in <co
 capability_edit_max_prompt_parts: 8  # messages a capability edit may use to show a prompt change in full
 # instance_name: optional label in logs and "System started (<name>)."; set it per instance
 #   via ASSISTANT_APP_INSTANCE_NAME (make up does this), not in a shared config file
+# shared_data_root: data shared by all instances (sub-agent worktrees, in_place locks).
+#   Empty (default): data_root. make up sets it to <repo>/data for every instance via
+#   ASSISTANT_APP_SHARED_DATA_ROOT.
