@@ -23,9 +23,10 @@ Modes (``workspace.mode`` of a delegation request; only for requests with a dire
 Cleanup (``WorkspaceManager.reconcile``) runs at startup and right before a new worktree
 is created, never from task status. It only looks at worktrees this manager created
 (state file under ``<worktrees_root>/.state``); a worktree is removed only when its
-branch's PR is merged/closed (via ``gh``; without ``gh`` only the TTL applies) or it was
-unused for the TTL, and only when it has no owner, no uncommitted changes and no
-unpushed commits.
+branch's PR is merged/closed (via ``gh``; without ``gh`` only the TTL applies) or it has
+no open PR and was unused for the TTL, and only when it has no owner, no uncommitted
+changes and no unpushed commits. After a merged PR the local branch is deleted only if
+its own tip has no unpushed commits.
 """
 
 import asyncio
@@ -834,28 +835,29 @@ class WorkspaceManager:
             if gh_available:
                 pr, gh_available = await self._pr_state(repo_root, branch)
             pr_state = pr.get("state") if pr else None
+            if pr_state == "OPEN":
+                return report("kept", "PR open"), gh_available
             last_used = _parse_time(state.get("last_used_at") or state.get("created_at"))
             if last_used is None:
                 last_used = datetime.fromtimestamp(worktree.stat().st_mtime, UTC)
             expired = _now() - last_used > self.ttl
             if pr_state not in ("MERGED", "CLOSED") and not expired:
-                why = "PR open" if pr_state == "OPEN" else "used within the TTL"
-                return report("kept", why), gh_available
+                return report("kept", "used within the TTL"), gh_available
             dirty = await git_inspect.has_uncommitted_changes(str(worktree))
             if dirty is None or dirty:
                 return report("kept", "uncommitted changes"), gh_available
-            if await self._has_unpushed(str(worktree), pr):
+            if await self._has_unpushed(str(worktree), "HEAD", pr):
                 return report("kept", "unpushed commits"), gh_available
             if not await git_inspect.worktree_remove_clean(repo_root, str(worktree)):
                 return report("kept", "git worktree remove failed"), gh_available
             self._forget(worktree)
             why = f"PR {pr_state.lower()}" if pr_state in ("MERGED", "CLOSED") else "TTL expired"
-            if (
-                pr_state == "MERGED"
-                and self._delete_merged_branches
-                and await git_inspect.branch_delete(repo_root, branch)
-            ):
-                why += ", merged branch deleted"
+            if pr_state == "MERGED" and self._delete_merged_branches:
+                # The worktree may have left the branch, so check the branch tip itself.
+                if await self._has_unpushed(repo_root, f"refs/heads/{branch}", pr):
+                    why += ", branch kept: its tip is not verified as pushed"
+                elif await git_inspect.branch_delete(repo_root, branch):
+                    why += ", merged branch deleted"
             return report("removed", why), gh_available
         finally:
             _unlock(handle)
@@ -897,17 +899,15 @@ class WorkspaceManager:
         return None, True
 
     @staticmethod
-    async def _has_unpushed(worktree: str, pr: dict[str, Any] | None) -> bool:
-        """Commits of HEAD that no remote branch (nor the PR head) contains."""
+    async def _has_unpushed(path: str, ref: str, pr: dict[str, Any] | None) -> bool:
+        """Commits of ``ref`` that no remote branch (nor the PR head) contains; True if unknown."""
         if pr and isinstance(pr.get("headRefOid"), str):
             contained = await git_inspect.run_git(
-                worktree, "merge-base", "--is-ancestor", "HEAD", pr["headRefOid"]
+                path, "merge-base", "--is-ancestor", ref, pr["headRefOid"]
             )
             if contained.ok:
                 return False
-        out = await git_inspect.git_output(
-            worktree, "rev-list", "--count", "HEAD", "--not", "--remotes"
-        )
+        out = await git_inspect.git_output(path, "rev-list", "--count", ref, "--not", "--remotes")
         if out is None:
             return True
         try:

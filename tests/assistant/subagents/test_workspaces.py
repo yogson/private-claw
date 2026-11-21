@@ -495,6 +495,28 @@ async def test_merged_pr_worktree_removed_and_branch_deleted(tmp_path: Path, rep
 
 
 @pytest.mark.asyncio
+async def test_merged_pr_keeps_branch_with_unpushed_commits_off_head(
+    tmp_path: Path, repo: Path
+) -> None:
+    """The worktree left its branch: HEAD is pushed, but the branch tip has local work."""
+    prs: dict[str, list[dict[str, Any]]] = {}
+    mgr = manager(tmp_path, gh=gh_with(prs))
+    ws, sha = await _pushed_worktree(mgr, "t1", repo, "feat/diverged")
+    worktree = Path(ws.directory)
+    local_only = commit(worktree, "local-only.txt")  # on the branch, never pushed
+    git(worktree, "checkout", "-q", "--detach", sha)
+    prs["feat/diverged"] = [{"number": 9, "state": "MERGED", "headRefOid": sha}]
+
+    reports = await mgr.reconcile()
+
+    assert [(r.action, r.reason) for r in reports] == [
+        ("removed", "PR merged, branch kept: its tip is not verified as pushed")
+    ]
+    assert not worktree.exists()
+    assert git(repo, "rev-parse", "refs/heads/feat/diverged") == local_only
+
+
+@pytest.mark.asyncio
 async def test_closed_pr_removes_worktree_but_keeps_branch(tmp_path: Path, repo: Path) -> None:
     prs: dict[str, list[dict[str, Any]]] = {}
     mgr = manager(tmp_path, gh=gh_with(prs))
@@ -535,6 +557,18 @@ async def test_open_pr_and_recent_worktrees_are_kept(tmp_path: Path, repo: Path)
         "feat/no-pr": ("kept", "used within the TTL"),
     }
     assert Path(open_ws.directory).exists() and Path(recent_ws.directory).exists()
+
+
+@pytest.mark.asyncio
+async def test_open_pr_keeps_worktree_after_ttl(tmp_path: Path, repo: Path) -> None:
+    prs: dict[str, list[dict[str, Any]]] = {}
+    mgr = manager(tmp_path, gh=gh_with(prs), delegation_worktree_ttl_days=7)
+    ws, sha = await _pushed_worktree(mgr, "t1", repo, "feat/in-review")
+    prs["feat/in-review"] = [{"number": 10, "state": "OPEN", "headRefOid": sha}]
+    age_state(mgr, ws, days=30)
+
+    assert [(r.action, r.reason) for r in await mgr.reconcile()] == [("kept", "PR open")]
+    assert Path(ws.directory).exists()
 
 
 @pytest.mark.asyncio
