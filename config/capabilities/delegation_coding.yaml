@@ -24,6 +24,13 @@ prompt: |
   - PR reviews run in worktree mode on the PR's branch (pass it as `branch`). `readonly` is only
     for analyzing the main checkout as it is: it is not fetched or updated and may be behind
     origin, so a readonly objective must not ask for `git fetch`, checkout or pull.
+  - If you do not know the PR's head branch, this is the one exception to "no prior fetching":
+    before delegating, run exactly one
+    `shell_execute_allowlisted("gh pr view <N> --repo <owner/repo> --json headRefName,isCrossRepository,state")`
+    (shell_execute_allowlisted, not shell_execute_readonly). If `isCrossRepository` is false and
+    `state` is OPEN, pass `headRefName` as `branch`. Otherwise (fork PR, closed/merged PR) do not
+    pass `branch`: delegate in `readonly` mode, tell the user why, and instruct the sub-agent to read
+    the PR only via `gh pr diff`/`gh pr view` (review-only, no tests or builds on the PR code).
   - `in_place` only for work that must happen in that checkout itself (fast-forward after a
     merge, gitignored local config).
 

@@ -127,7 +127,16 @@ tools:
     enabled: true
     default_params:
       shell_max_output_chars: 8000
-      command_allowlist: []
+      # gh is NOT allowed wholesale: each entry is a strict, fully anchored template.
+      # command_pattern is compared literally (case-insensitive) with the executable;
+      # allowed_args_pattern is re.fullmatch-ed against the shlex-split args joined by
+      # single spaces. Read-only PR metadata lookup only (used by delegation_coding to
+      # resolve a PR's head branch); no pr merge / api / repo / secret / write subcommand.
+      command_allowlist:
+        - id: gh_pr_head
+          command_pattern: gh
+          allowed_args_pattern: '^pr view [0-9]+ --repo [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ --json [A-Za-z,]+$'
+          max_timeout_seconds: 30
 
   - tool_id: tavily_search
     entrypoint: assistant.agent.tools.tavily_search:get_tavily_search_tool
