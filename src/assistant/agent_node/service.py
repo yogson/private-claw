@@ -344,6 +344,18 @@ class AgentNodeService:
             repo: RepoContext | None = None
             if repo_cfg is not None and repo_full_name is not None:
                 repo_path = str(Path(repo_cfg.path).expanduser())
+                # Like the coordinator's worktree mode: base the job on a freshly fetched
+                # origin/<base>. A failed fetch (offline, no remote) is not fatal: the job
+                # uses the last fetched origin/<base>, else the local branch.
+                fetched = await git_inspect.fetch_branch(repo_path, base_branch)
+                if not fetched.ok:
+                    logger.warning(
+                        "agent_node.base_fetch_failed",
+                        job_id=job_id,
+                        repo=repo_full_name,
+                        base_branch=base_branch,
+                        error=fetched.error[:300],
+                    )
                 base_sha = await git_inspect.resolve_base(repo_path, base_branch)
                 if base_sha is None:
                     raise JobRejected(

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.agent_node import service as service_module
 from assistant.store.models import TaskStatus
@@ -754,3 +755,141 @@ class TestBoundedStop:
             assert view.result.error_kind is not None and view.result.error_kind.value == "timeout"
         finally:
             await env.coordinator.stop()
+
+
+class _RecordingBackend(DelegationBackendAdapterInterface):
+    """Records the run the coordinator hands to the backend."""
+
+    def __init__(self) -> None:
+        self.runs: list[DelegationRun] = []
+
+    @property
+    def backend_id(self) -> str:
+        return "claude_code_streaming"
+
+    async def execute(self, request: DelegationRun) -> DelegationResult:
+        self.runs.append(request)
+        return DelegationResult(ok=True, output_text="ok")
+
+
+class TestBackendObjective:
+    """What the sub-agent backend really receives for an agent-node job."""
+
+    async def _run(self, env: Env, **body: Any) -> DelegationRun:
+        backend = _RecordingBackend()
+        env.coordinator._backends["claude_code_streaming"] = backend  # noqa: SLF001
+        await env.coordinator.start()
+        try:
+            resp = await _create(env, **body)
+            assert resp.status_code == 202
+            for _ in range(100):
+                if backend.runs:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            await env.coordinator.stop()
+        assert len(backend.runs) == 1
+        return backend.runs[0]
+
+    async def test_repo_job_gets_only_the_agent_node_environment(self, env: Env) -> None:
+        run = await self._run(env, repo_full_name="acme/widgets", base_branch="main")
+        # The generic in_place block contradicts the job worktree and must not be there.
+        assert "Environment (set by the coordinator)" not in run.objective
+        assert "Workspace mode: in_place" not in run.objective
+        assert "made no worktree" not in run.objective
+        assert "fast-forward after a merge" not in run.objective
+        # The agent-node block is.
+        assert "Your working directory is a dedicated git worktree of it" in run.objective
+        assert "Commit your changes on this branch" in run.objective
+        assert run.objective.startswith("Refactor the widget")
+
+    async def test_job_without_repo_gets_no_generic_environment(self, env: Env) -> None:
+        run = await self._run(env)
+        assert "Environment (set by the coordinator)" not in run.objective
+        assert run.objective == "Refactor the widget"
+
+
+class TestFreshBase:
+    """The job's base is a freshly fetched origin/<base_branch>."""
+
+    @staticmethod
+    def _push_remote_commit(remote: Path, tmp_path: Path) -> str:
+        """Add a commit to the remote's main from another clone; returns its sha."""
+        other = tmp_path / "other"
+        git(tmp_path, "clone", "-q", str(remote), str(other))
+        git(other, "config", "user.email", "t@example.com")
+        git(other, "config", "user.name", "t")
+        (other / "b.txt").write_text("b\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "upstream")
+        git(other, "push", "-q", "origin", "main")
+        return git(other, "rev-parse", "HEAD")
+
+    async def test_job_is_based_on_the_freshly_fetched_remote_branch(
+        self, env: Env, tmp_path: Path
+    ) -> None:
+        remote = tmp_path / "remote.git"
+        git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+        git(env.repo, "remote", "add", "origin", str(remote))
+        git(env.repo, "push", "-q", "origin", "main")
+        git(env.repo, "fetch", "-q", "origin")
+        stale = git(env.repo, "rev-parse", "main")
+        upstream = self._push_remote_commit(remote, tmp_path)
+        assert upstream != stale
+        # Neither the local branch nor origin/main in the checkout knows the new commit.
+        assert git(env.repo, "rev-parse", "origin/main") == stale
+
+        resp = await _create(env, repo_full_name="acme/widgets", base_branch="main")
+        assert resp.status_code == 202
+        job_id = resp.json()["id"]
+        worktree = env.data_root / "agent_node" / "worktrees" / job_id
+        assert git(worktree, "rev-parse", "HEAD") == upstream
+        assert git(env.repo, "rev-parse", "origin/main") == upstream
+        # Only the remote-tracking ref moved: the checkout's local main is left alone.
+        assert git(env.repo, "rev-parse", "main") == stale
+        job = await env.store.agent_node.get_job(job_id)
+        assert job is not None and job.repo is not None
+        assert job.repo.base_sha == upstream
+
+    async def test_fetch_failure_falls_back_to_the_local_branch(
+        self, env: Env, tmp_path: Path
+    ) -> None:
+        git(env.repo, "remote", "add", "origin", str(tmp_path / "missing.git"))
+        with capture_logs() as logs:
+            resp = await _create(env, repo_full_name="acme/widgets", base_branch="main")
+        assert resp.status_code == 202
+        assert any(e["event"] == "agent_node.base_fetch_failed" for e in logs)
+        worktree = env.data_root / "agent_node" / "worktrees" / resp.json()["id"]
+        assert git(worktree, "rev-parse", "HEAD") == git(env.repo, "rev-parse", "main")
+
+    async def test_fetch_failure_uses_the_last_fetched_remote_branch(
+        self, env: Env, tmp_path: Path
+    ) -> None:
+        remote = tmp_path / "remote.git"
+        git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+        git(env.repo, "remote", "add", "origin", str(remote))
+        git(env.repo, "push", "-q", "origin", "main")
+        upstream = self._push_remote_commit(remote, tmp_path)
+        git(env.repo, "fetch", "-q", "origin")
+        git(env.repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+        resp = await _create(env, repo_full_name="acme/widgets", base_branch="main")
+        assert resp.status_code == 202
+        worktree = env.data_root / "agent_node" / "worktrees" / resp.json()["id"]
+        assert git(worktree, "rev-parse", "HEAD") == upstream
+
+    async def test_branch_name_that_is_not_a_ref_is_never_fetched(
+        self, env: Env, tmp_path: Path
+    ) -> None:
+        remote = tmp_path / "remote.git"
+        git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+        git(env.repo, "remote", "add", "origin", str(remote))
+        git(env.repo, "push", "-q", "origin", "main")
+        refs_before = git(env.repo, "for-each-ref", "--format=%(refname)")
+        with capture_logs() as logs:
+            resp = await _create(
+                env, repo_full_name="acme/widgets", base_branch="main:refs/heads/x"
+            )
+        assert resp.status_code == 422
+        failures = [e for e in logs if e["event"] == "agent_node.base_fetch_failed"]
+        assert failures and "invalid branch name" in failures[0]["error"]
+        assert git(env.repo, "for-each-ref", "--format=%(refname)") == refs_before

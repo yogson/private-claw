@@ -14,6 +14,7 @@ from typing import Any
 
 import structlog
 
+from assistant.agent_node.models import AGENT_NODE_SOURCE
 from assistant.core.config.schemas import RuntimeConfig
 from assistant.store.filesystem.task_log import append_log_line, read_log_tail, task_log_path
 from assistant.store.interfaces import StoreFacadeInterface
@@ -564,7 +565,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         )
         objective = str(task.metadata.get("objective", ""))
         workspace = self._task_workspace(task)
-        if workspace is not None:
+        # agent-node jobs describe their own job worktree / scratch dir in the objective;
+        # the generic block (e.g. in_place's "no worktree for this task") would contradict it.
+        if workspace is not None and task.metadata.get("source") != AGENT_NODE_SOURCE:
             objective = f"{environment_block(workspace)}\n{objective}"
         latest = await self._store.tasks.get(task.task_id)
         if latest is not None and latest.status == TaskStatus.CANCELLED:
