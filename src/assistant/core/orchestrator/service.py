@@ -85,10 +85,12 @@ from assistant.store.models import (
     SessionRecord,
     SessionRecordType,
     SystemMessageScope,
+    TaskRecord,
     TaskStatus,
     TurnTerminalStatus,
 )
 from assistant.subagents.interfaces import DelegationCoordinatorInterface
+from assistant.subagents.workspaces import task_workspace_info
 
 # Max chars per memory-search match body returned to the agent (limits prompt/tool bloat).
 MEMORY_SEARCH_MATCH_BODY_MAX_CHARS = 12_000
@@ -129,6 +131,18 @@ def _with_still_running_hint(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("status") in _DELEGATION_NON_TERMINAL_STATUSES:
         payload["hint"] = _DELEGATION_STILL_RUNNING_HINT
     return payload
+
+
+def _delegation_status_payload(task: TaskRecord, recent_log: list[str]) -> dict[str, Any]:
+    """check_subagent_status result for a found task.
+
+    ``workspace`` surfaces the resolved branch/worktree at the top level, so a follow-up
+    round can reuse ``workspace.branch``.
+    """
+    payload: dict[str, Any] = {"found": True, **task.model_dump(mode="json")}
+    payload["workspace"] = task_workspace_info(task.metadata)
+    payload["recent_log"] = recent_log
+    return _with_still_running_hint(payload)
 
 
 def _ordered_recent_turn_ids(
@@ -370,11 +384,10 @@ class Orchestrator:
                 task = await coordinator.get_task(task_id, session_id=session_id)
                 if task is None:
                     return {"found": False, "task_id": task_id}
-                payload: dict[str, Any] = {"found": True, **task.model_dump(mode="json")}
-                payload["recent_log"] = await coordinator.read_log_lines(
+                recent_log = await coordinator.read_log_lines(
                     task_id, _DELEGATION_STATUS_LOG_TAIL_LINES
                 )
-                return _with_still_running_hint(payload)
+                return _delegation_status_payload(task, recent_log)
 
             async def delegation_cancel_handler(task_id: str) -> dict[str, Any]:
                 cancelled = await coordinator.cancel_task(task_id, session_id=session_id)

@@ -20,6 +20,7 @@ from assistant.core.events.models import (
 from assistant.core.orchestrator.service import Orchestrator
 from assistant.store.models import TaskRecord
 from assistant.subagents.coordinator import DelegationCoordinator
+from assistant.subagents.workspaces import task_workspace_info
 
 
 def _build_delegation_feedback_handler(
@@ -55,6 +56,8 @@ def _build_delegation_feedback_handler(
             "backend": task.metadata.get("backend"),
             "model_id": task.metadata.get("model_id"),
             "parent_turn_id": task.parent_turn_id,
+            # Reuse workspace.branch as ``branch`` for follow-up rounds of the same work.
+            "workspace": task_workspace_info(task.metadata),
         }
         if stdout_excerpt:
             payload["stdout_excerpt"] = stdout_excerpt

@@ -93,6 +93,8 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         # BaseException handler in _execute_task can tell a deliberate
         # cancellation apart from an unexpected asyncio cancellation.
         self._cancel_requested: set[str] = set()
+        # task_ids whose worker finished the run and is now in the completion callback.
+        self._notifying: set[str] = set()
         self._max_workers = self._default_max_workers()
         self._worker_sem = asyncio.Semaphore(self._max_workers)
         # Per-task workspaces (worktree / readonly / in_place), see subagents/workspaces.py.
@@ -300,6 +302,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             task_id=task_id,
             status=TaskStatus.PENDING.value,
             expires_at=task.expires_at.isoformat() if task.expires_at else None,
+            workspace=workspace.info() if workspace is not None else None,
         )
         logger.info(
             "subagent.spawn.accepted",
@@ -311,7 +314,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             directory=backend_params.get("directory"),
             branch=workspace.branch if workspace is not None else None,
         )
-        return accepted.model_dump()
+        return accepted.model_dump(mode="json")
 
     async def _resolve_workspace(
         self, task_id: str, request: dict[str, Any], backend_params: dict[str, Any]
@@ -462,7 +465,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
     async def _worker_loop(self) -> None:
         while not self._stop.is_set():
             self._reap_finished_inflight()
-            available_slots = max(0, self._max_workers - len(self._inflight))
+            # Workers that only deliver the completion callback no longer hold a slot.
+            busy = len(self._inflight) - len(self._notifying.intersection(self._inflight))
+            available_slots = max(0, self._max_workers - busy)
             if available_slots > 0:
                 pending = await self._store.tasks.list_by_status(TaskStatus.PENDING)
                 for task in pending:
@@ -477,6 +482,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         await self._drain_inflight()
 
     async def _execute_task_guarded(self, task_id: str) -> None:
+        finished: TaskRecord | None = None
         async with self._worker_sem:
             task = await self._store.tasks.get(task_id)
             if task is None:
@@ -484,39 +490,54 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             try:
                 workspace = self._task_workspace(task)
                 if workspace is None:
-                    await self._execute_task(task)
-                    return
-                try:
-                    await self._workspaces.ensure_owned(task_id, workspace)
-                    lock = self._workspaces.in_place_lock(
-                        task_id,
-                        workspace,
-                        on_wait=lambda holder: self._log_lock_wait(task_id, holder),
-                    )
-                    async with lock:
-                        await self._execute_task(task)
-                except WorkspaceError as exc:
-                    await self._fail_workspace(task, exc.reason)
+                    finished = await self._execute_task(task)
+                else:
+                    try:
+                        await self._workspaces.ensure_owned(task_id, workspace)
+                        lock = self._workspaces.in_place_lock(
+                            task_id,
+                            workspace,
+                            on_wait=lambda holder: self._log_lock_wait(task_id, holder),
+                        )
+                        async with lock:
+                            finished = await self._execute_task(task)
+                    except WorkspaceError as exc:
+                        finished = await self._fail_workspace(task, exc.reason)
             finally:
                 # The worktree outlives the task; only its ownership ends here.
                 await self._workspaces.release(task_id)
+        # The task is terminal and its workspace (worktree ownership / in_place lock) and
+        # worker slot are free, so the completion turn can delegate the next round on
+        # the same branch or checkout.
+        if finished is not None:
+            self._notifying.add(task_id)
+            try:
+                await self._notify_completion(finished)
+            finally:
+                self._notifying.discard(task_id)
 
     async def _log_lock_wait(self, task_id: str, holder: dict[str, Any]) -> None:
         line = f"[workspace] waiting for the in_place lock (held by {holder.get('task_id')})"
         await append_log_line(task_log_path(self._log_dir, task_id), line)
 
-    async def _fail_workspace(self, task: TaskRecord, reason: str) -> None:
+    async def _fail_workspace(self, task: TaskRecord, reason: str) -> TaskRecord | None:
+        """Mark the task FAILED; returns the record to notify about (None if none)."""
         latest = await self._store.tasks.get(task.task_id)
         if latest is not None and latest.status in _TERMINAL_TASK_STATUSES:
-            return
+            return None
         updated = await self._store.tasks.update_status(
             task.task_id, TaskStatus.FAILED, error=f"workspace: {reason}"
         )
         logger.warning("subagent.run.failed", task_id=task.task_id, error=reason)
-        if updated is not None:
-            await self._notify_completion(updated)
+        return updated
 
-    async def _execute_task(self, task: TaskRecord) -> None:
+    async def _execute_task(self, task: TaskRecord) -> TaskRecord | None:
+        """Run the task to a terminal status.
+
+        Returns the terminal record for the completion callback (None when there is
+        nothing to notify, e.g. a cancelled task). The caller notifies only after the
+        task's workspace is released.
+        """
         backend_id = str(task.metadata.get("backend", "")).strip()
         backend = self._backends.get(backend_id)
         if backend is None:
@@ -531,9 +552,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 backend=backend_id,
                 error=f"backend '{backend_id}' unavailable",
             )
-            if updated is not None:
-                await self._notify_completion(updated)
-            return
+            return updated
         updated_task = await self._store.tasks.update_status(task.task_id, TaskStatus.RUNNING)
         if updated_task is not None:
             task = updated_task
@@ -550,7 +569,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         latest = await self._store.tasks.get(task.task_id)
         if latest is not None and latest.status == TaskStatus.CANCELLED:
             logger.info("subagent.run.cancelled", task_id=task.task_id)
-            return
+            return None
         await self._store.tasks.heartbeat(task.task_id)
         run = DelegationRun(
             task_id=task.task_id,
@@ -593,9 +612,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                     TaskStatus.FAILED,
                     error=f"backend crashed: {type(exc).__name__}: {exc}",
                 )
-                if updated is not None:
-                    await self._notify_completion(updated)
-                return
+                return updated
             except BaseException:
                 # Cancellation / SystemExit / KeyboardInterrupt: best-effort
                 # mark the terminal status for state consistency, then
@@ -628,8 +645,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                     task_id=task.task_id,
                     error=updated.error,
                 )
-                await self._notify_completion(updated)
-            return
+            return updated
         summary = result.output_text
         updated = await self._store.tasks.update_status(
             task.task_id,
@@ -641,7 +657,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 "subagent.run.completed",
                 task_id=task.task_id,
             )
-            await self._notify_completion(updated)
+        return updated
 
     def _register_streaming_relay(
         self,

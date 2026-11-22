@@ -48,6 +48,7 @@ from pydantic import BaseModel, Field
 
 from assistant.agent_node import git_inspect
 from assistant.core.config.schemas import RuntimeConfig, ToolDefaultParams
+from assistant.subagents.contracts import DelegationWorkspaceInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -145,6 +146,18 @@ class ResolvedWorkspace(BaseModel):
     worktree: str | None = None
     worktree_created: bool = False
     notes: list[str] = Field(default_factory=list)
+
+    def info(self) -> DelegationWorkspaceInfo:
+        """The caller-facing view: what the orchestrator needs for follow-up rounds."""
+        is_worktree = self.mode == WorkspaceMode.WORKTREE
+        return DelegationWorkspaceInfo(
+            mode=self.mode.value,
+            directory=self.directory,
+            branch=self.branch if is_worktree else None,
+            worktree=self.worktree if is_worktree else None,
+            base=self.base if is_worktree else None,
+            worktree_created=self.worktree_created if is_worktree else None,
+        )
 
 
 @dataclass
@@ -953,12 +966,25 @@ async def _run_gh(cwd: str, args: list[str]) -> tuple[int, str]:
     return proc.returncode if proc.returncode is not None else -1, text
 
 
+def task_workspace_info(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Caller-facing view of a task's stored ``metadata["workspace"]``; None if absent."""
+    raw = metadata.get("workspace")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        workspace = ResolvedWorkspace.model_validate(raw)
+    except ValueError:
+        return None
+    return workspace.info().model_dump(mode="json")
+
+
 def environment_block(workspace: ResolvedWorkspace) -> str:
     """Code-generated workspace description prepended to the sub-agent's objective."""
     lines = ["--- Environment (set by the coordinator) ---", f"Workspace mode: {workspace.mode}"]
     if workspace.mode == WorkspaceMode.WORKTREE:
         lines += [
             f"Repository: {workspace.repo_root}",
+            f"Branch: {workspace.branch}",
             f"Working directory: {workspace.directory}",
             f"It is a dedicated git worktree for branch {workspace.branch}, managed by "
             "the coordinator; you are its only writer for this run.",
@@ -975,7 +1001,7 @@ def environment_block(workspace: ResolvedWorkspace) -> str:
         lines += [
             "Rules:",
             f"- Make every change inside {workspace.directory} and commit on branch "
-            f"{workspace.branch}. Do not switch branches.",
+            f"{workspace.branch}. Do not create or switch branches.",
             f"- Do not modify the primary checkout {workspace.repo_root} or other "
             "worktrees. Paths into the primary checkout in the task mean the same "
             "relative paths inside your worktree.",

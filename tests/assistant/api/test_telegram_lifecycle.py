@@ -730,6 +730,57 @@ async def test_delegation_feedback_handler_triggers_internal_orchestrator_turn()
 
 
 @pytest.mark.asyncio
+async def test_delegation_feedback_handler_payload_includes_workspace() -> None:
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
+    from assistant.core.orchestrator.models import OrchestratorResult
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(return_value=OrchestratorResult(text=""))
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock()
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    workspace = {
+        "mode": "worktree",
+        "directory": "/wt/repo/subagent-dlg-1",
+        "requested_directory": "/src/repo",
+        "is_git": True,
+        "repo_root": "/src/repo",
+        "branch": "subagent/dlg-1",
+        "base": "origin/master",
+        "worktree": "/wt/repo/subagent-dlg-1",
+        "worktree_created": False,
+    }
+
+    def _task(task_id: str, metadata: dict[str, object]) -> TaskRecord:
+        return TaskRecord(
+            task_id=task_id,
+            parent_session_id="tg:123:abc",
+            task_type="delegation",
+            status=TaskStatus.COMPLETED,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            metadata=metadata,
+        )
+
+    await handler(_task("dlg-1", {"trace_id": "t", "workspace": workspace}))
+    await handler(_task("dlg-2", {"trace_id": "t"}))
+
+    payloads = [
+        json.loads(call.args[0].text.split("\n", 1)[1])
+        for call in orchestrator.execute_turn.call_args_list
+    ]
+    assert payloads[0]["workspace"] == {
+        "mode": "worktree",
+        "directory": "/wt/repo/subagent-dlg-1",
+        "branch": "subagent/dlg-1",
+        "worktree": "/wt/repo/subagent-dlg-1",
+        "base": "origin/master",
+        "worktree_created": False,
+    }
+    assert payloads[1]["workspace"] is None
+
+
+@pytest.mark.asyncio
 async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram() -> None:
     from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
     from assistant.core.orchestrator.models import OrchestratorResult
