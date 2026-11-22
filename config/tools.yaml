@@ -135,7 +135,7 @@ tools:
       command_allowlist:
         - id: gh_pr_head
           command_pattern: gh
-          allowed_args_pattern: '^pr view [0-9]+ --repo [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ --json [A-Za-z,]+$'
+          allowed_args_pattern: '^pr view [0-9]+ --repo [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ --json headRefName,isCrossRepository,state$'
           max_timeout_seconds: 30
 
   - tool_id: tavily_search
