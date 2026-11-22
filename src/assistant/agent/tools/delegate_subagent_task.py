@@ -29,6 +29,10 @@ async def delegate_subagent_task(
     """Create a delegated background task and return immediate acknowledgement.
     Use this when you need to delegate coding work to a background sub-agent (e.g. Claude Code).
 
+    An accepted result includes ``workspace`` (mode, directory, branch, worktree, base,
+    worktree_created): where the task actually runs. The same object is in the completion
+    notification and in check_subagent_status.
+
     Args:
         objective: Concise task description for the sub-agent. Be specific about what to accomplish.
         model_id: Optional model override (e.g. "claude-sonnet-4"). Omit to use the default model.
@@ -43,7 +47,9 @@ async def delegate_subagent_task(
             run only (e.g. a checked-out plugin providing extra Skills). Each entry must be
             an existing directory; if invalid, the task is rejected.
         workspace_mode: How the sub-agent uses ``directory``. Omit for the default:
-            "worktree" for a git repository, "in_place" for any other directory.
+            "worktree" for a git repository, "in_place" for any other directory. Passing
+            "worktree" explicitly is unnecessary for a git repository and fails for a
+            non-git directory.
             - "worktree": the coordinator runs the task in its own git worktree of the
               repository for ``branch``, created from a freshly fetched ``base``. Later
               tasks on the same branch (review, fix rounds) reuse that worktree with its
@@ -54,10 +60,12 @@ async def delegate_subagent_task(
               exclusive per-checkout lock (tasks wait for each other). Only for work that
               must happen in that checkout, e.g. fast-forwarding the main checkout after
               a merge or editing gitignored local config.
-        branch: Worktree mode only. Branch to work on: an existing local or remote branch
-            is checked out, a new one is created from ``base``. Pass the same branch to
-            continue on an earlier task's worktree. Omit for a new branch
-            "subagent/<task_id>".
+        branch: Optional, worktree mode only. Branch to work on: an existing local or
+            remote branch is checked out, a new one is created from ``base``. If omitted,
+            a new branch "subagent/<task_id>" is created and returned in
+            ``workspace.branch``. For follow-up rounds of the same work (review, fixes)
+            pass that returned ``workspace.branch`` as ``branch`` to continue in the same
+            worktree.
         base: Worktree mode only, for a new branch. Omit for the repo default
             (origin/master or the remote's default branch).
     """

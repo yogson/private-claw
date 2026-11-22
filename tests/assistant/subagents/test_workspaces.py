@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.core.config.schemas import (
     AppConfig,
@@ -25,7 +26,7 @@ from assistant.core.config.schemas import (
     ToolsConfig,
 )
 from assistant.store.facade import StoreFacade
-from assistant.store.models import TaskStatus
+from assistant.store.models import TaskRecord, TaskStatus
 from assistant.subagents.contracts import DelegationResult, DelegationRun
 from assistant.subagents.coordinator import DelegationCoordinator
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
@@ -37,6 +38,7 @@ from assistant.subagents.workspaces import (
     WorkspaceRequest,
     branch_slug,
     environment_block,
+    task_workspace_info,
 )
 
 GhRunner = Callable[[str, list[str]], Awaitable[tuple[int, str]]]
@@ -789,6 +791,16 @@ async def test_coordinator_runs_repo_task_in_worktree_by_default(
         workspace = task.metadata["workspace"]
         assert workspace["mode"] == "worktree"
         assert workspace["branch"] == f"subagent/{task_id}"
+        # The caller learns the auto-named branch and worktree right away.
+        assert accepted["workspace"] == {
+            "mode": "worktree",
+            "directory": workspace["directory"],
+            "branch": f"subagent/{task_id}",
+            "worktree": workspace["worktree"],
+            "base": "origin/master",
+            "worktree_created": True,
+        }
+        assert task_workspace_info(task.metadata) == accepted["workspace"]
         assert task.metadata["backend_params"]["directory"] == workspace["directory"]
         assert workspace["directory"] != str(repo)
         await _wait_status(coordinator, task_id, TaskStatus.COMPLETED)
@@ -796,6 +808,7 @@ async def test_coordinator_runs_repo_task_in_worktree_by_default(
         assert run.backend_params["directory"] == workspace["directory"]
         assert run.objective.startswith("--- Environment (set by the coordinator) ---")
         assert workspace["directory"] in run.objective
+        assert f"Branch: subagent/{task_id}\n" in run.objective
         assert run.objective.endswith("--- Task ---\nDo it")
         assert task.metadata["objective"] == "Do it"  # stored objective unchanged
         assert mgr.owner_of(workspace["directory"]) is None  # released at the end
@@ -854,6 +867,14 @@ async def test_coordinator_workspace_validation(tmp_path: Path, repo: Path) -> N
         assert task is not None
         assert task.metadata["backend_params"]["directory"] == str(repo)
         assert task.metadata["workspace"]["mode"] == "readonly"
+        assert readonly["workspace"] == {
+            "mode": "readonly",
+            "directory": str(repo),
+            "branch": None,
+            "worktree": None,
+            "base": None,
+            "worktree_created": None,
+        }
     finally:
         await store.shutdown()
 
@@ -974,6 +995,137 @@ async def test_coordinator_startup_reconciles_worktrees(tmp_path: Path, repo: Pa
         assert coordinator._reconcile_task is not None
         await asyncio.wait_for(coordinator._reconcile_task, timeout=10)
         assert not Path(stale.directory).exists()
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_completion_callback_can_claim_the_same_branch(tmp_path: Path, repo: Path) -> None:
+    """The completion turn delegates the next round on the returned branch: the finished
+    task's worktree ownership is already released, so no stale-owner recovery is needed."""
+    store = StoreFacade(data_root=tmp_path / "data")
+    await store.initialize()
+    mgr = manager(tmp_path)
+    follow_ups: list[dict[str, Any]] = []
+    owners_seen: list[str | None] = []
+
+    async def _on_complete(task: TaskRecord) -> None:
+        if follow_ups:
+            return
+        info = task_workspace_info(task.metadata)
+        assert info is not None
+        owners_seen.append(mgr.owner_of(info["worktree"]))
+        follow_ups.append(await _enqueue(coordinator, repo, branch=info["branch"]))
+
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=make_config(tmp_path / "data"),
+        backends=[_RecordingBackend()],
+        completion_callback=_on_complete,
+        workspaces=mgr,
+    )
+    await coordinator.start()
+    try:
+        with capture_logs() as logs:
+            first = await _enqueue(coordinator, repo)
+            await _wait_status(coordinator, first["task_id"], TaskStatus.COMPLETED)
+            for _ in range(200):
+                if follow_ups:
+                    break
+                await asyncio.sleep(0.05)
+            assert follow_ups, "completion callback did not run"
+            second = follow_ups[0]
+            await _wait_status(coordinator, second["task_id"], TaskStatus.COMPLETED)
+        assert owners_seen == [None]
+        assert second["accepted"] is True, second
+        assert second["workspace"]["branch"] == first["workspace"]["branch"]
+        assert second["workspace"]["worktree"] == first["workspace"]["worktree"]
+        assert second["workspace"]["worktree_created"] is False
+        events = [entry["event"] for entry in logs]
+        assert "subagent.workspace.stale_owner_released" not in events
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_completion_callback_can_take_the_in_place_lock(tmp_path: Path, repo: Path) -> None:
+    store = StoreFacade(data_root=tmp_path / "data")
+    await store.initialize()
+    mgr = manager(tmp_path)
+    outcomes: list[str] = []
+
+    async def _on_complete(task: TaskRecord) -> None:
+        workspace = ResolvedWorkspace.model_validate(task.metadata["workspace"])
+        try:
+            async with mgr.in_place_lock("probe", workspace, timeout=0):
+                outcomes.append("locked")
+        except WorkspaceError as exc:
+            outcomes.append(exc.reason)
+
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=make_config(tmp_path / "data"),
+        backends=[_RecordingBackend()],
+        completion_callback=_on_complete,
+        workspaces=mgr,
+    )
+    await coordinator.start()
+    try:
+        accepted = await _enqueue(coordinator, repo, mode="in_place")
+        await _wait_status(coordinator, accepted["task_id"], TaskStatus.COMPLETED)
+        for _ in range(200):
+            if outcomes:
+                break
+            await asyncio.sleep(0.05)
+        assert outcomes == ["locked"]
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_completion_callback_does_not_hold_a_worker_slot(tmp_path: Path, repo: Path) -> None:
+    """With one worker, a task delegated from the completion turn still runs meanwhile."""
+    store = StoreFacade(data_root=tmp_path / "data")
+    await store.initialize()
+    follow_up_status: list[TaskStatus] = []
+
+    async def _on_complete(task: TaskRecord) -> None:
+        if task.metadata["objective"] != "Do it":
+            return
+        follow_up = await coordinator.enqueue_from_tool(
+            session_id="tg:1",
+            turn_id="turn",
+            trace_id="trace",
+            user_id="u",
+            request={
+                "objective": "Follow-up",
+                "tool_params": {},
+                "backend_params": {"directory": str(repo)},
+                "workspace": {"mode": "readonly"},
+            },
+        )
+        await _wait_status(coordinator, follow_up["task_id"], TaskStatus.COMPLETED)
+        follow_up_status.append(TaskStatus.COMPLETED)
+
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=make_config(tmp_path / "data", delegation_max_concurrent_tasks=1),
+        backends=[_RecordingBackend()],
+        completion_callback=_on_complete,
+        workspaces=manager(tmp_path),
+    )
+    await coordinator.start()
+    try:
+        accepted = await _enqueue(coordinator, repo, mode="readonly")
+        await _wait_status(coordinator, accepted["task_id"], TaskStatus.COMPLETED)
+        for _ in range(300):
+            if follow_up_status:
+                break
+            await asyncio.sleep(0.05)
+        assert follow_up_status == [TaskStatus.COMPLETED]
     finally:
         await coordinator.stop()
         await store.shutdown()

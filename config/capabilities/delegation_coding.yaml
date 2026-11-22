@@ -11,10 +11,21 @@ prompt: |
 
   #### Workspaces
   Pass the repository as `directory`; the coordinator isolates coding sub-agents in code (one git
-  worktree per `branch`, freshly based, single writer). Reuse the same `branch` for follow-up
-  rounds (review, fixes) of one PR, and different branches for parallel work. Use
-  `workspace_mode: readonly` for pure analysis/review, and `in_place` only for work that must
-  happen in that checkout itself (fast-forward after a merge, gitignored local config).
+  worktree per `branch`, freshly based, single writer). `worktree` is the default for a git
+  repository, so do not pass `workspace_mode: worktree` (it fails for a non-git directory).
+  - `branch` is optional. Derive a meaningful name only from an obvious identifier (e.g.
+    `fix/issue-123` for an issue link); otherwise omit it and the system auto-names the branch.
+  - The accept result, the completion notification and check_subagent_status all return
+    `workspace` (mode, branch, worktree, ...). Always pass the returned `workspace.branch` as
+    `branch` for follow-up rounds (review, fixes) of the same work/PR; use different branches for
+    parallel work.
+  - Never tell the sub-agent in the objective to create or switch branches: it works in the
+    branch it was given.
+  - PR reviews run in worktree mode on the PR's branch (pass it as `branch`). `readonly` is only
+    for analyzing the main checkout as it is: it is not fetched or updated and may be behind
+    origin, so a readonly objective must not ask for `git fetch`, checkout or pull.
+  - `in_place` only for work that must happen in that checkout itself (fast-forward after a
+    merge, gitignored local config).
 
   #### After delegating: do not poll
   A delegated task runs in the background and you are automatically notified in a fresh turn

@@ -44,6 +44,24 @@ class DelegationResult(BaseModel):
     error: str | None = None
 
 
+class DelegationWorkspaceInfo(BaseModel):
+    """Where a delegated task runs, as reported back to the caller (orchestrator).
+
+    Fields that do not apply to the mode (e.g. ``branch`` for readonly/in_place) are None.
+    """
+
+    mode: str
+    directory: str
+    """Working directory of the run."""
+    branch: str | None = None
+    """Worktree mode: the task's branch (auto-named ``subagent/<task_id>`` when none was
+    requested). Pass it as ``branch`` to continue the same work in follow-up rounds."""
+    worktree: str | None = None
+    base: str | None = None
+    worktree_created: bool | None = None
+    """Worktree mode: True for a newly created worktree, False for a reused one."""
+
+
 class DelegationAcceptResult(BaseModel):
     """Immediate acknowledgement returned by the enqueue API."""
 
@@ -54,3 +72,5 @@ class DelegationAcceptResult(BaseModel):
     retryable: bool = False
     """True for a transient refusal (concurrency / budget): the caller may retry later."""
     expires_at: str | None = None
+    workspace: DelegationWorkspaceInfo | None = None
+    """The resolved workspace of an accepted task (None for tasks without a directory)."""
