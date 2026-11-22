@@ -190,8 +190,8 @@ takes `workspace_mode`, `branch` and `base`; a refusal has status `rejected_work
   job uses the last fetched `origin/<base_branch>`, else the local branch.
 - Every run's objective starts with a code-generated `--- Environment ---` block (mode,
   working directory, branch, base, rules); the stored objective is unchanged. agent_node jobs
-  (`source: agent_node_http`) get no such block: their objective has its own environment
-  section for the job worktree.
+  (`source: agent_node_http`) get no such block; for repo jobs their objective has its own
+  environment section for the job worktree.
 
 `shared_data_root` (`app.yaml`, default `data_root`) must be the same for all instances so the
 locks work across them; `make up` sets `ASSISTANT_APP_SHARED_DATA_ROOT=<repo>/data`.

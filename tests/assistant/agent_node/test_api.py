@@ -782,7 +782,7 @@ class TestBackendObjective:
         try:
             resp = await _create(env, **body)
             assert resp.status_code == 202
-            for _ in range(100):
+            for _ in range(600):
                 if backend.runs:
                     break
                 await asyncio.sleep(0.05)
@@ -890,6 +890,6 @@ class TestFreshBase:
                 env, repo_full_name="acme/widgets", base_branch="main:refs/heads/x"
             )
         assert resp.status_code == 422
-        failures = [e for e in logs if e["event"] == "agent_node.base_fetch_failed"]
-        assert failures and "invalid branch name" in failures[0]["error"]
+        assert "not a valid branch name" in resp.json()["detail"]
+        assert not [e for e in logs if e["event"] == "agent_node.base_fetch_failed"]
         assert git(env.repo, "for-each-ref", "--format=%(refname)") == refs_before

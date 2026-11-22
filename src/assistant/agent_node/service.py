@@ -319,6 +319,27 @@ class AgentNodeService:
         fingerprint = request_fingerprint(body_dump)
         accepted_at = _now()
 
+        # Validate and fetch the base before taking the global lock, so a slow network blocks
+        # only this request. A replay of an accepted job needs neither.
+        base_repo = self.config.repositories.get(repo_full_name) if repo_full_name else None
+        if base_repo is not None and (
+            idempotency_key is None or await self._find_existing(idempotency_key) is None
+        ):
+            base_path = str(Path(base_repo.path).expanduser())
+            if not await git_inspect.is_valid_branch_name(base_path, base_branch):
+                raise JobRejected(422, f"base branch {base_branch!r} is not a valid branch name")
+            # Like the coordinator's worktree mode: base the job on a freshly fetched
+            # origin/<base>. A failed fetch (offline, no remote) is not fatal: the job
+            # uses the last fetched origin/<base>, else the local branch.
+            fetched = await git_inspect.fetch_branch(base_path, base_branch)
+            if not fetched.ok:
+                logger.warning(
+                    "agent_node.base_fetch_failed",
+                    repo=repo_full_name,
+                    base_branch=base_branch,
+                    error=fetched.error[:300],
+                )
+
         async with self._create_lock:
             # Replay / conflict first: a retry of an accepted job must not depend on the
             # current repository mapping.
@@ -344,18 +365,6 @@ class AgentNodeService:
             repo: RepoContext | None = None
             if repo_cfg is not None and repo_full_name is not None:
                 repo_path = str(Path(repo_cfg.path).expanduser())
-                # Like the coordinator's worktree mode: base the job on a freshly fetched
-                # origin/<base>. A failed fetch (offline, no remote) is not fatal: the job
-                # uses the last fetched origin/<base>, else the local branch.
-                fetched = await git_inspect.fetch_branch(repo_path, base_branch)
-                if not fetched.ok:
-                    logger.warning(
-                        "agent_node.base_fetch_failed",
-                        job_id=job_id,
-                        repo=repo_full_name,
-                        base_branch=base_branch,
-                        error=fetched.error[:300],
-                    )
                 base_sha = await git_inspect.resolve_base(repo_path, base_branch)
                 if base_sha is None:
                     raise JobRejected(

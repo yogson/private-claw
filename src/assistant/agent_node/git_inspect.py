@@ -77,15 +77,19 @@ def fetch_refspec(remote: str, branch: str) -> str:
     return f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
 
 
+async def is_valid_branch_name(path: str, branch: str) -> bool:
+    """Whether git accepts ``branch`` as a branch name (rejects ``a~1``, ``a@{1}``, ``a:b``)."""
+    return (await run_git(path, "check-ref-format", f"refs/heads/{branch}")).ok
+
+
 async def fetch_branch(path: str, branch: str, remote: str = "origin") -> GitResult:
     """Fetch ``remote``'s ``branch`` into ``refs/remotes/<remote>/<branch>``.
 
     A name git does not accept as a branch is refused without fetching, so an untrusted
     ``branch`` can never turn into a different refspec.
     """
-    checked = await run_git(path, "check-ref-format", f"refs/heads/{branch}")
-    if not checked.ok:
-        return GitResult(checked.returncode, "", f"invalid branch name {branch!r}")
+    if not await is_valid_branch_name(path, branch):
+        return GitResult(1, "", f"invalid branch name {branch!r}")
     return await run_git(
         path,
         "fetch",
