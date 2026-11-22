@@ -72,10 +72,38 @@ async def resolve_ref(path: str, ref: str) -> str | None:
     return await _git(path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
 
 
+def fetch_refspec(remote: str, branch: str) -> str:
+    """Fetch only ``branch`` into its remote-tracking ref, never into a local branch."""
+    return f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+
+
+async def is_valid_branch_name(path: str, branch: str) -> bool:
+    """Whether git accepts ``branch`` as a branch name (rejects ``a~1``, ``a@{1}``, ``a:b``)."""
+    return (await run_git(path, "check-ref-format", f"refs/heads/{branch}")).ok
+
+
+async def fetch_branch(path: str, branch: str, remote: str = "origin") -> GitResult:
+    """Fetch ``remote``'s ``branch`` into ``refs/remotes/<remote>/<branch>``.
+
+    A name git does not accept as a branch is refused without fetching, so an untrusted
+    ``branch`` can never turn into a different refspec.
+    """
+    if not await is_valid_branch_name(path, branch):
+        return GitResult(1, "", f"invalid branch name {branch!r}")
+    return await run_git(
+        path,
+        "fetch",
+        remote,
+        "--end-of-options",
+        fetch_refspec(remote, branch),
+        timeout=GIT_FETCH_TIMEOUT_SECONDS,
+    )
+
+
 async def resolve_base(path: str, base_branch: str) -> str | None:
-    """Commit sha of ``base_branch``: the local branch, else ``origin/<base_branch>``."""
-    return await resolve_ref(path, f"refs/heads/{base_branch}") or await resolve_ref(
-        path, f"refs/remotes/origin/{base_branch}"
+    """Commit sha of ``base_branch``: ``origin/<base_branch>``, else the local branch."""
+    return await resolve_ref(path, f"refs/remotes/origin/{base_branch}") or await resolve_ref(
+        path, f"refs/heads/{base_branch}"
     )
 
 

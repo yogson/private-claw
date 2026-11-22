@@ -509,7 +509,7 @@ class WorkspaceManager:
                 "fetch",
                 remote,
                 "--end-of-options",
-                _fetch_refspec(remote, remote_branch),
+                git_inspect.fetch_refspec(remote, remote_branch),
                 timeout=git_inspect.GIT_FETCH_TIMEOUT_SECONDS,
             )
             if not fetched.ok:
@@ -537,7 +537,7 @@ class WorkspaceManager:
                     "fetch",
                     origin,
                     "--end-of-options",
-                    _fetch_refspec(origin, branch),
+                    git_inspect.fetch_refspec(origin, branch),
                     timeout=git_inspect.GIT_FETCH_TIMEOUT_SECONDS,
                 )
                 if await git_inspect.resolve_ref(repo_root, f"refs/remotes/{origin}/{branch}"):
@@ -927,11 +927,6 @@ class WorkspaceManager:
             return int(out) > 0
         except ValueError:
             return True
-
-
-def _fetch_refspec(remote: str, branch: str) -> str:
-    """Fetch only ``branch`` into its remote-tracking ref, never into a local branch."""
-    return f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
 
 
 def _parse_time(value: object) -> datetime | None:

@@ -184,9 +184,14 @@ takes `workspace_mode`, `branch` and `base`; a refusal has status `rejected_work
   line in its activity log) and fails after `delegation_in_place_lock_timeout_seconds`
   (default 1800). `in_place` on a coordinator-managed worktree runs as `worktree` mode on it, so
   the single-owner rule cannot be bypassed. agent_node jobs use `in_place` on their own job
-  worktree / scratch dir.
+  worktree / scratch dir. The job worktree's base is `origin/<base_branch>`, fetched right
+  before the job is created (only that branch, into its remote-tracking ref); when the fetch
+  fails (offline, no `origin`), a warning (`agent_node.base_fetch_failed`) is logged and the
+  job uses the last fetched `origin/<base_branch>`, else the local branch.
 - Every run's objective starts with a code-generated `--- Environment ---` block (mode,
-  working directory, branch, base, rules); the stored objective is unchanged.
+  working directory, branch, base, rules); the stored objective is unchanged. agent_node jobs
+  (`source: agent_node_http`) get no such block; for repo jobs their objective has its own
+  environment section for the job worktree.
 
 `shared_data_root` (`app.yaml`, default `data_root`) must be the same for all instances so the
 locks work across them; `make up` sets `ASSISTANT_APP_SHARED_DATA_ROOT=<repo>/data`.
