@@ -190,6 +190,29 @@ the Telegram transport only.
 - Bot API remains the transport for normal bot ingress/egress; MTProto worker is used only for transcription requests/results.
 - No external speech-to-text infrastructure is introduced in v1 baseline.
 
+## Table Rendering on the Entity Path
+
+- On the entity path (Markdown converted to text and entities by telegramify-markdown), `table_render.render_tables`
+  first rewrites GFM pipe tables outside fenced code blocks, so they read well on a phone. Native rich messages, where
+  enabled, send the original Markdown and do not use this; the fallback from the rich path (a rejected
+  `sendRichMessage`, see Rich Messages above) resends through the entity path and therefore also goes through this
+  renderer.
+- Display width counts emoji and East Asian wide characters as 2 cells and combining marks, zero-width joiners and
+  variation selectors as 0 (`wcwidth`). The budget is `TABLE_WIDTH_BUDGET` = 38 monospace cells.
+- Layout:
+  - grid: the whole table fits the budget. A compact monospace grid in a `pre` block: columns separated by ` | `, a
+    `-+-` separator line as wide as the content, `:--:` / `--:` alignment honored, no trailing whitespace. Inline
+    Markdown is stripped from cells (links become their text), since `pre` cannot be formatted;
+  - lines: 2 columns that do not fit. One `**<col1>** — <col2>` line per row; the header row is dropped;
+  - cards: 3+ columns that do not fit. Per row, the first cell in bold as a title, then one `<header>: <value>` line per
+    non-empty cell, with a blank line between cards.
+  Lines and cards keep inline Markdown in cells (bold, code, links with their URL), so they become entities.
+- Parsing follows GFM: `\|` is a literal pipe, missing cells are empty, extra cells are dropped, outer pipes are
+  optional. A table ends at a line without an unescaped pipe. A header-only table that does not fit becomes one bold
+  line of headers. Tables inside blockquotes or list items are left as is.
+- The system prompt asks the model to use tables only for compact data (up to ~4 short columns) and bulleted lists
+  otherwise.
+
 ## Constraints
 
 - Single-user allowlist model in v1.
