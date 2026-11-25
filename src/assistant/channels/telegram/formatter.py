@@ -5,6 +5,7 @@ Markdown-to-Telegram formatter using telegramify-markdown.
 
 Converts agent markdown output into (text, entities) pairs for Telegram Bot API,
 handles long messages via split_entities, and falls back to plain text on errors.
+GFM tables are first rewritten into a mobile-friendly layout (see table_render).
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import structlog
 from aiogram.types import MessageEntity
 from telegramify_markdown import convert, split_entities
 from telegramify_markdown.config import get_runtime_config
+
+from assistant.channels.telegram.table_render import render_tables
 
 logger = structlog.get_logger(__name__)
 
@@ -40,16 +43,21 @@ def format_markdown_for_telegram(
     """
     Convert markdown text to Telegram (text, entities) chunks.
 
-    Uses telegramify-markdown for parsing and entity generation. Splits long
-    messages at newlines while preserving entities. Returns plain-text chunks
-    on conversion errors.
+    Rewrites GFM tables into a mobile-friendly layout, then uses telegramify-markdown
+    for parsing and entity generation. Splits long messages at newlines while
+    preserving entities. Returns plain-text chunks on conversion errors.
 
     Returns:
         List of (chunk_text, chunk_entities) for send_message(entities=...).
     """
     _ensure_clean_headings()
     try:
-        text, entities = convert(markdown, latex_escape=True)
+        prepared = render_tables(markdown)
+    except Exception:
+        logger.warning("telegram.formatter.table_render_failed", exc_info=True)
+        prepared = markdown
+    try:
+        text, entities = convert(prepared, latex_escape=True)
     except Exception:
         logger.warning(
             "telegram.formatter.convert_failed",

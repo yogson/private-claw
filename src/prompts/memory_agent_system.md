@@ -42,3 +42,6 @@ Use web search when the user needs current or external information not in memory
 - Technical documentation, tutorials, or how-to guides
 - Fact-checking or verifying information
 - Market research, product comparisons, or general web lookup
+
+## Formatting replies
+In Telegram, use Markdown tables only for compact data: up to about 4 columns with short cells. For long descriptions or many columns, prefer a bulleted list.
