@@ -6,16 +6,23 @@ import uuid
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest, TelegramNotFound
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.methods import SendRichMessage
 from aiogram.types import InlineKeyboardMarkup, InputRichMessage
 from structlog.testing import capture_logs
 
 from assistant.channels.telegram import egress as egress_module
-from assistant.channels.telegram.egress import TelegramEgress
+from assistant.channels.telegram.egress import TelegramEgress, TelegramSendError
 from assistant.channels.telegram.models import ActionButton, ChannelResponse, MessageType
 from assistant.core.config.schemas import TelegramRichMessagesMode
 
@@ -272,6 +279,100 @@ class TestRichMessageFallback:
         kwargs = mock_send.call_args.kwargs
         assert kwargs["text"] == "Second part"
         assert "reply_parameters" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_failure_after_first_chunk_puts_reply_markup_on_last_sent_message(self) -> None:
+        egress = _egress()
+        first = "| a | b |\n| --- | --- |\n| 1 | 2 |"
+        response = _interactive(f"{first}\n\nSecond part")
+        rich_patch, plain_patch = _patch_bot(egress)
+        with (
+            patch.object(egress_module, "split_rich_markdown", return_value=[first, "Second part"]),
+            rich_patch as mock_rich,
+            plain_patch as mock_send,
+        ):
+            mock_rich.side_effect = [
+                _message(1),
+                TelegramBadRequest(_rich_method(), "Bad Request: nope"),
+            ]
+            mock_send.return_value = _message(2)
+            await egress.send_message_ids(response, chat_id=123)
+
+        assert mock_rich.call_args_list[0].kwargs["reply_markup"] is None
+        assert mock_send.call_args.kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            TelegramRetryAfter(_rich_method(), "Too Many Requests", 0),
+            TelegramNetworkError(_rich_method(), "network down"),
+        ],
+    )
+    async def test_flood_control_and_network_errors_retry_on_rich_path(
+        self, error: Exception
+    ) -> None:
+        egress = TelegramEgress(
+            bot_token="12345:test-token",
+            max_attempts=2,
+            base_delay=0,
+            rich_messages=TelegramRichMessagesMode.TABLES_ONLY,
+        )
+        rich_patch, plain_patch = _patch_bot(egress)
+        with rich_patch as mock_rich, plain_patch as mock_send:
+            mock_rich.side_effect = [error, _message(5)]
+            assert await egress.send_message_ids(_response(_TABLE_REPLY), chat_id=123) == [5]
+
+        assert mock_rich.call_count == 2
+        mock_send.assert_not_called()
+        assert egress_module._RICH_LATCH.unsupported is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            TelegramForbiddenError(_rich_method(), "Forbidden: bot was blocked by the user"),
+            TelegramBadRequest(_rich_method(), "Bad Request: message to be replied not found"),
+            TelegramServerError(_rich_method(), "Internal Server Error"),
+        ],
+    )
+    async def test_errors_failing_on_entity_path_too_skip_the_fallback(
+        self, error: Exception
+    ) -> None:
+        audit = MagicMock()
+        egress = TelegramEgress(
+            bot_token="12345:test-token",
+            max_attempts=1,
+            rich_messages=TelegramRichMessagesMode.TABLES_ONLY,
+            audit_logger=audit,
+        )
+        rich_patch, plain_patch = _patch_bot(egress)
+        with rich_patch as mock_rich, plain_patch as mock_send, capture_logs() as logs:
+            mock_rich.side_effect = error
+            with pytest.raises(TelegramSendError):
+                await egress.send_message_ids(_response(_TABLE_REPLY), chat_id=123)
+
+        mock_send.assert_not_called()
+        assert "telegram.egress.rich_fallback" not in [entry["event"] for entry in logs]
+        audit.log_egress_api_error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rich_failure_is_reported_to_audit_logger(self) -> None:
+        audit = MagicMock()
+        egress = TelegramEgress(
+            bot_token="12345:test-token",
+            max_attempts=1,
+            rich_messages=TelegramRichMessagesMode.TABLES_ONLY,
+            audit_logger=audit,
+        )
+        rich_patch, plain_patch = _patch_bot(egress)
+        with rich_patch as mock_rich, plain_patch as mock_send:
+            mock_rich.side_effect = TelegramBadRequest(_rich_method(), "Bad Request: nope")
+            mock_send.return_value = _message(7)
+            await egress.send_message_ids(_response(_TABLE_REPLY), chat_id=123)
+
+        audit.log_egress_api_error.assert_called_once()
+        assert "nope" in audit.log_egress_api_error.call_args.kwargs["error"]
 
 
 class TestRichMessageSplitting:

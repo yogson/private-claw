@@ -15,9 +15,11 @@ from aiogram import Bot
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
+    TelegramForbiddenError,
     TelegramNetworkError,
     TelegramNotFound,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.types import (
     InlineKeyboardButton,
@@ -77,6 +79,14 @@ def _is_unsupported_method_error(exc: TelegramAPIError) -> bool:
         return True
     message = exc.message.lower()
     return any(marker in message for marker in _UNSUPPORTED_METHOD_ERRORS)
+
+
+def _fails_on_entity_path_too(exc: TelegramAPIError) -> bool:
+    """Errors a resend through the entity path would hit as well (no point in falling back)."""
+    return (
+        isinstance(exc, TelegramForbiddenError | TelegramServerError)
+        or "message to be replied not found" in exc.message.lower()
+    )
 
 
 class TelegramSendError(Exception):
@@ -232,7 +242,11 @@ class TelegramEgress:
                     )
             except TelegramAPIError as exc:
                 last_error = str(exc)
-                if sent_chunks < len(chunks) and chunks[sent_chunks].rich:
+                if (
+                    sent_chunks < len(chunks)
+                    and chunks[sent_chunks].rich
+                    and not _fails_on_entity_path_too(exc)
+                ):
                     # Rich message rejected: send this and the remaining chunks through the
                     # entity path on an extra attempt (chunks already delivered stay as is).
                     chunks = chunks[:sent_chunks] + self._entity_chunks(
@@ -316,10 +330,17 @@ class TelegramEgress:
             for text, entities in format_markdown_for_telegram(markdown)
         ]
 
-    @staticmethod
     def _handle_rich_failure(
-        exc: TelegramAPIError, chat_id: int, response: ChannelResponse, attempt: int
+        self, exc: TelegramAPIError, chat_id: int, response: ChannelResponse, attempt: int
     ) -> None:
+        if self._audit_logger is not None:
+            self._audit_logger.log_egress_api_error(
+                chat_id=chat_id,
+                response_id=response.response_id,
+                attempt=attempt,
+                error=str(exc),
+                trace_id=response.trace_id,
+            )
         if _is_unsupported_method_error(exc) and not _RICH_LATCH.unsupported:
             _RICH_LATCH.unsupported = True
             logger.warning(

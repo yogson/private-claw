@@ -172,10 +172,13 @@ the Telegram transport only.
   groups, each repeating the header and separator rows. If the content cannot be split safely (oversized code block,
   table over 20 columns), the reply uses the entity path.
 - Fallback: any API error from `sendRichMessage` (except flood control and network errors, which are retried as
-  usual) resends that chunk and the rest through the entity path; chunks already delivered are not resent. A 404 or
-  a "method not found"/"unknown method" error sets a process-wide latch that disables the rich path for later sends
+  usual; also 403, "message to be replied not found" and 5xx, which would fail on the entity path too and are
+  handled as on the legacy path) resends that chunk and the rest through the entity path; chunks already delivered are not resent. A 404 or
+  a "method not found"/"unknown method"/"method is not supported" error sets a process-wide latch that disables the rich path for later sends
   (logged once as `telegram.egress.rich_messages_unsupported`). The plain-text retry on "can't parse entities"
-  stays the last resort.
+  stays the last resort. Rich failures are reported to the audit logger like other egress API errors.
+- Tables the detector does not recognize (inside blockquotes or list items, after a line starting with ```` ```x``` ````,
+  or with `\\|`) fall back to the legacy rendering in `tables_only` mode.
 - Message edits (`edit_message_text`) and confirmation prompts (plain text) are unchanged.
 
 ## Voice Handling Strategy

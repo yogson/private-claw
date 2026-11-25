@@ -86,8 +86,7 @@ class TestSplitRichMarkdown:
         for chunk in chunks:
             lines = chunk.split("\n")
             assert lines[:2] == ["| id | value |", "| --- | --- |"]
-            # The table and its header row count as blocks too.
-            assert len(lines) - 2 + 2 <= 10
+            assert len(lines) <= 10  # header + separator + body rows
         assert sum(len(chunk.split("\n")) - 2 for chunk in chunks) == 30
 
     def test_many_paragraphs_respect_block_limit(self) -> None:
@@ -108,6 +107,15 @@ class TestSplitRichMarkdown:
     def test_oversized_code_block_gives_up(self) -> None:
         code = "```\n" + "x = 1\n" * 50 + "```"
         assert split_rich_markdown(f"{_TABLE}\n\n{code}", max_bytes=100) is None
+
+    def test_deeply_indented_fence_in_list_is_never_split(self) -> None:
+        fence = "    ```\n    line0\n\n    line1\n    ```"
+        text = f"1. Step\n\n{fence}\n\n2. Next"
+        chunks = split_rich_markdown(text, max_bytes=len(fence) + 2)
+        assert chunks is not None and len(chunks) > 1
+        assert sum(fence in chunk for chunk in chunks) == 1
+        for chunk in chunks:
+            assert chunk.count("```") % 2 == 0
 
     def test_too_many_columns_gives_up(self) -> None:
         header = "|" + "|".join(f" c{i} " for i in range(21)) + "|"

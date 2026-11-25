@@ -22,7 +22,7 @@ RICH_MAX_TABLE_COLUMNS: Final[int] = 20
 
 _SEPARATOR: Final[str] = "\n\n"
 _SEPARATOR_BYTES: Final[int] = len(_SEPARATOR)
-_FENCE_RE: Final = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_FENCE_RE: Final = re.compile(r"^\s*(`{3,}|~{3,})")
 _UNESCAPED_PIPE_RE: Final = re.compile(r"(?<!\\)\|")
 _DELIMITER_CELL_RE: Final = re.compile(r"^\s*:?-+:?\s*$")
 
@@ -54,7 +54,11 @@ class _Unit:
 
 
 def contains_gfm_table(markdown: str) -> bool:
-    """True if the Markdown has a GFM pipe table outside fenced code blocks."""
+    """True if the Markdown has a GFM pipe table outside fenced code blocks.
+
+    Tables inside blockquotes or list items, after a line starting with ```x```, or whose
+    pipe follows an escaped backslash (`\\\\|`) are not detected and use the legacy rendering.
+    """
     return any(unit.kind == "table" for unit in _parse_units(markdown))
 
 
@@ -201,7 +205,7 @@ def _parse_units(markdown: str) -> list[_Unit]:
 
 def _find_fence_end(lines: list[str], start: int, opener: str) -> int:
     """Index of the line closing the fence opened at `start` (last line if unclosed)."""
-    closer = re.compile(rf"^ {{0,3}}{re.escape(opener[0])}{{{len(opener)},}}\s*$")
+    closer = re.compile(rf"^\s*{re.escape(opener[0])}{{{len(opener)},}}\s*$")
     for j in range(start + 1, len(lines)):
         if closer.match(lines[j]):
             return j
