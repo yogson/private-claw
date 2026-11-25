@@ -39,6 +39,10 @@ class TestContainsGfmTable:
     def test_table_after_fence_counts(self) -> None:
         assert contains_gfm_table(f"```\ncode | x\n```\n\n{_TABLE}")
 
+    def test_table_after_block_with_nested_indented_fence_counts(self) -> None:
+        block = "```markdown\n# README\n\n    ```\n    nested\n```"
+        assert contains_gfm_table(f"{block}\n\n{_TABLE}")
+
     def test_indented_code_table_does_not_count(self) -> None:
         indented = "\n".join(f"    {line}" for line in _TABLE.splitlines())
         assert not contains_gfm_table(indented)
@@ -116,6 +120,13 @@ class TestSplitRichMarkdown:
         assert sum(fence in chunk for chunk in chunks) == 1
         for chunk in chunks:
             assert chunk.count("```") % 2 == 0
+
+    def test_nested_indented_fence_does_not_close_top_level_block(self) -> None:
+        block = "```markdown\n# README\n\n    ```\n    nested\n\n    more\n    ```\n```"
+        text = f"{block}\n\n{_TABLE}"
+        chunks = split_rich_markdown(text, max_bytes=len(block) + 2)
+        assert chunks is not None and len(chunks) > 1
+        assert sum(block in chunk for chunk in chunks) == 1
 
     def test_too_many_columns_gives_up(self) -> None:
         header = "|" + "|".join(f" c{i} " for i in range(21)) + "|"

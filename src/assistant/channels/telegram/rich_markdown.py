@@ -182,7 +182,7 @@ def _parse_units(markdown: str) -> list[_Unit]:
         fence = _FENCE_RE.match(line)
         if fence is not None:
             flush_text()
-            end = _find_fence_end(lines, i, fence.group(1))
+            end = _find_fence_end(lines, i, fence.group(1), len(line) - len(line.lstrip()))
             units.append(_Unit("code", tuple(lines[i : end + 1])))
             i = end + 1
             continue
@@ -203,9 +203,13 @@ def _parse_units(markdown: str) -> list[_Unit]:
     return units
 
 
-def _find_fence_end(lines: list[str], start: int, opener: str) -> int:
-    """Index of the line closing the fence opened at `start` (last line if unclosed)."""
-    closer = re.compile(rf"^\s*{re.escape(opener[0])}{{{len(opener)},}}\s*$")
+def _find_fence_end(lines: list[str], start: int, opener: str, indent: int = 0) -> int:
+    """Index of the line closing the fence opened at `start` (last line if unclosed).
+
+    A closing fence may be indented at most `indent + 3` spaces (CommonMark), so an
+    indented fence-like line inside a less indented block does not close it.
+    """
+    closer = re.compile(rf"^[ \t]{{0,{indent + 3}}}{re.escape(opener[0])}{{{len(opener)},}}[ \t]*$")
     for j in range(start + 1, len(lines)):
         if closer.match(lines[j]):
             return j
