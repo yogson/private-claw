@@ -30,7 +30,7 @@ wheels = [
 
 [[package]]
 name = "aiogram"
-version = "3.26.0"
+version = "3.34.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -40,9 +40,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/2b/11709d58a7c47a773cd47239c7b5db258f02f31d784265bddeb562f3e9f9/aiogram-3.26.0.tar.gz", hash = "sha256:12fa1bce9c8cee0f1214f5e3f91bb631586c4503854d6138dacbdd7e7dc1020c", size = 1729985 }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/92/e2afbfee7c58f72bd4578e00926ab27b9f906d35e7a8eb780d14dd6abbd4/aiogram-3.34.0.tar.gz", hash = "sha256:7b2dd2f7396675339c8cd1338341a6f07633542ffcd67185e6eeb20519df5707", size = 2573111 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/48/8504168e7a3ede9577a2d8aa0ed3f13471ef2db6431f506105b94f284d05/aiogram-3.26.0-py3-none-any.whl", hash = "sha256:dd8ea7feb2409953ad1424564355926207af90bb2204e37be7373fe6de201016", size = 716388 },
+    { url = "https://files.pythonhosted.org/packages/6d/7f/856cd4abbc9bdebeb82c886a0e99f9103d14b1462b9146d2bf5c3cac5e7a/aiogram-3.34.0-py3-none-any.whl", hash = "sha256:830e3067fe5040740e685986f5b7b3fdeec11435f650a503ffce8dbe2d4fd407", size = 1128441 },
 ]
 
 [[package]]
@@ -246,7 +246,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiogram", specifier = ">=3.26.0" },
+    { name = "aiogram", specifier = ">=3.31.0" },
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "anyio", specifier = ">=4.7.0" },
     { name = "claude-agent-sdk", specifier = ">=0.1.50" },

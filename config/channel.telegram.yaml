@@ -9,3 +9,4 @@ poll_interval_seconds: 0.0
 startup_drop_pending_updates: false
 throttle_max_per_minute: 20
 max_attachment_size_bytes: 20971520   # 20MB (Telegram bot limit)
+rich_messages: tables_only            # off | tables_only | all (native rich messages for replies)

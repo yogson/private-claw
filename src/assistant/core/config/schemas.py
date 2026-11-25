@@ -80,6 +80,14 @@ class AppConfig(BaseModel):
         return self.shared_data_root.strip() or self.data_root
 
 
+class TelegramRichMessagesMode(StrEnum):
+    """When agent replies are sent as native rich messages (Bot API sendRichMessage)."""
+
+    OFF = "off"
+    TABLES_ONLY = "tables_only"
+    ALL = "all"
+
+
 class TelegramChannelConfig(BaseModel):
     """Telegram channel configuration (config/channel.telegram.yaml).
 
@@ -99,6 +107,17 @@ class TelegramChannelConfig(BaseModel):
     max_attachment_size_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     session_resume_hmac_secret: str = Field(default="")
     session_resume_max_sessions: int = Field(default=5, ge=1)
+    # Send formatted agent replies via sendRichMessage: "off", "tables_only" (only replies
+    # with a Markdown table outside code blocks) or "all". Failures fall back to entities.
+    rich_messages: TelegramRichMessagesMode = TelegramRichMessagesMode.TABLES_ONLY
+
+    @field_validator("rich_messages", mode="before")
+    @classmethod
+    def normalize_rich_messages(cls, value: object) -> object:
+        # YAML 1.1 reads a bare `off` as boolean false.
+        if value is False:
+            return TelegramRichMessagesMode.OFF
+        return value
 
     @model_validator(mode="after")
     def validate_when_enabled(self) -> "TelegramChannelConfig":
