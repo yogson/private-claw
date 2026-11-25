@@ -227,3 +227,61 @@ def test_formatter_cards_keep_entities() -> None:
     assert by_type["text_link"].url == "https://example.com"
     bolds = sorted((e.offset, e.length) for e in entities if e.type == "bold")
     assert bolds == [(0, 5), (12, 4)]
+
+
+def _entities_by_type(md: str) -> tuple[str, dict[str, list[tuple[int, int]]]]:
+    [(text, entities)] = format_markdown_for_telegram(md)
+    grouped: dict[str, list[tuple[int, int]]] = {}
+    for e in entities:
+        grouped.setdefault(e.type, []).append((e.offset, e.length))
+    return text, grouped
+
+
+def test_lines_bold_keeps_markers_inside_code_spans() -> None:
+    for code, shown in (("`__init__`", "__init__"), ("`**kwargs`", "**kwargs")):
+        text, grouped = _entities_by_type(
+            f"| Name | Description |\n|---|---|\n| {code} | {_LONG} |"
+        )
+        assert text.startswith(f"{shown} — ")
+        assert grouped["code"] == [(0, len(shown))]
+        assert grouped["bold"] == [(0, len(shown))]
+
+
+def test_lines_bold_keeps_link_destination_intact() -> None:
+    md = f"| Name | Description |\n|---|---|\n| [doc](https://e.com/__init__/x) | {_LONG} |"
+    [(text, entities)] = format_markdown_for_telegram(md)
+    assert text.startswith("doc — ")
+    [link] = [e for e in entities if e.type == "text_link"]
+    assert link.url == "https://e.com/__init__/x"
+
+
+def test_cards_bold_keeps_markers_inside_code_and_links() -> None:
+    for code, shown in (("`__init__`", "__init__"), ("`**kwargs`", "**kwargs")):
+        md = f"| Name | Role | Notes |\n|---|---|---|\n| {code} | lead | {_LONG} |"
+        text, grouped = _entities_by_type(md)
+        assert text.startswith(f"{shown}\nRole: lead")
+        assert grouped["code"] == [(0, len(shown))]
+        assert (0, len(shown)) in grouped["bold"]
+    link = "[doc](https://e.com/__init__/x)"
+    md = f"| Name | Role | Notes |\n|---|---|---|\n| {link} | lead | {_LONG} |"
+    [(text, entities)] = format_markdown_for_telegram(md)
+    assert text.startswith("doc\nRole: lead")
+    [link] = [e for e in entities if e.type == "text_link"]
+    assert link.url == "https://e.com/__init__/x"
+
+
+def test_bold_still_drops_markers_outside_code() -> None:
+    md = f"| Name | Description |\n|---|---|\n| **__x__** `a` | {_LONG} |"
+    text, _ = _entities_by_type(md)
+    assert text.startswith("x a — ")
+
+
+def test_br_tags_become_a_space_in_all_layouts() -> None:
+    for tag in ("<br>", "<br/>", "<br />", "<BR>"):
+        grid = render_tables(f"| A | B |\n|---|---|\n| a{tag}b | c |")
+        assert "a b | c" in grid
+        assert "<" not in grid
+        lines = render_tables(f"| A | B |\n|---|---|\n| a{tag}b | {_LONG}x{tag}y |")
+        assert lines == f"**a b** — {_LONG}x y"
+        cards = render_tables(f"| A | B | C |\n|---|---|---|\n| a{tag}b | c{tag}d | {_LONG} |")
+        assert cards.startswith("**a b**\nB: c d\n")

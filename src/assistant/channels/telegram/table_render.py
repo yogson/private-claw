@@ -45,6 +45,9 @@ _EMPHASIS_RES: Final = (
 )
 _BACKSLASH_ESCAPE_RE: Final = re.compile(r"\\([!-/:-@\[-`{-~])")
 _BOLD_MARKER_RE: Final = re.compile(r"\*\*|(?<!\w)__|__(?!\w)")
+# Spans whose content must survive bold-marker removal: code spans and link destinations.
+_PROTECTED_RE: Final = re.compile(_CODE_SPAN_RE.pattern + r"|\]\([^)]*\)", re.S)
+_BR_RE: Final = re.compile(r"<br\s*/?>", re.I)
 # Line starts that would turn a rendered line into a heading, quote, list or rule.
 _BLOCK_START_RE: Final = re.compile(
     r"^(?:#{1,6}(?=\s|$)|>|[-+*](?=\s|$)|=+\s*$|-+\s*$|\*{3,}\s*$|\d{1,9}(?=[.)](?:\s|$)))"
@@ -137,7 +140,7 @@ def _split_row(line: str) -> list[str]:
         stripped = stripped[1:]
     if stripped.endswith("|") and not stripped.endswith("\\|"):
         stripped = stripped[:-1]
-    return [cell.strip() for cell in _UNESCAPED_PIPE_RE.split(stripped)]
+    return [_BR_RE.sub(" ", cell).strip() for cell in _UNESCAPED_PIPE_RE.split(stripped)]
 
 
 def _parse_aligns(line: str) -> list[_Align] | None:
@@ -252,8 +255,15 @@ def _render_cards(table: _Table) -> str:
 
 
 def _bold(cell: str) -> str:
-    """Wrap a cell in bold, dropping bold markers already inside it."""
-    inner = _BOLD_MARKER_RE.sub("", cell).strip()
+    """Wrap a cell in bold, dropping bold markers outside code spans and link targets."""
+    kept: list[str] = []
+
+    def _keep(match: re.Match[str]) -> str:
+        kept.append(match.group(0))
+        return _CODE_PLACEHOLDER.format(len(kept) - 1)
+
+    text = _BOLD_MARKER_RE.sub("", _PROTECTED_RE.sub(_keep, cell))
+    inner = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], text).strip()
     return f"**{inner}**" if inner else ""
 
 

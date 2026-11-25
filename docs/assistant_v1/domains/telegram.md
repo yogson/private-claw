@@ -194,7 +194,9 @@ the Telegram transport only.
 
 - On the entity path (Markdown converted to text and entities by telegramify-markdown), `table_render.render_tables`
   first rewrites GFM pipe tables outside fenced code blocks, so they read well on a phone. Native rich messages, where
-  enabled, send the original Markdown and do not use this.
+  enabled, send the original Markdown and do not use this; the fallback from the rich path (a rejected
+  `sendRichMessage`, see Rich Messages above) resends through the entity path and therefore also goes through this
+  renderer.
 - Display width counts emoji and East Asian wide characters as 2 cells and combining marks, zero-width joiners and
   variation selectors as 0 (`wcwidth`). The budget is `TABLE_WIDTH_BUDGET` = 38 monospace cells.
 - Layout:
