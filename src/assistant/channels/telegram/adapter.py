@@ -142,6 +142,7 @@ class TelegramAdapter:
         self._egress = TelegramEgress(
             bot_token=config.bot_token,
             audit_logger=audit_logger,
+            rich_messages=config.rich_messages,
         )
         self._session_resume: SessionResumeService | None = None
         if session_store is not None:

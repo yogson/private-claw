@@ -2,10 +2,12 @@
 Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 
 Outbound Telegram message delivery via aiogram with bounded retry policy.
-Handles text and interactive (inline keyboard) response types.
+Handles text and interactive (inline keyboard) response types. Formatted replies can go
+out as native rich messages (sendRichMessage) with fallback to the entity path.
 """
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 import structlog
@@ -13,13 +15,18 @@ from aiogram import Bot
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
+    TelegramForbiddenError,
     TelegramNetworkError,
+    TelegramNotFound,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputRichMessage,
     KeyboardButton,
+    MessageEntity,
     ReplyKeyboardMarkup,
     ReplyParameters,
     WebAppInfo,
@@ -28,6 +35,8 @@ from aiogram.types import (
 from assistant.channels.telegram.formatter import format_markdown_for_telegram
 from assistant.channels.telegram.models import ChannelResponse, MessageType
 from assistant.channels.telegram.reliability.audit import ChannelAuditLogger
+from assistant.channels.telegram.rich_markdown import contains_gfm_table, split_rich_markdown
+from assistant.core.config.schemas import TelegramRichMessagesMode
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +47,46 @@ _PARSE_ENTITIES_ERROR: Final[str] = "can't parse entities"
 _CALLBACK_ACK_TEXT: Final[str] = "Received."
 _TELEGRAM_MAX_MESSAGE_LENGTH: Final[int] = 4096
 _CALLBACK_ANSWER_MAX_LENGTH: Final[int] = 200
+# Error texts (lowercased) meaning the Bot API server does not know sendRichMessage; a 404
+# (TelegramNotFound) means the same.
+_UNSUPPORTED_METHOD_ERRORS: Final[tuple[str, ...]] = (
+    "method not found",
+    "unknown method",
+    "method is not supported",
+)
+
+
+class _RichMessagesLatch:
+    """Process-wide switch, set once the Bot API rejects sendRichMessage as unsupported."""
+
+    unsupported: bool = False
+
+
+_RICH_LATCH: Final = _RichMessagesLatch()
+
+
+@dataclass(frozen=True)
+class _OutboundChunk:
+    """One message to send: rich Markdown, or text with entities (empty: parse_mode/plain)."""
+
+    text: str
+    entities: list[MessageEntity] = field(default_factory=list)
+    rich: bool = False
+
+
+def _is_unsupported_method_error(exc: TelegramAPIError) -> bool:
+    if isinstance(exc, TelegramNotFound):
+        return True
+    message = exc.message.lower()
+    return any(marker in message for marker in _UNSUPPORTED_METHOD_ERRORS)
+
+
+def _fails_on_entity_path_too(exc: TelegramAPIError) -> bool:
+    """Errors a resend through the entity path would hit as well (no point in falling back)."""
+    return (
+        isinstance(exc, TelegramForbiddenError | TelegramServerError)
+        or "message to be replied not found" in exc.message.lower()
+    )
 
 
 class TelegramSendError(Exception):
@@ -66,11 +115,13 @@ class TelegramEgress:
         max_attempts: int = _MAX_RETRY_ATTEMPTS,
         base_delay: float = _RETRY_BASE_DELAY_SECONDS,
         audit_logger: ChannelAuditLogger | None = None,
+        rich_messages: TelegramRichMessagesMode = TelegramRichMessagesMode.TABLES_ONLY,
     ) -> None:
         self._bot = Bot(token=bot_token)
         self._max_attempts = max_attempts
         self._base_delay = base_delay
         self._audit_logger = audit_logger
+        self._rich_messages = rich_messages
 
     async def send(self, response: ChannelResponse, chat_id: int) -> bool:
         """
@@ -88,16 +139,9 @@ class TelegramEgress:
         last_error = ""
         attempts_made = 0
 
-        use_formatting = response.parse_mode is None and not response.plain_text
-        if use_formatting:
-            formatted_chunks = format_markdown_for_telegram(response.text)
-        else:
-            text_chunks = self._split_text(response.text)
-            formatted_chunks = [(chunk, []) for chunk in text_chunks]
-
+        chunks = self._plan_chunks(response)
         plain_fallback = False
         sent_chunks = 0
-        total_chunks = len(formatted_chunks)
         base_reply_markup = self._build_reply_markup(response)
         attempt_limit = self._max_attempts
         attempt = 0
@@ -112,28 +156,32 @@ class TelegramEgress:
                     trace_id=response.trace_id,
                 )
             try:
-                for chunk_index, (chunk_text, chunk_entities) in enumerate(
-                    formatted_chunks[sent_chunks:], start=sent_chunks
-                ):
-                    is_last_chunk = chunk_index == total_chunks - 1
+                for chunk_index, chunk in enumerate(chunks[sent_chunks:], start=sent_chunks):
+                    is_last_chunk = chunk_index == len(chunks) - 1
                     reply_markup = base_reply_markup if is_last_chunk else None
                     send_kwargs: dict[str, Any] = {
                         "chat_id": chat_id,
-                        "text": chunk_text,
                         "reply_markup": reply_markup,
                     }
-                    if plain_fallback:
-                        pass
-                    elif chunk_entities:
-                        send_kwargs["entities"] = chunk_entities
+                    if chunk.rich:
+                        send_kwargs["rich_message"] = InputRichMessage(markdown=chunk.text)
                     else:
-                        send_kwargs["parse_mode"] = response.parse_mode
+                        send_kwargs["text"] = chunk.text
+                        if plain_fallback:
+                            pass
+                        elif chunk.entities:
+                            send_kwargs["entities"] = chunk.entities
+                        else:
+                            send_kwargs["parse_mode"] = response.parse_mode
                     if chunk_index == 0 and response.reply_to_message_id is not None:
                         send_kwargs["reply_parameters"] = ReplyParameters(
                             message_id=response.reply_to_message_id,
                             allow_sending_without_reply=False,
                         )
-                    message = await self._bot.send_message(**send_kwargs)
+                    if chunk.rich:
+                        message = await self._bot.send_rich_message(**send_kwargs)
+                    else:
+                        message = await self._bot.send_message(**send_kwargs)
                     sent_chunks += 1
                     message_id = getattr(message, "message_id", None)
                     if isinstance(message_id, int):
@@ -195,6 +243,19 @@ class TelegramEgress:
             except TelegramAPIError as exc:
                 last_error = str(exc)
                 if (
+                    sent_chunks < len(chunks)
+                    and chunks[sent_chunks].rich
+                    and not _fails_on_entity_path_too(exc)
+                ):
+                    # Rich message rejected: send this and the remaining chunks through the
+                    # entity path on an extra attempt (chunks already delivered stay as is).
+                    chunks = chunks[:sent_chunks] + self._entity_chunks(
+                        "\n\n".join(chunk.text for chunk in chunks[sent_chunks:])
+                    )
+                    attempt_limit += 1
+                    self._handle_rich_failure(exc, chat_id, response, attempt)
+                    continue
+                if (
                     isinstance(exc, TelegramBadRequest)
                     and _PARSE_ENTITIES_ERROR in last_error.lower()
                     and not plain_fallback
@@ -242,6 +303,61 @@ class TelegramEgress:
                 trace_id=response.trace_id,
             )
         raise TelegramSendError(chat_id=chat_id, attempts=attempts_made, last_error=last_error)
+
+    def _plan_chunks(self, response: ChannelResponse) -> list[_OutboundChunk]:
+        use_formatting = response.parse_mode is None and not response.plain_text
+        if not use_formatting:
+            return [_OutboundChunk(text=chunk) for chunk in self._split_text(response.text)]
+        rich_chunks = self._plan_rich_chunks(response.text)
+        if rich_chunks is not None:
+            return [_OutboundChunk(text=chunk, rich=True) for chunk in rich_chunks]
+        return self._entity_chunks(response.text)
+
+    def _plan_rich_chunks(self, markdown: str) -> list[str] | None:
+        """Rich message chunks for this reply, or None to use the entity path."""
+        if self._rich_messages == TelegramRichMessagesMode.OFF or _RICH_LATCH.unsupported:
+            return None
+        if self._rich_messages == TelegramRichMessagesMode.TABLES_ONLY and not (
+            contains_gfm_table(markdown)
+        ):
+            return None
+        return split_rich_markdown(markdown)
+
+    @staticmethod
+    def _entity_chunks(markdown: str) -> list[_OutboundChunk]:
+        return [
+            _OutboundChunk(text=text, entities=entities)
+            for text, entities in format_markdown_for_telegram(markdown)
+        ]
+
+    def _handle_rich_failure(
+        self, exc: TelegramAPIError, chat_id: int, response: ChannelResponse, attempt: int
+    ) -> None:
+        if self._audit_logger is not None:
+            self._audit_logger.log_egress_api_error(
+                chat_id=chat_id,
+                response_id=response.response_id,
+                attempt=attempt,
+                error=str(exc),
+                trace_id=response.trace_id,
+            )
+        if _is_unsupported_method_error(exc) and not _RICH_LATCH.unsupported:
+            _RICH_LATCH.unsupported = True
+            logger.warning(
+                "telegram.egress.rich_messages_unsupported",
+                chat_id=chat_id,
+                response_id=response.response_id,
+                trace_id=response.trace_id,
+                error=str(exc),
+            )
+        logger.warning(
+            "telegram.egress.rich_fallback",
+            chat_id=chat_id,
+            response_id=response.response_id,
+            trace_id=response.trace_id,
+            attempt=attempt,
+            error=str(exc),
+        )
 
     async def acknowledge_callback(self, callback_id: str, text: str | None = None) -> None:
         """Answer a callback query (stops the client spinner); text shows as a toast."""
@@ -295,16 +411,16 @@ class TelegramEgress:
         inline_buttons: list[list[InlineKeyboardButton]] = []
         for action in response.actions:
             if action.web_app_url:
-                btn = InlineKeyboardButton(
+                inline_btn = InlineKeyboardButton(
                     text=action.label,
                     web_app=WebAppInfo(url=action.web_app_url),
                 )
             else:
-                btn = InlineKeyboardButton(
+                inline_btn = InlineKeyboardButton(
                     text=action.label,
                     callback_data=action.callback_data,
                 )
-            inline_buttons.append([btn])
+            inline_buttons.append([inline_btn])
         return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
     @staticmethod

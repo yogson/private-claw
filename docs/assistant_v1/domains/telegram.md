@@ -159,6 +159,28 @@ the Telegram transport only.
   - case-insensitive token parsing.
 - Command registration failures must not block polling startup; they are logged and polling continues.
 
+### Rich Messages (Tables)
+
+- Formatted agent replies (no `parse_mode`, not `plain_text`) can be sent as native rich messages via Bot API
+  `sendRichMessage` with `InputRichMessage(markdown=<original agent Markdown>)`, so GFM tables render natively
+  (alignment, links and bold inside cells) instead of as a monospace `pre` block.
+- `rich_messages` in `channel.telegram.yaml`: `off` (never), `tables_only` (default: only replies with a GFM pipe
+  table outside fenced code blocks), `all` (every formatted reply).
+- `reply_parameters` go on the first message and `reply_markup` on the last, as on the entity path.
+- Splitting: content over 32,768 UTF-8 bytes or ~500 blocks (each text line and table row counted conservatively) is
+  split at blank-line block boundaries, never inside a table or code block. An oversized table is split into row
+  groups, each repeating the header and separator rows. If the content cannot be split safely (oversized code block,
+  table over 20 columns), the reply uses the entity path.
+- Fallback: any API error from `sendRichMessage` (except flood control and network errors, which are retried as
+  usual; also 403, "message to be replied not found" and 5xx, which would fail on the entity path too and are
+  handled as on the legacy path) resends that chunk and the rest through the entity path; chunks already delivered are not resent. A 404 or
+  a "method not found"/"unknown method"/"method is not supported" error sets a process-wide latch that disables the rich path for later sends
+  (logged once as `telegram.egress.rich_messages_unsupported`). The plain-text retry on "can't parse entities"
+  stays the last resort. Rich failures are reported to the audit logger like other egress API errors.
+- Tables the detector does not recognize (inside blockquotes or list items, after a line starting with ```` ```x``` ````,
+  or with `\\|`) fall back to the legacy rendering in `tables_only` mode.
+- Message edits (`edit_message_text`) and confirmation prompts (plain text) are unchanged.
+
 ## Voice Handling Strategy
 
 - v1 uses a dedicated Telegram MTProto transcription worker (Pyrogram/Telethon user client) to access Telegram built-in voice transcription.
