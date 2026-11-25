@@ -1,11 +1,13 @@
 """Tests for config domain Pydantic schemas."""
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from assistant.core.config.schemas import (
     ModelConfig,
     TelegramChannelConfig,
+    TelegramRichMessagesMode,
     ToolDefaultParams,
 )
 
@@ -20,6 +22,27 @@ class TestTelegramChannelConfig:
         assert cfg.enabled is False
         assert cfg.bot_token == ""
         assert cfg.allowlist == []
+
+    def test_rich_messages_defaults_to_tables_only(self) -> None:
+        assert TelegramChannelConfig().rich_messages == TelegramRichMessagesMode.TABLES_ONLY
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("rich_messages: off", TelegramRichMessagesMode.OFF),
+            ("rich_messages: 'off'", TelegramRichMessagesMode.OFF),
+            ("rich_messages: tables_only", TelegramRichMessagesMode.TABLES_ONLY),
+            ("rich_messages: all", TelegramRichMessagesMode.ALL),
+        ],
+    )
+    def test_rich_messages_from_yaml(self, raw: str, expected: TelegramRichMessagesMode) -> None:
+        # A bare `off` is boolean false in YAML 1.1; it must still mean "off".
+        cfg = TelegramChannelConfig.model_validate(yaml.safe_load(raw))
+        assert cfg.rich_messages == expected
+
+    def test_rich_messages_rejects_unknown_mode(self) -> None:
+        with pytest.raises(ValidationError):
+            TelegramChannelConfig(rich_messages="sometimes")  # type: ignore[arg-type]
 
     def test_enabled_requires_bot_token(self) -> None:
         with pytest.raises(ValidationError, match="bot_token must not be empty"):
