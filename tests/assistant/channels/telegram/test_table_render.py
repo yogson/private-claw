@@ -262,8 +262,8 @@ def test_cards_bold_keeps_markers_inside_code_and_links() -> None:
         assert text.startswith(f"{shown}\nRole: lead")
         assert grouped["code"] == [(0, len(shown))]
         assert (0, len(shown)) in grouped["bold"]
-    link = "[doc](https://e.com/__init__/x)"
-    md = f"| Name | Role | Notes |\n|---|---|---|\n| {link} | lead | {_LONG} |"
+    link_md = "[doc](https://e.com/__init__/x)"
+    md = f"| Name | Role | Notes |\n|---|---|---|\n| {link_md} | lead | {_LONG} |"
     [(text, entities)] = format_markdown_for_telegram(md)
     assert text.startswith("doc\nRole: lead")
     [link] = [e for e in entities if e.type == "text_link"]
