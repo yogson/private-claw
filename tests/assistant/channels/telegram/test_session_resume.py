@@ -269,6 +269,37 @@ class TestBuildSessionMenu:
         assert verified == f"tg:{_CHAT_ID}"
         assert len(resp.actions[0].callback_data.encode("utf-8")) <= 64
 
+    def test_menu_text_shows_session_id_in_code_span_for_each_entry(self) -> None:
+        ids = [f"tg:{_CHAT_ID}", f"tg:{_CHAT_ID}:3eeada40275f_x"]
+        entries = [
+            SessionEntry(
+                session_id=sid,
+                label=f"Label {n}",
+                last_activity=_NOW,
+                preview_snippet="",
+            )
+            for n, sid in enumerate(ids)
+        ]
+        svc = SessionResumeService(MagicMock(), _SECRET)
+        resp = svc.build_session_menu(entries, f"tg:{_CHAT_ID}", _CHAT_ID, "trace-x")
+        assert resp.parse_mode == "Markdown"
+        for sid in ids:
+            assert f"ID: `{sid}`" in resp.text
+
+    def test_menu_text_session_id_with_backtick_is_not_a_code_span(self) -> None:
+        entries = [
+            SessionEntry(
+                session_id=f"tg:{_CHAT_ID}:a`b",
+                label="Odd",
+                last_activity=_NOW,
+                preview_snippet="",
+            )
+        ]
+        svc = SessionResumeService(MagicMock(), _SECRET)
+        resp = svc.build_session_menu(entries, f"tg:{_CHAT_ID}", _CHAT_ID, "trace-x")
+        assert f"ID: tg:{_CHAT_ID}:ab" in resp.text
+        assert "`" not in resp.text
+
     def test_long_session_id_keeps_callback_under_telegram_limit(self) -> None:
         entries = [
             SessionEntry(

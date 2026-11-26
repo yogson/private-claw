@@ -36,6 +36,17 @@ def _escape_md(text: str) -> str:
     return text.translate(_MARKDOWN_SPECIAL)
 
 
+def _format_session_id(session_id: str) -> str:
+    """Render a session ID as a legacy-Markdown code span (tap-to-copy in Telegram).
+
+    Backticks cannot be escaped inside a code span, so an ID containing one is
+    rendered as plain text with the offending character stripped.
+    """
+    if "`" in session_id:
+        return _escape_md(session_id)
+    return f"`{session_id}`"
+
+
 class SessionEntry(BaseModel):
     """Compact user-facing session metadata for resume selection."""
 
@@ -117,6 +128,7 @@ class SessionResumeService:
             safe_preview = _escape_md(entry.preview_snippet)
             preview = f" — _{safe_preview}_" if safe_preview else ""
             lines.append(f"{i}. *{safe_label}* ({ts}){preview}")
+            lines.append(f"    ID: {_format_session_id(entry.session_id)}")
             button_label = f"{i}. {entry.label} ({entry.last_activity.strftime('%m/%d %H:%M')})"
             actions.append(
                 ActionButton(
