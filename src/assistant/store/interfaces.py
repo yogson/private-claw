@@ -5,6 +5,8 @@ Abstract interfaces for store components.
 Backend implementations (filesystem, future Redis) implement these interfaces.
 """
 
+import asyncio
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -60,6 +62,35 @@ class LockCoordinatorInterface(ABC):
     @abstractmethod
     async def get_lock_info(self, lock_key: str) -> LockRecord | None:
         """Get information about a lock if it exists and is not expired."""
+
+    async def acquire_wait(
+        self,
+        lock_key: str,
+        owner_id: str,
+        *,
+        timeout_seconds: float,
+        ttl_seconds: int | None = None,
+        poll_initial_seconds: float = 0.05,
+        poll_max_seconds: float = 0.5,
+    ) -> LockRecord | None:
+        """
+        Acquire a lock, waiting up to ``timeout_seconds`` while another owner holds it.
+
+        Polls ``acquire`` with exponential backoff (``poll_initial_seconds`` doubling up
+        to ``poll_max_seconds``), so it also waits on holders in other processes.
+        Returns the LockRecord once acquired, or None when the timeout elapses.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        delay = poll_initial_seconds
+        while True:
+            record = await self.acquire(lock_key, owner_id, ttl_seconds)
+            if record is not None:
+                return record
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, poll_max_seconds)
 
     @asynccontextmanager
     async def lock(

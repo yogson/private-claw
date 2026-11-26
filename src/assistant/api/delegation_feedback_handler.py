@@ -3,6 +3,8 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from datetime import UTC, datetime
 
+import structlog
+
 from assistant.api.confirmation_handler import (
     deliver_with_confirmations,
     discard_confirmations_on_error,
@@ -18,9 +20,29 @@ from assistant.core.events.models import (
     OrchestratorEvent,
 )
 from assistant.core.orchestrator.service import Orchestrator
+from assistant.store.interfaces import LockAcquisitionError
 from assistant.store.models import TaskRecord
 from assistant.subagents.coordinator import DelegationCoordinator
 from assistant.subagents.workspaces import task_workspace_info
+
+logger = structlog.get_logger(__name__)
+
+_SUMMARY_EXCERPT_CHARS = 500
+
+
+def _lock_timeout_notice(task: TaskRecord, summary: str) -> str:
+    """User-facing notice for a completion whose follow-up turn could not run."""
+    text = (
+        f"Delegated task {task.task_id} finished ({task.status.value}), but the session "
+        "stayed busy with another turn, so I could not process the result. "
+        f"Ask me to check the status of {task.task_id} to continue."
+    )
+    if summary:
+        excerpt = summary[:_SUMMARY_EXCERPT_CHARS]
+        if len(summary) > _SUMMARY_EXCERPT_CHARS:
+            excerpt += "..."
+        text += f"\n\nSummary: {excerpt}"
+    return text
 
 
 def _build_delegation_feedback_handler(
@@ -91,7 +113,34 @@ def _build_delegation_feedback_handler(
                     stack.enter_context(logfire.attach_context(logfire_ctx))
                 except Exception:
                     pass
-            result_msg = await orchestrator.execute_turn(event, tool_call_notifier=notifier)
+            try:
+                result_msg = await orchestrator.execute_turn(event, tool_call_notifier=notifier)
+            except LockAcquisitionError as exc:
+                # The session stayed busy past the lock wait timeout. The event id is
+                # already registered as processed, so report the completion to the user
+                # instead of dropping it silently.
+                logger.error(
+                    "delegation_feedback.lock_timeout",
+                    task_id=task.task_id,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    event_id=event.event_id,
+                    error=str(exc),
+                )
+                if chat_id is not None:
+                    summary = payload["summary"] if isinstance(payload["summary"], str) else ""
+                    await adapter.send_response(
+                        ChannelResponse(
+                            response_id=event.event_id,
+                            channel="telegram",
+                            session_id=session_id,
+                            trace_id=trace_id,
+                            message_type=MessageType.TEXT,
+                            text=_lock_timeout_notice(task, summary),
+                        ),
+                        chat_id=chat_id,
+                    )
+                return
         if result_msg is None:
             return
         async with discard_confirmations_on_error(confirmations, result_msg.confirmations):

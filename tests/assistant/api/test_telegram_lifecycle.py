@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.core.config.schemas import (
@@ -781,6 +782,40 @@ async def test_delegation_feedback_handler_payload_includes_workspace() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delegation_feedback_handler_reports_lock_timeout_to_user() -> None:
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
+    from assistant.store.interfaces import LockAcquisitionError
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(
+        side_effect=LockAcquisitionError("Failed to acquire lock: session:tg:239146894:abc")
+    )
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock(return_value=True)
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-busy",
+        parent_session_id="tg:239146894:abc",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        result={"summary": "Opened PR #42"},
+        metadata={"trace_id": "trace-busy"},
+    )
+
+    # The timeout is handled (not raised into the coordinator) and reported to the chat.
+    await handler(task)
+
+    adapter.send_response.assert_awaited_once()
+    (response,) = adapter.send_response.await_args.args
+    assert adapter.send_response.await_args.kwargs["chat_id"] == 239146894
+    assert "dlg-busy" in response.text
+    assert "completed" in response.text
+    assert "Opened PR #42" in response.text
+
+
+@pytest.mark.asyncio
 async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram() -> None:
     from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
     from assistant.core.orchestrator.models import OrchestratorResult
@@ -1084,6 +1119,64 @@ async def test_handler_model_http_error_non_token_limit_returns_friendly_message
 
     assert response is not None
     assert "403" in response.text
+
+
+@pytest.mark.asyncio
+async def test_handler_lock_timeout_replies_busy_and_does_not_raise() -> None:
+    """A user message that times out waiting for the session lock gets a reply (issue #100)."""
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+    from assistant.store.interfaces import LockAcquisitionError
+
+    event = NormalizedEvent(
+        event_id="ev-lock",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:790",
+        user_id="790",
+        created_at=datetime.now(UTC),
+        trace_id="trace-lock",
+        text="hello",
+        metadata={"chat_id": 790},
+    )
+
+    mock_adapter = MagicMock()
+    for name in (
+        "is_stop_request",
+        "is_verbose_request",
+        "is_session_new_request",
+        "is_session_reset_request",
+        "is_compact_request",
+        "is_wtf_request",
+        "is_session_resume_request",
+        "is_session_resume_callback",
+        "is_model_request",
+        "is_model_callback_request",
+        "is_capabilities_request",
+        "is_capabilities_callback_request",
+        "is_usage_request",
+        "is_confirmation_callback",
+    ):
+        getattr(mock_adapter, name).return_value = False
+    mock_adapter.get_model_override.return_value = None
+    mock_adapter.get_capabilities_override.return_value = None
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.execute_turn = AsyncMock(
+        side_effect=LockAcquisitionError("Failed to acquire lock: session:tg:790")
+    )
+
+    handler = _build_orchestrator_handler(mock_adapter, mock_orchestrator, None)
+    with capture_logs() as logs:
+        response = await handler(event)
+
+    assert response is not None
+    assert "busy" in response.text
+    assert response.session_id == "tg:790"
+    entries = [e for e in logs if e["event"] == "orchestrator.lock_timeout_reply"]
+    assert entries
+    assert entries[0]["session_id"] == "tg:790"
+    assert entries[0]["trace_id"] == "trace-lock"
 
 
 @pytest.mark.asyncio

@@ -322,6 +322,18 @@ def _build_orchestrator_handler(
                 streaming_text_notifier=text_notifier,
                 compaction_notifier=compaction_notifier,
             )
+        except LockAcquisitionError as exc:
+            logger.warning(
+                "orchestrator.lock_timeout_reply",
+                session_id=orch_event.session_id,
+                trace_id=event.trace_id,
+                error=str(exc),
+            )
+            return build_text_channel_response(
+                text="The session is busy right now, please send your message again.",
+                session_id=orch_event.session_id,
+                trace_id=event.trace_id,
+            )
         except ModelHTTPError as exc:
             if _is_token_limit_error(exc):
                 logger.warning(

@@ -265,6 +265,9 @@ class Orchestrator:
             return None
 
         ctx = await self._session_factory.resume(event.session_id)
+        # Bind the trace id before the session lock is taken so the lock wait /
+        # acquire / release events are correlated with this turn.
+        token = set_trace_id(event.trace_id)
         try:
             async with ctx:
                 result = await self._run_turn(
@@ -281,9 +284,12 @@ class Orchestrator:
                 "orchestrator.lock_timeout",
                 session_id=event.session_id,
                 trace_id=event.trace_id,
+                event_id=event.event_id,
                 error=str(exc),
             )
             raise
+        finally:
+            reset_trace_id(token)
 
     async def _run_turn_pydantic_ai(
         self,
