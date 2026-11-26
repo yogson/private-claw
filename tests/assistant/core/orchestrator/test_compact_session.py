@@ -75,7 +75,9 @@ def _assistant_with_usage(
     turn_id: str = "t1",
     input_tokens: int = 1000,
     output_tokens: int = 500,
+    last_request_input_tokens: int | None = None,
 ) -> SessionRecord:
+    """Assistant record with usage; by default a single-request turn (context == total)."""
     return _rec(
         sequence=sequence,
         turn_id=turn_id,
@@ -86,6 +88,9 @@ def _assistant_with_usage(
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "last_request_input_tokens": (
+                    input_tokens if last_request_input_tokens is None else last_request_input_tokens
+                ),
             },
         },
     )
@@ -212,6 +217,65 @@ class TestShouldCompactSession:
         result = await orch._should_compact_session("s1")  # noqa: SLF001
         assert result is not None
         assert len(result) == 4
+
+    @pytest.mark.asyncio
+    async def test_summed_run_usage_above_threshold_does_not_trigger(self) -> None:
+        # #102: a 3-request turn of 5k each sums to 15k (> 10_000 threshold), but
+        # the real context (last request) is 5k: no compaction.
+        records = [
+            _assistant_with_usage(0, turn_id="t1", input_tokens=5000, output_tokens=300),
+            _terminal(1, turn_id="t1"),
+            _assistant_with_usage(
+                2,
+                turn_id="t2",
+                input_tokens=15_000,
+                output_tokens=300,
+                last_request_input_tokens=5000,
+            ),
+            _terminal(3, turn_id="t2"),
+        ]
+        orch = _build_orchestrator(records)
+        assert await orch._should_compact_session("s1") is None  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_last_request_above_threshold_triggers(self) -> None:
+        records = [
+            _assistant_with_usage(0, turn_id="t1", input_tokens=5000, output_tokens=300),
+            _terminal(1, turn_id="t1"),
+            _assistant_with_usage(
+                2,
+                turn_id="t2",
+                input_tokens=25_000,
+                output_tokens=300,
+                last_request_input_tokens=13_000,
+            ),
+            _terminal(3, turn_id="t2"),
+        ]
+        orch = _build_orchestrator(records)
+        assert await orch._should_compact_session("s1") is not None  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_legacy_summed_usage_does_not_trigger(self) -> None:
+        # Records persisted before #102 carry only the summed run total: context
+        # size unknown, so no compaction on the inflated number.
+        legacy = _rec(
+            sequence=2,
+            turn_id="t2",
+            record_type=SessionRecordType.ASSISTANT_MESSAGE,
+            payload={
+                "message_id": "m-2",
+                "content": "response",
+                "usage": {"input_tokens": 50_000, "output_tokens": 300},
+            },
+        )
+        records = [
+            _assistant_with_usage(0, turn_id="t1", input_tokens=5000, output_tokens=300),
+            _terminal(1, turn_id="t1"),
+            legacy,
+            _terminal(3, turn_id="t2"),
+        ]
+        orch = _build_orchestrator(records)
+        assert await orch._should_compact_session("s1") is None  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -586,9 +650,7 @@ class TestKeepRecentTurns:
         # so their original sequences flow into future appends correctly.
         types_in_order = [r.record_type for r in restored]
         summary_idx = types_in_order.index(SessionRecordType.COMPACTION_SUMMARY)
-        kept_indices = [
-            i for i, r in enumerate(restored) if r.turn_id in {"t3", "t4"}
-        ]
+        kept_indices = [i for i, r in enumerate(restored) if r.turn_id in {"t3", "t4"}]
         assert all(i > summary_idx for i in kept_indices)
 
     @pytest.mark.asyncio
@@ -679,7 +741,8 @@ class TestKeepRecentTurns:
         await orch._compact_session("s1", "trace-1", "user-1", records=records)  # noqa: SLF001
 
         restored_turn_ids = {
-            r.turn_id for r in orch._store.sessions.replace_session.call_args[0][1]  # noqa: SLF001
+            r.turn_id
+            for r in orch._store.sessions.replace_session.call_args[0][1]  # noqa: SLF001
         }
         # Both real recent turns survive; the old turn does not.
         assert {"t2", "t3"} <= restored_turn_ids
