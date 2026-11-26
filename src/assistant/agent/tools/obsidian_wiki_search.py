@@ -6,9 +6,9 @@ Read-only retrieval tool over a claude-obsidian vault (github.com/AgriciDaniel/c
 Shells out to the product's deterministic retrieve.py pipeline (BM25 over
 contextualized chunks, optional cosine rerank) rather than delegating to a Claude
 Code sub-agent, so it stays synchronous and cheap enough to call like memory_search.
-Requires CLAUDE_OBSIDIAN_VAULT and CLAUDE_OBSIDIAN_PRODUCT_ROOT env vars; the tool
-is only useful once the vault's retrieval index has been provisioned (see
-scripts/contextual-prefix.py / bm25-index.py in the product checkout).
+Requires CLAUDE_OBSIDIAN_VAULT and CLAUDE_OBSIDIAN_PRODUCT_ROOT env vars. When the
+index is missing or older than any wiki page, a background refresh is queued (see
+obsidian_wiki_index) and the current index is served meanwhile, flagged index_stale.
 """
 
 import json
@@ -20,6 +20,7 @@ import structlog
 from pydantic_ai import RunContext
 
 from assistant.agent.tools.deps import TurnDeps
+from assistant.agent.tools.obsidian_wiki_index import index_is_stale, schedule_reindex
 
 logger = structlog.get_logger(__name__)
 
@@ -60,13 +61,20 @@ def obsidian_wiki_search(
     logger.info(
         "provider.tool_call.obsidian_wiki_search", phase="entry", query=query, top=bounded_top
     )
+    stale = index_is_stale(vault)
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        finally:
+            # Only after retrieve.py is done: the prefixer invalidates the index
+            # while it rewrites chunks, which would turn this query into a miss.
+            if stale:
+                schedule_reindex(product_root, vault, reason="obsidian_wiki_search:stale_index")
     except (OSError, subprocess.TimeoutExpired) as exc:
         result: dict[str, Any] = {"status": "failed", "reason": str(exc), "matches": []}
         logger.warning(
@@ -77,9 +85,13 @@ def obsidian_wiki_search(
     if proc.returncode == _EXIT_NOT_PROVISIONED:
         result = {
             "status": "not_provisioned",
-            "reason": "vault retrieval index is not built yet",
+            "reason": (
+                "vault retrieval index is not built yet; a rebuild was started, retry shortly"
+            ),
             "matches": [],
         }
+        if not stale:
+            schedule_reindex(product_root, vault, reason="obsidian_wiki_search:not_provisioned")
         logger.info("provider.tool_result.obsidian_wiki_search", status=result["status"])
         return result
     if proc.returncode != 0:
@@ -108,7 +120,16 @@ def obsidian_wiki_search(
         if isinstance(c, dict)
     ]
     result = {"status": "ok", "matches": matches}
+    if stale:
+        result["index_stale"] = True
+        result["note"] = (
+            "index lags recent vault changes; a refresh is running — newest pages may be "
+            "missing, retry shortly or use obsidian_wiki_list/obsidian_wiki_read"
+        )
     logger.info(
-        "provider.tool_result.obsidian_wiki_search", status="ok", match_count=len(matches)
+        "provider.tool_result.obsidian_wiki_search",
+        status="ok",
+        match_count=len(matches),
+        index_stale=stale,
     )
     return result
