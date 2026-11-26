@@ -19,6 +19,7 @@ from assistant.channels.telegram.polling import CancellationRegistry
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.confirmation import ConfirmationService
 from assistant.core.events.mapper import NormalizedEventMapper
+from assistant.core.events.models import OrchestratorEvent
 from assistant.core.orchestrator.exc_detail import extract_cause_detail
 from assistant.core.orchestrator.models import OrchestratorResult
 from assistant.core.orchestrator.service import COMPACTION_NOTIFICATION_TEXT, Orchestrator
@@ -290,14 +291,7 @@ def _build_orchestrator_handler(
 
         orch_event = mapper.map(event)
         chat_id = int(event.metadata.get("chat_id", 0))
-        model_override = adapter.get_model_override(chat_id) if chat_id else None
-        if model_override:
-            orch_event = orch_event.model_copy(update={"model_id_override": model_override})
-        capabilities_override = adapter.get_capabilities_override(event.session_id)
-        if capabilities_override is not None:
-            orch_event = orch_event.model_copy(
-                update={"capabilities_override": capabilities_override}
-            )
+        orch_event = _apply_chat_overrides(orch_event, adapter, chat_id, event.session_id)
         notifier = None
         if chat_id and verbose_state is not None:
             # Verbose state is checked per tool call (not once here): /verbose toggled
@@ -403,6 +397,27 @@ def _build_orchestrator_handler(
         )
 
     return _handler
+
+
+def _apply_chat_overrides(
+    orch_event: OrchestratorEvent,
+    adapter: TelegramAdapter,
+    chat_id: int | None,
+    session_id: str,
+) -> OrchestratorEvent:
+    """Apply the chat's selected model and capabilities to an orchestrator event.
+
+    Shared by every turn producer (user messages, delegation feedback) so that they
+    resolve per-chat settings identically. An unavailable model is not handled here:
+    the orchestrator falls back to the default model for any id outside the allowlist.
+    """
+    model_override = adapter.get_model_override(chat_id) if chat_id else None
+    if model_override:
+        orch_event = orch_event.model_copy(update={"model_id_override": model_override})
+    capabilities_override = adapter.get_capabilities_override(session_id)
+    if capabilities_override is not None:
+        orch_event = orch_event.model_copy(update={"capabilities_override": capabilities_override})
+    return orch_event
 
 
 def _build_turn_response(

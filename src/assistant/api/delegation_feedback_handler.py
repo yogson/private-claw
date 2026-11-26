@@ -9,7 +9,7 @@ from assistant.api.confirmation_handler import (
     deliver_with_confirmations,
     discard_confirmations_on_error,
 )
-from assistant.api.orchestrator_handler import _build_tool_call_notifier
+from assistant.api.orchestrator_handler import _apply_chat_overrides, _build_tool_call_notifier
 from assistant.channels.telegram import ChannelResponse, MessageType, TelegramAdapter
 from assistant.channels.telegram.verbose_state import VerboseStateService
 from assistant.core.confirmation import ConfirmationService
@@ -83,7 +83,6 @@ def _build_delegation_feedback_handler(
         }
         if stdout_excerpt:
             payload["stdout_excerpt"] = stdout_excerpt
-        capabilities_override = adapter.get_capabilities_override(session_id)
         event = OrchestratorEvent(
             event_id=f"delegation-feedback-{task.task_id}-{task.status.value}",
             event_type=EventType.SYSTEM_CONTROL_EVENT,
@@ -94,9 +93,10 @@ def _build_delegation_feedback_handler(
             trace_id=trace_id,
             text="[[DELEGATION_COMPLETED]]\n" + json.dumps(payload, separators=(",", ":")),
             metadata={"delegation_feedback": True, "task_id": task.task_id},
-            capabilities_override=capabilities_override,
         )
         chat_id = DelegationCoordinator._chat_id_from_session(session_id)
+        # Same per-chat model/capabilities resolution as user-initiated turns.
+        event = _apply_chat_overrides(event, adapter, chat_id, session_id)
         # This follow-up turn runs the full agent with all its tools, so in verbose mode
         # its tool calls must be shown like those of a user-initiated turn.
         notifier = None
