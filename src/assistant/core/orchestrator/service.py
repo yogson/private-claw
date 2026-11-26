@@ -70,6 +70,7 @@ from assistant.core.orchestrator.persistence import (
 from assistant.core.orchestrator.recap import SessionRecapService
 from assistant.core.orchestrator.token_usage import calculate_session_total_tokens
 from assistant.core.session.factory import SessionContextFactory
+from assistant.core.session.turn_queue import SessionTurnQueue
 from assistant.extensions.mcp.toolsets import is_mcp_tool_name
 from assistant.memory.interfaces import MemoryRetrievalInterface
 from assistant.memory.retrieval.models import RetrievalQuery
@@ -145,6 +146,13 @@ def _delegation_status_payload(task: TaskRecord, recent_log: list[str]) -> dict[
     return _with_still_running_hint(payload)
 
 
+def _turn_kind(event: OrchestratorEvent) -> str:
+    """Producer of a turn, for queue logs."""
+    if event.metadata.get("delegation_feedback"):
+        return "delegation_feedback"
+    return event.source.value
+
+
 def _ordered_recent_turn_ids(
     chat_records: "list[SessionRecord]", keep_recent_turns: int
 ) -> set[str]:
@@ -196,8 +204,11 @@ class Orchestrator:
         capability_catalog: CapabilityCatalogInterface | None = None,
         confirmation_service: ConfirmationService | None = None,
         capability_edit_service: CapabilityEditService | None = None,
+        turn_queue: SessionTurnQueue | None = None,
     ) -> None:
         self._store = store
+        # One turn at a time per session, in arrival order, for every turn producer.
+        self._turn_queue = turn_queue if turn_queue is not None else SessionTurnQueue()
         self._confirmations = confirmation_service
         self._capability_edit_service = capability_edit_service
         self._config = config
@@ -251,9 +262,11 @@ class Orchestrator:
         should not send a response). Raises on lock timeout, missing session,
         or provider failure.
 
-        The turn is executed inside a ``SessionContext`` (acquired via
-        ``session_factory``) which handles lock acquisition/release and
-        tracks turn count.
+        Turns of one session run one at a time, in arrival order: the turn first
+        waits for its slot in the in-process ``SessionTurnQueue`` (raising
+        ``LockAcquisitionError`` on timeout), then runs inside a ``SessionContext``
+        (acquired via ``session_factory``) which handles the cross-process session
+        lock and tracks turn count.
         """
         source = event.source.value
         key = self._idempotency.build_key(source, event.event_id)
@@ -264,21 +277,26 @@ class Orchestrator:
             logger.info("orchestrator.duplicate_ignored", event_id=event.event_id, key=key)
             return None
 
-        ctx = await self._session_factory.resume(event.session_id)
-        # Bind the trace id before the session lock is taken so the lock wait /
-        # acquire / release events are correlated with this turn.
+        # Bind the trace id before the turn slot and the session lock are taken so the
+        # queue wait and the lock wait / acquire / release events are correlated.
         token = set_trace_id(event.trace_id)
         try:
-            async with ctx:
-                result = await self._run_turn(
-                    event,
-                    tool_call_notifier=tool_call_notifier,
-                    streaming_text_notifier=streaming_text_notifier,
-                    compaction_notifier=compaction_notifier,
-                )
-                ctx.increment_turn_count()
-                await self._session_factory.persist_state(ctx)
-                return result
+            # Session state and history are read only once the slot is held, so the turn
+            # sees everything the previous turn of this session persisted.
+            async with self._turn_queue.slot(
+                event.session_id, trace_id=event.trace_id, turn_kind=_turn_kind(event)
+            ):
+                ctx = await self._session_factory.resume(event.session_id)
+                async with ctx:
+                    result = await self._run_turn(
+                        event,
+                        tool_call_notifier=tool_call_notifier,
+                        streaming_text_notifier=streaming_text_notifier,
+                        compaction_notifier=compaction_notifier,
+                    )
+                    ctx.increment_turn_count()
+                    await self._session_factory.persist_state(ctx)
+                    return result
         except LockAcquisitionError as exc:
             logger.warning(
                 "orchestrator.lock_timeout",
@@ -1039,7 +1057,8 @@ class Orchestrator:
     async def compact_session(self, session_id: str, trace_id: str, user_id: str | None) -> bool:
         """Compact the session on demand, bypassing the token/turn thresholds.
 
-        Runs under the session lock so it cannot interleave with a turn.
+        Runs in the session's turn slot and under the session lock, so it cannot
+        interleave with a turn.
         ``max_compactions`` is not enforced; the kept-recent-turns window still applies.
 
         Returns True if the session was compacted, False if there was nothing
@@ -1047,9 +1066,12 @@ class Orchestrator:
         """
         if self._compaction_service is None:
             return False
-        ctx = await self._session_factory.resume(session_id)
-        async with ctx:
-            return await self._compact_session(session_id, trace_id, user_id, enforce_limit=False)
+        async with self._turn_queue.slot(session_id, trace_id=trace_id, turn_kind="compaction"):
+            ctx = await self._session_factory.resume(session_id)
+            async with ctx:
+                return await self._compact_session(
+                    session_id, trace_id, user_id, enforce_limit=False
+                )
 
     @property
     def recap_enabled(self) -> bool:
