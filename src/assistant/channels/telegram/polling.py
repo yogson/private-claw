@@ -6,7 +6,7 @@ Telegram is enabled. Reuses TelegramAdapter for normalization and egress.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from typing import Any
 
@@ -19,6 +19,7 @@ from assistant.channels.telegram.adapter import TelegramAdapter
 from assistant.channels.telegram.allowlist import UnauthorizedUserError
 from assistant.channels.telegram.commands import build_bot_commands
 from assistant.channels.telegram.ingestion.media_group import MediaGroupBuffer
+from assistant.channels.telegram.ingestion.split_text import SplitMessageCoalescer
 from assistant.channels.telegram.models import ChannelResponse, NormalizedEvent
 from assistant.core.config.schemas import TelegramChannelConfig
 
@@ -82,6 +83,8 @@ async def run_polling(
 
     Each update is dispatched as an independent asyncio task so that /stop can
     interrupt a long-running agent turn without waiting for it to complete.
+    The parts of a long text split by the Telegram client are merged into one
+    event first (see ``SplitMessageCoalescer``); other messages are not delayed.
     """
     bot = Bot(token=config.bot_token)
     # One-time webhook disable: required for polling to receive updates.
@@ -107,15 +110,25 @@ async def run_polling(
     # Keep strong references to background tasks so they are not GC'd.
     _background_tasks: set[asyncio.Task[None]] = set()
 
-    async def _on_media_group_ready(messages: list[dict[str, Any]]) -> None:
-        """Flush callback: dispatch a collected media group as one event."""
-        task: asyncio.Task[None] = asyncio.create_task(
-            _process_media_group(adapter, messages, event_handler, cancellation_registry)
-        )
+    def _spawn(coro: Coroutine[Any, Any, None]) -> None:
+        task: asyncio.Task[None] = asyncio.create_task(coro)
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
+    async def _on_media_group_ready(messages: list[dict[str, Any]]) -> None:
+        """Flush callback: dispatch a collected media group as one event."""
+        _spawn(_process_media_group(adapter, messages, event_handler, cancellation_registry))
+
+    def _on_split_text_ready(update: dict[str, Any], metadata: dict[str, Any]) -> None:
+        """Flush callback: dispatch the merged parts of a split long text as one event."""
+        _spawn(
+            _process_update(
+                adapter, update, event_handler, cancellation_registry, extra_metadata=metadata
+            )
+        )
+
     media_group_buffer = MediaGroupBuffer(flush_callback=_on_media_group_ready)
+    split_text_coalescer = SplitMessageCoalescer(flush_callback=_on_split_text_ready)
 
     try:
         while not stop.is_set():
@@ -165,25 +178,23 @@ async def run_polling(
                     message_payload.get("media_group_id") if message_payload else None
                 )
 
-                if media_group_id is not None and message_payload is not None:
+                if split_text_coalescer.offer(update_payload):
+                    # A (possible) part of a long text split by the client: buffered
+                    # or merged; the flush callback dispatches the merged event.
+                    pass
+                elif media_group_id is not None and message_payload is not None:
                     # Buffer this message; the flush callback will fire once no
                     # new messages for the same group arrive within the window.
                     # Tag with update_id so the flushed group can log which updates it merged.
-                    buf_task: asyncio.Task[None] = asyncio.create_task(
+                    _spawn(
                         media_group_buffer.add(
                             media_group_id, {**message_payload, "update_id": update.update_id}
                         )
                     )
-                    _background_tasks.add(buf_task)
-                    buf_task.add_done_callback(_background_tasks.discard)
                 else:
                     # Fire as a task so /stop can be processed concurrently with a
                     # long-running agent turn for the same session.
-                    task: asyncio.Task[None] = asyncio.create_task(
-                        _process_update(adapter, update, event_handler, cancellation_registry)
-                    )
-                    _background_tasks.add(task)
-                    task.add_done_callback(_background_tasks.discard)
+                    _spawn(_process_update(adapter, update, event_handler, cancellation_registry))
 
                 offset = update.update_id + 1
 
@@ -193,7 +204,9 @@ async def run_polling(
         logger.exception("telegram.polling.unexpected_error")
         raise
     finally:
-        # Cancel any still-running background tasks on shutdown.
+        # Hand buffered split parts to the dispatch path (cancels their timers), then
+        # cancel any still-running background tasks on shutdown.
+        split_text_coalescer.flush_all()
         pending = list(_background_tasks)
         for task in pending:
             task.cancel()
@@ -300,11 +313,17 @@ async def acknowledge_callback_safely(
 
 async def _process_update(
     adapter: TelegramAdapter,
-    update: Update,
+    update: Update | dict[str, Any],
     event_handler: TelegramEventHandler,
     cancellation_registry: CancellationRegistry | None = None,
+    *,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Process a single update: normalize, dispatch, send response."""
+    """Process a single update: normalize, dispatch, send response.
+
+    ``extra_metadata`` (e.g. the parts of a coalesced split text) is merged into
+    the event metadata.
+    """
     try:
         event = await adapter.process_update_async(update)
     except UnauthorizedUserError as exc:
@@ -316,6 +335,8 @@ async def _process_update(
 
     if event is None:
         return
+    if extra_metadata:
+        event.metadata.update(extra_metadata)
 
     await _dispatch_event(adapter, event, event_handler, cancellation_registry)
 
