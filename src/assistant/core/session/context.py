@@ -4,6 +4,9 @@ Component ID: CMP_CORE_SESSION_CONTEXT
 SessionContext context manager for unified session lifecycle and resource access.
 """
 
+import asyncio
+import time
+import uuid
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import TYPE_CHECKING
@@ -32,6 +35,13 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# How long a turn waits for the session lock held by another turn before failing.
+# Covers the longest turns seen in production (~165 s) with margin.
+SESSION_LOCK_WAIT_TIMEOUT_SECONDS = 300.0
+# The lock TTL is refreshed this many times per TTL while the context is held.
+_LOCK_REFRESHES_PER_TTL = 3
+_MIN_LOCK_REFRESH_INTERVAL_SECONDS = 0.05
+
 
 class SessionContext:
     """
@@ -55,14 +65,19 @@ class SessionContext:
         store: "StoreFacadeInterface",
         model_context: "SessionModelContextInterface",
         capability_context: "SessionCapabilityContextInterface",
+        lock_wait_timeout_seconds: float = SESSION_LOCK_WAIT_TIMEOUT_SECONDS,
     ) -> None:
         self._metadata = metadata
         self._state = state
         self._store = store
         self._model_context = model_context
         self._capability_context = capability_context
+        self._lock_wait_timeout_seconds = lock_wait_timeout_seconds
         self._lock_acquired = False
-        self._lock_owner: str = ""
+        # Unique per context (i.e. per turn): two turns of one session never share an owner.
+        self._lock_owner = f"session_context:{metadata.session_id}:{uuid.uuid4().hex}"
+        self._lock_refresh_task: asyncio.Task[None] | None = None
+        self._lock_acquired_monotonic = 0.0
 
     def __repr__(self) -> str:
         return f"SessionContext(session_id={self.session_id!r}, status={self._state.status})"
@@ -152,26 +167,104 @@ class SessionContext:
 
     # --- Lifecycle Management ---
 
-    async def _enter(self) -> None:
-        """Called on context entry - acquire resources."""
-        self._lock_owner = f"session_context:{self.session_id}"
-        lock_key = f"session:{self.session_id}"
+    @property
+    def _lock_key(self) -> str:
+        return f"session:{self.session_id}"
 
-        lock_record = await self._store.locks.acquire(
-            lock_key,
+    async def _enter(self) -> None:
+        """Called on context entry - acquire resources.
+
+        Waits up to ``lock_wait_timeout_seconds`` while another context (turn) holds the
+        session lock, then raises ``LockAcquisitionError``. While held, the lock TTL is
+        refreshed in the background so turns longer than the TTL keep it.
+        """
+        started = time.monotonic()
+        lock_record = await self._store.locks.acquire_wait(
+            self._lock_key,
             self._lock_owner,
+            timeout_seconds=self._lock_wait_timeout_seconds,
         )
+        wait_ms = round((time.monotonic() - started) * 1000)
         if lock_record is None:
-            raise LockAcquisitionError(f"Failed to acquire lock: {lock_key}")
+            holder = await self._store.locks.get_lock_info(self._lock_key)
+            logger.error(
+                "session_context.lock_timeout",
+                session_id=self.session_id,
+                lock_owner=self._lock_owner,
+                lock_holder=holder.owner_id if holder is not None else None,
+                wait_ms=wait_ms,
+                timeout_seconds=self._lock_wait_timeout_seconds,
+            )
+            raise LockAcquisitionError(
+                f"Failed to acquire lock: {self._lock_key} "
+                f"(held by another turn, waited {wait_ms} ms)"
+            )
 
         self._lock_acquired = True
+        self._lock_acquired_monotonic = time.monotonic()
+        ttl_seconds = (lock_record.expires_at - datetime.now(UTC)).total_seconds()
+        interval = max(ttl_seconds / _LOCK_REFRESHES_PER_TTL, _MIN_LOCK_REFRESH_INTERVAL_SECONDS)
+        self._lock_refresh_task = asyncio.create_task(self._refresh_lock_loop(interval))
         self._state.status = SessionStatus.ACTIVE
         self._state.last_activity_at = datetime.now(UTC)
 
+        logger.info(
+            "session_context.lock_acquired",
+            session_id=self.session_id,
+            lock_owner=self._lock_owner,
+            wait_ms=wait_ms,
+            ttl_seconds=round(ttl_seconds, 3),
+            refresh_interval_seconds=round(interval, 3),
+        )
         logger.debug(
             "session_context.entered",
             session_id=self.session_id,
             context_id=self.context_id,
+        )
+
+    async def _refresh_lock_loop(self, interval: float) -> None:
+        """Heartbeat: extend the lock TTL every ``interval`` seconds while held."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                record = await self._store.locks.refresh(self._lock_key, self._lock_owner)
+            except Exception as exc:
+                # A transient store error must not end the heartbeat; the next tick retries.
+                logger.warning(
+                    "session_context.lock_refresh_failed",
+                    session_id=self.session_id,
+                    lock_owner=self._lock_owner,
+                    error=str(exc),
+                )
+                continue
+            if record is None:
+                # The lock expired and was taken over (or removed): nothing left to refresh.
+                logger.error(
+                    "session_context.lock_lost",
+                    session_id=self.session_id,
+                    lock_owner=self._lock_owner,
+                )
+                return
+
+    async def _release_lock(self) -> None:
+        """Stop the heartbeat and release the lock if this context still owns it."""
+        if self._lock_refresh_task is not None:
+            self._lock_refresh_task.cancel()
+            # asyncio.wait does not raise the task's CancelledError, while a cancellation
+            # of the caller itself still propagates.
+            await asyncio.wait({self._lock_refresh_task})
+            self._lock_refresh_task = None
+        if not self._lock_acquired:
+            return
+        self._lock_acquired = False
+        # The coordinator only deletes a lock owned by this context's unique owner id,
+        # so exiting never removes the lock of another turn.
+        released = await self._store.locks.release(self._lock_key, self._lock_owner)
+        logger.info(
+            "session_context.lock_released" if released else "session_context.lock_not_owned",
+            session_id=self.session_id,
+            lock_owner=self._lock_owner,
+            held_ms=round((time.monotonic() - self._lock_acquired_monotonic) * 1000),
         )
 
     async def _exit(
@@ -189,12 +282,7 @@ class SessionContext:
         This is by design to allow batch operations and explicit control over
         persistence timing.
         """
-        if self._lock_acquired:
-            await self._store.locks.release(
-                f"session:{self.session_id}",
-                self._lock_owner,
-            )
-            self._lock_acquired = False
+        await self._release_lock()
 
         self._state.last_activity_at = datetime.now(UTC)
 

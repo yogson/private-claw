@@ -781,6 +781,40 @@ async def test_delegation_feedback_handler_payload_includes_workspace() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delegation_feedback_handler_reports_lock_timeout_to_user() -> None:
+    from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
+    from assistant.store.interfaces import LockAcquisitionError
+
+    orchestrator = MagicMock()
+    orchestrator.execute_turn = AsyncMock(
+        side_effect=LockAcquisitionError("Failed to acquire lock: session:tg:239146894:abc")
+    )
+    adapter = MagicMock()
+    adapter.send_response = AsyncMock(return_value=True)
+    handler = _build_delegation_feedback_handler(orchestrator, adapter)
+    task = TaskRecord(
+        task_id="dlg-busy",
+        parent_session_id="tg:239146894:abc",
+        task_type="delegation",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        result={"summary": "Opened PR #42"},
+        metadata={"trace_id": "trace-busy"},
+    )
+
+    # The timeout is handled (not raised into the coordinator) and reported to the chat.
+    await handler(task)
+
+    adapter.send_response.assert_awaited_once()
+    (response,) = adapter.send_response.await_args.args
+    assert adapter.send_response.await_args.kwargs["chat_id"] == 239146894
+    assert "dlg-busy" in response.text
+    assert "completed" in response.text
+    assert "Opened PR #42" in response.text
+
+
+@pytest.mark.asyncio
 async def test_delegation_feedback_handler_sends_orchestrator_result_to_telegram() -> None:
     from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
     from assistant.core.orchestrator.models import OrchestratorResult

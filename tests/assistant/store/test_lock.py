@@ -1,5 +1,6 @@
 """Tests for FilesystemLockCoordinator."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -130,3 +131,61 @@ async def test_lock_context_manager_failure(
     with pytest.raises(LockAcquisitionError):
         async with lock_coordinator.lock("test-key", "owner-2"):
             pass
+
+
+async def test_acquire_wait_acquires_free_lock_immediately(
+    lock_coordinator: FilesystemLockCoordinator,
+) -> None:
+    record = await lock_coordinator.acquire_wait("test-key", "owner-1", timeout_seconds=1)
+    assert record is not None
+    assert record.owner_id == "owner-1"
+
+
+async def test_acquire_wait_only_one_of_concurrent_owners_gets_lock(
+    lock_coordinator: FilesystemLockCoordinator,
+) -> None:
+    results = await asyncio.gather(
+        lock_coordinator.acquire_wait("test-key", "owner-1", timeout_seconds=0.2),
+        lock_coordinator.acquire_wait("test-key", "owner-2", timeout_seconds=0.2),
+    )
+    winners = [r for r in results if r is not None]
+    assert len(winners) == 1
+
+
+async def test_acquire_wait_acquires_after_release(
+    lock_coordinator: FilesystemLockCoordinator,
+) -> None:
+    await lock_coordinator.acquire("test-key", "owner-1")
+    waiter = asyncio.create_task(
+        lock_coordinator.acquire_wait("test-key", "owner-2", timeout_seconds=5)
+    )
+    await asyncio.sleep(0.1)
+    assert not waiter.done()
+
+    assert await lock_coordinator.release("test-key", "owner-1")
+    record = await asyncio.wait_for(waiter, timeout=2)
+    assert record is not None
+    assert record.owner_id == "owner-2"
+
+
+async def test_acquire_wait_times_out_while_held(
+    lock_coordinator: FilesystemLockCoordinator,
+) -> None:
+    await lock_coordinator.acquire("test-key", "owner-1")
+    record = await lock_coordinator.acquire_wait("test-key", "owner-2", timeout_seconds=0.2)
+    assert record is None
+    info = await lock_coordinator.get_lock_info("test-key")
+    assert info is not None
+    assert info.owner_id == "owner-1"
+
+
+async def test_acquire_wait_takes_over_expired_lock(
+    lock_coordinator: FilesystemLockCoordinator,
+) -> None:
+    await lock_coordinator.acquire("test-key", "owner-1", ttl_seconds=1)
+    record = await lock_coordinator.acquire_wait("test-key", "owner-2", timeout_seconds=3)
+    assert record is not None
+    assert record.owner_id == "owner-2"
+    # The previous owner can no longer refresh or release it.
+    assert await lock_coordinator.refresh("test-key", "owner-1") is None
+    assert not await lock_coordinator.release("test-key", "owner-1")

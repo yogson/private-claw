@@ -1,6 +1,8 @@
 """Tests for SessionContext class."""
 
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,7 +14,9 @@ from assistant.core.session.metadata import (
     SessionStatus,
     SessionType,
 )
-from assistant.store.models import SessionRecord, SessionRecordType
+from assistant.store.filesystem.lock import FilesystemLockCoordinator
+from assistant.store.interfaces import LockAcquisitionError
+from assistant.store.models import LockRecord, SessionRecord, SessionRecordType
 
 
 @pytest.fixture
@@ -23,7 +27,16 @@ def mock_store() -> MagicMock:
     store.sessions.replay_for_turn = AsyncMock(return_value=[])
     store.sessions.append = AsyncMock()
     store.locks = MagicMock()
-    store.locks.acquire = AsyncMock(return_value=MagicMock())
+    now = datetime.now(UTC)
+    lock_record = LockRecord(
+        lock_key="session:test-session-abc",
+        owner_id="owner",
+        acquired_at=now,
+        expires_at=now + timedelta(seconds=30),
+    )
+    store.locks.acquire_wait = AsyncMock(return_value=lock_record)
+    store.locks.refresh = AsyncMock(return_value=lock_record)
+    store.locks.get_lock_info = AsyncMock(return_value=None)
     store.locks.release = AsyncMock(return_value=True)
     return store
 
@@ -249,7 +262,7 @@ class TestSessionContextLifecycle:
     ) -> None:
         async with session_context as ctx:
             assert ctx is session_context
-            mock_store.locks.acquire.assert_called_once()
+            mock_store.locks.acquire_wait.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_context_manager_release_lock(
@@ -274,13 +287,12 @@ class TestSessionContextLifecycle:
     async def test_context_manager_lock_failure(
         self, session_context: SessionContext, mock_store: MagicMock
     ) -> None:
-        mock_store.locks.acquire.return_value = None
-
-        from assistant.store.interfaces import LockAcquisitionError
+        mock_store.locks.acquire_wait.return_value = None
 
         with pytest.raises(LockAcquisitionError):
             async with session_context:
                 pass
+        mock_store.locks.release.assert_not_called()
 
 
 class TestSessionContextStatusManagement:
@@ -302,3 +314,133 @@ class TestSessionContextStatusManagement:
         session_context.activate()
 
         assert session_context.state.status == SessionStatus.ACTIVE
+
+
+class TestSessionContextLocking:
+    """Session lock semantics over the real filesystem lock coordinator."""
+
+    @staticmethod
+    def _context(
+        metadata: SessionMetadata,
+        locks: FilesystemLockCoordinator,
+        lock_wait_timeout_seconds: float = 5.0,
+    ) -> SessionContext:
+        store = MagicMock()
+        store.locks = locks
+        return SessionContext(
+            metadata=metadata,
+            state=SessionState(),
+            store=store,
+            model_context=MagicMock(),
+            capability_context=MagicMock(),
+            lock_wait_timeout_seconds=lock_wait_timeout_seconds,
+        )
+
+    @pytest.fixture
+    def locks(self, tmp_path: Path) -> FilesystemLockCoordinator:
+        return FilesystemLockCoordinator(tmp_path / "locks", default_ttl_seconds=30)
+
+    def test_lock_owner_unique_per_context(
+        self, metadata: SessionMetadata, locks: FilesystemLockCoordinator
+    ) -> None:
+        first = self._context(metadata, locks)
+        second = self._context(metadata, locks)
+
+        assert first._lock_owner != second._lock_owner  # noqa: SLF001
+        assert first._lock_owner.startswith(f"session_context:{metadata.session_id}:")  # noqa: SLF001
+
+    async def test_second_context_waits_until_first_exits(
+        self, metadata: SessionMetadata, locks: FilesystemLockCoordinator
+    ) -> None:
+        first = self._context(metadata, locks)
+        second = self._context(metadata, locks)
+        events: list[str] = []
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def _first_turn() -> None:
+            async with first:
+                events.append("first:enter")
+                first_entered.set()
+                await release_first.wait()
+                events.append("first:exit")
+
+        async def _second_turn() -> None:
+            async with second:
+                events.append("second:enter")
+
+        first_task = asyncio.create_task(_first_turn())
+        await first_entered.wait()
+        second_task = asyncio.create_task(_second_turn())
+        await asyncio.sleep(0.2)
+        # The second turn is blocked while the first holds the lock.
+        assert events == ["first:enter"]
+        assert not second_task.done()
+
+        release_first.set()
+        await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=5)
+        assert events == ["first:enter", "first:exit", "second:enter"]
+        assert not await locks.is_locked(f"session:{metadata.session_id}")
+
+    async def test_wait_timeout_raises_and_keeps_holder_lock(
+        self, metadata: SessionMetadata, locks: FilesystemLockCoordinator
+    ) -> None:
+        first = self._context(metadata, locks)
+        second = self._context(metadata, locks, lock_wait_timeout_seconds=0.2)
+        lock_key = f"session:{metadata.session_id}"
+
+        async with first:
+            with pytest.raises(LockAcquisitionError, match="waited"):
+                async with second:
+                    pytest.fail("second context must not enter while the first holds the lock")
+            info = await locks.get_lock_info(lock_key)
+            assert info is not None
+            assert info.owner_id == first._lock_owner  # noqa: SLF001
+        assert not await locks.is_locked(lock_key)
+
+    async def test_exit_never_releases_another_contexts_lock(
+        self, metadata: SessionMetadata, locks: FilesystemLockCoordinator
+    ) -> None:
+        lock_key = f"session:{metadata.session_id}"
+        ctx = self._context(metadata, locks)
+
+        async with ctx:
+            # Simulate the lock expiring and another turn taking it over mid-turn.
+            await locks.release(lock_key, ctx._lock_owner)  # noqa: SLF001
+            assert await locks.acquire(lock_key, "session_context:other-turn") is not None
+
+        info = await locks.get_lock_info(lock_key)
+        assert info is not None
+        assert info.owner_id == "session_context:other-turn"
+
+    async def test_heartbeat_keeps_lock_beyond_ttl(
+        self, metadata: SessionMetadata, tmp_path: Path
+    ) -> None:
+        locks = FilesystemLockCoordinator(tmp_path / "locks", default_ttl_seconds=1)
+        lock_key = f"session:{metadata.session_id}"
+        ctx = self._context(metadata, locks)
+
+        async with ctx:
+            await asyncio.sleep(1.6)
+            # Past the 1 s TTL: still held by this context, another owner is refused.
+            assert await locks.is_locked(lock_key)
+            assert await locks.acquire(lock_key, "session_context:other-turn") is None
+        assert not await locks.is_locked(lock_key)
+
+    async def test_lock_expires_without_heartbeat(
+        self, metadata: SessionMetadata, tmp_path: Path
+    ) -> None:
+        locks = FilesystemLockCoordinator(tmp_path / "locks", default_ttl_seconds=1)
+        lock_key = f"session:{metadata.session_id}"
+        ctx = self._context(metadata, locks)
+
+        async with ctx:
+            # A crashed holder stops refreshing: model that by stopping the heartbeat.
+            assert ctx._lock_refresh_task is not None  # noqa: SLF001
+            ctx._lock_refresh_task.cancel()  # noqa: SLF001
+            await asyncio.sleep(1.1)
+            assert not await locks.is_locked(lock_key)
+            # The stale lock is taken over by the next turn.
+            assert await locks.acquire(lock_key, "session_context:other-turn") is not None
+        # Exiting the stale context leaves the new holder's lock in place.
+        assert await locks.is_locked(lock_key)
