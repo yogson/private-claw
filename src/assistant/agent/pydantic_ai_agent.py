@@ -152,6 +152,23 @@ def _last_tool_call_name(messages: list[ModelMessage]) -> str | None:
     return name
 
 
+def _last_request_input_tokens(messages: list[ModelMessage]) -> int | None:
+    """Return the input size of the most recent model request in *messages*.
+
+    This is the real context size the model saw on its last call. pydantic-ai's
+    ``RequestUsage.input_tokens`` already includes cache reads/writes, so no extra
+    cache arithmetic is needed. ``RunUsage`` (``result.usage``) instead sums all
+    requests of the run and overstates the context on multi-request (tool) turns.
+
+    Responses that report no input tokens (provider sent no usage) are skipped;
+    returns ``None`` when no response in *messages* carries usage.
+    """
+    for msg in reversed(messages):
+        if isinstance(msg, ModelResponse) and msg.usage.input_tokens > 0:
+            return msg.usage.input_tokens
+    return None
+
+
 def _normalize_candidate_for_upsert(candidate: dict[str, Any] | None) -> dict[str, Any]:
     """Backward-compatible wrapper for existing tests/importers."""
     return normalize_candidate_for_upsert(candidate)
@@ -404,8 +421,13 @@ class PydanticAITurnAdapter:
         usage = None
         usage_obj = result.usage
         if usage_obj is not None:
+            # input/output_tokens are run totals (billing, /usage);
+            # last_request_input_tokens is the context size used for compaction.
             usage = {
                 "input_tokens": usage_obj.input_tokens or 0,
                 "output_tokens": usage_obj.output_tokens or 0,
             }
+            last_request_input = _last_request_input_tokens(new_msgs)
+            if last_request_input is not None:
+                usage["last_request_input_tokens"] = last_request_input
         return response_text, list(new_msgs), usage

@@ -18,10 +18,12 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RequestUsage
 
 from assistant.agent.pydantic_ai_agent import (
     ToolCallFailedWithPartial,
     _extract_recovered_text,
+    _last_request_input_tokens,
     _last_tool_call_name,
     _llm_messages_to_history,
     _message_to_user_prompt_content,
@@ -502,6 +504,90 @@ async def test_run_turn_reports_usage_end_to_end_with_real_factory(
     assert text == "hello"
     assert new_msgs
     assert usage is not None
-    assert set(usage) == {"input_tokens", "output_tokens"}
+    assert set(usage) == {"input_tokens", "output_tokens", "last_request_input_tokens"}
     assert usage["input_tokens"] > 0
     assert usage["output_tokens"] > 0
+    # Single-request run: context size equals the run total.
+    assert usage["last_request_input_tokens"] == usage["input_tokens"]
+
+
+def test_last_request_input_tokens_uses_last_response_not_sum() -> None:
+    msgs: list[ModelMessage] = [
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="t", tool_call_id="c1", args={})],
+            usage=RequestUsage(input_tokens=64_915, cache_read_tokens=60_000),
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="t", tool_call_id="c1", content="ok")]),
+        ModelResponse(parts=[TextPart(content="done")], usage=RequestUsage(input_tokens=66_892)),
+    ]
+    assert _last_request_input_tokens(msgs) == 66_892
+
+
+def test_last_request_input_tokens_skips_responses_without_usage() -> None:
+    msgs: list[ModelMessage] = [
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=1200)),
+        ModelResponse(parts=[TextPart(content="b")]),
+    ]
+    assert _last_request_input_tokens(msgs) == 1200
+
+
+def test_last_request_input_tokens_missing_usage_returns_none() -> None:
+    assert _last_request_input_tokens([]) is None
+    assert _last_request_input_tokens([ModelResponse(parts=[TextPart(content="x")])]) is None
+
+
+@pytest.mark.asyncio
+async def test_run_turn_multi_request_reports_last_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run totals stay summed; last_request_input_tokens is the final request only."""
+    from pathlib import Path
+
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from assistant.agent.pydantic_ai_agent import PydanticAITurnAdapter
+    from assistant.core.capabilities.catalog import CapabilityCatalog
+    from assistant.core.config.loader import ConfigLoader
+
+    config_dir = Path(__file__).resolve().parents[3] / "config"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    config = ConfigLoader(config_dir).load()
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        n_responses = sum(isinstance(m, ModelResponse) for m in messages)
+        if n_responses < 2:
+            # Tool call -> tool result -> another model request.
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="check_subagent_status",
+                        tool_call_id=f"c{n_responses}",
+                        args={"task_id": f"task-{n_responses}"},
+                    )
+                ],
+                usage=RequestUsage(input_tokens=50_000, output_tokens=10),
+            )
+        return ModelResponse(
+            parts=[TextPart(content="done")],
+            usage=RequestUsage(input_tokens=50_100, output_tokens=20),
+        )
+
+    adapter = PydanticAITurnAdapter(
+        model_id="anthropic:claude-3-5-sonnet-20241022",
+        max_tokens=256,
+        config=config,
+        snapshot=CapabilityCatalog(config_dir).current(),
+    )
+    with adapter._agent.override(model=FunctionModel(respond)):
+        text, _new_msgs, usage = await adapter.run_turn(
+            messages=[{"role": "user", "content": "hi"}],
+            deps=TurnDeps(),
+            trace_id="trace-1",
+            model_id=None,
+        )
+    assert text == "done"
+    assert usage == {
+        "input_tokens": 150_100,
+        "output_tokens": 40,
+        "last_request_input_tokens": 50_100,
+    }

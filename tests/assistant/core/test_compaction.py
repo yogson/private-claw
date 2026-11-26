@@ -97,7 +97,11 @@ def _assistant_with_usage(
     turn_id: str = "t1",
     input_tokens: int = 1000,
     output_tokens: int = 500,
+    last_request_input_tokens: int | None = None,
 ) -> SessionRecord:
+    usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    if last_request_input_tokens is not None:
+        usage["last_request_input_tokens"] = last_request_input_tokens
     return _rec(
         sequence=sequence,
         turn_id=turn_id,
@@ -105,10 +109,7 @@ def _assistant_with_usage(
         payload={
             "message_id": f"m-{sequence}",
             "content": "response",
-            "usage": {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            },
+            "usage": usage,
         },
     )
 
@@ -166,21 +167,49 @@ class TestCalculateSessionTotalTokens:
         assert await calculate_session_total_tokens(store, "s1") == 0
 
     @pytest.mark.asyncio
-    async def test_returns_last_record_input_tokens(self) -> None:
-        """Returns input_tokens of the highest-sequence assistant message.
-
-        input_tokens already reflects the full accumulated context, so we
-        read the most recent value rather than summing across all records.
-        """
+    async def test_returns_last_record_last_request_input_tokens(self) -> None:
+        """Returns last_request_input_tokens of the highest-sequence assistant message."""
         store = AsyncMock()
         store.read_session = AsyncMock(
             return_value=[
-                _assistant_with_usage(0, input_tokens=1000, output_tokens=500),
-                _assistant_with_usage(1, input_tokens=2000, output_tokens=800),
+                _assistant_with_usage(0, input_tokens=1000, last_request_input_tokens=1000),
+                _assistant_with_usage(1, input_tokens=2000, last_request_input_tokens=2000),
             ]
         )
-        total = await calculate_session_total_tokens(store, "s1")
-        assert total == 2000  # input_tokens of the last (highest-sequence) record
+        assert await calculate_session_total_tokens(store, "s1") == 2000
+
+    @pytest.mark.asyncio
+    async def test_multi_request_run_uses_last_request_not_sum(self) -> None:
+        """#102: 3 requests of 50k sum to 150k, but the context is the last request."""
+        store = AsyncMock()
+        store.read_session = AsyncMock(
+            return_value=[
+                _assistant_with_usage(0, input_tokens=150_000, last_request_input_tokens=50_000),
+            ]
+        )
+        assert await calculate_session_total_tokens(store, "s1") == 50_000
+
+    @pytest.mark.asyncio
+    async def test_single_large_request(self) -> None:
+        store = AsyncMock()
+        store.read_session = AsyncMock(
+            return_value=[
+                _assistant_with_usage(0, input_tokens=130_000, last_request_input_tokens=130_000),
+            ]
+        )
+        assert await calculate_session_total_tokens(store, "s1") == 130_000
+
+    @pytest.mark.asyncio
+    async def test_legacy_record_without_last_request_value_is_unknown(self) -> None:
+        """Pre-#102 records hold only the summed run total: treated as unknown (0)."""
+        store = AsyncMock()
+        store.read_session = AsyncMock(
+            return_value=[
+                _assistant_with_usage(0, input_tokens=500, last_request_input_tokens=500),
+                _assistant_with_usage(1, input_tokens=131_807),  # legacy, latest
+            ]
+        )
+        assert await calculate_session_total_tokens(store, "s1") == 0
 
     @pytest.mark.asyncio
     async def test_ignores_non_assistant_records(self) -> None:
@@ -188,11 +217,10 @@ class TestCalculateSessionTotalTokens:
         store.read_session = AsyncMock(
             return_value=[
                 _rec(sequence=0),  # user_message — no usage
-                _assistant_with_usage(1, input_tokens=500, output_tokens=200),
+                _assistant_with_usage(1, input_tokens=500, last_request_input_tokens=500),
             ]
         )
-        total = await calculate_session_total_tokens(store, "s1")
-        assert total == 500  # only the assistant record's input_tokens
+        assert await calculate_session_total_tokens(store, "s1") == 500
 
     @pytest.mark.asyncio
     async def test_handles_missing_usage(self) -> None:
