@@ -278,12 +278,14 @@ async def _run(
     stop_after_events: int | None,
     stop_after_polls: int | None = None,
     timeout: float = 5,
+    delays: list[float] | None = None,
 ) -> tuple[list[NormalizedEvent], list[SplitMessageCoalescer]]:
     """Feed update batches through run_polling; return handled events and the coalescer."""
     config = _config()
     adapter = TelegramAdapter(config)
     stop = asyncio.Event()
     queue = [[Update.model_validate(u) for u in batch] for batch in batches]
+    pending_delays = list(delays or [])
     polls = 0
 
     async def _get_updates(**_: object) -> list[Update]:
@@ -292,6 +294,8 @@ async def _run(
         if stop_after_polls is not None and polls > stop_after_polls:
             stop.set()
         if queue:
+            if pending_delays:
+                await asyncio.sleep(pending_delays.pop(0))
             return queue.pop(0)
         await asyncio.sleep(0.01)
         return []
@@ -347,6 +351,67 @@ async def test_run_polling_turns_split_paste_into_one_event(
     assert event.metadata["coalesced_parts"] == 3
 
 
+# Real incident shapes (lengths and the ~2.15 s gap after part 1), replayed with all
+# times scaled down by 10 (window 3.5 s -> 0.35 s, gap 2.15 s -> 0.215 s).
+_SCALE = 10
+
+
+def _scale_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        split_text, "SPLIT_WINDOW_SECONDS", split_text.SPLIT_WINDOW_SECONDS / _SCALE
+    )
+
+
+def test_constants_cover_observed_incidents() -> None:
+    assert split_text.SPLIT_PART_MIN_UTF16 <= 945
+    assert split_text.SPLIT_WINDOW_SECONDS > 2.15
+
+
+async def test_run_polling_incident_tg1_is_one_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """First part ~1410 chars, then ~3450 and ~3110 chars 2.15 s later: one event."""
+    _scale_window(monkeypatch)
+    parts = ["a" * 1410, "b" * 3450, "c" * 3110]
+    events, _ = await _run(
+        [[_update(1, parts[0])], [_update(2, parts[1]), _update(3, parts[2])]],
+        stop_after_events=1,
+        delays=[0, 2.15 / _SCALE],
+    )
+    assert [e.text for e in events] == ["\n".join(parts)]
+    assert events[0].metadata["message_ids"] == [1, 2, 3]
+
+
+async def test_run_polling_incident_tg2_path_part_is_one_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """~945, ~4050, ~4070 chars, then ~2540 chars starting with a /path: one event."""
+    _scale_window(monkeypatch)
+    parts = ["a" * 945, "b" * 4050, "c" * 4070, "/docker-entrypoint.sh: " + "d" * 2517]
+    events, _ = await _run(
+        [
+            [_update(1, parts[0])],
+            [_update(2, parts[1]), _update(3, parts[2]), _update(4, parts[3])],
+        ],
+        stop_after_events=1,
+        delays=[0, 2.14 / _SCALE],
+    )
+    assert [e.text for e in events] == ["\n".join(parts)]
+    assert events[0].metadata["message_ids"] == [1, 2, 3, 4]
+
+
+async def test_run_polling_real_command_flushes_text_then_runs_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real command during an open buffer: the text goes first, the command alone."""
+    _scale_window(monkeypatch)
+    events, _ = await _run(
+        [[_update(1, LONG_A)], [_update(2, "/stop")]],
+        stop_after_events=2,
+        delays=[0, 0.05],
+        timeout=1,
+    )
+    assert [e.text for e in events] == [LONG_A, "/stop"]
+
+
 async def test_run_polling_does_not_delay_short_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -355,12 +420,12 @@ async def test_run_polling_does_not_delay_short_messages(
     loop = asyncio.get_running_loop()
     started = loop.time()
     events, _ = await _run(
-        [[_update(1, "hello"), _update(2, "/stop"), _update(3, "two", user_id=OTHER_USER)]],
+        [[_update(1, "hello"), _update(2, "/stop"), _update(3, "x" * 511, user_id=OTHER_USER)]],
         stop_after_events=3,
         timeout=1,
     )
     assert loop.time() - started < 1
-    assert [e.text for e in events] == ["hello", "/stop", "two"]
+    assert [e.text for e in events] == ["hello", "/stop", "x" * 511]
     assert all("coalesced_parts" not in e.metadata for e in events)
 
 

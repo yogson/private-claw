@@ -4,18 +4,21 @@ Component ID: CMP_CHANNEL_TELEGRAM_ADAPTER
 Coalescing of long texts that the Telegram client split into several messages.
 
 Telegram caps a text message at 4096 UTF-16 code units. When a user pastes a
-longer text, the client sends it as consecutive messages (each part close to
-the limit, the last one usually shorter), and the bot receives one update per
-part. Without coalescing each part becomes its own turn that sees only a
-fragment of the text.
+longer text, the client sends it as consecutive messages, and the bot receives
+one update per part. Part sizes vary by client (observed first parts: ~950 and
+~1400 units, following parts 2.5-4k). Without coalescing each part becomes its
+own turn that sees only a fragment of the text.
 
 The buffer is applied to raw updates, before they are normalized into events:
 
 - Only a plain text message from a sender with no pending buffer that is long
   enough to be a split part (``SPLIT_PART_MIN_UTF16``) opens a buffer. Every
   other message is dispatched at once, so short messages get no added delay.
+  Any text of at least that length waits up to ``SPLIT_WINDOW_SECONDS``; a
+  split paste is flushed that long after its last part.
 - While a buffer is open, the next plain text message from the same chat and
-  user is appended. A long part restarts the window (more parts may follow);
+  user is appended (a ``/path``-like text is plain text; only real bot commands
+  are not). A long part restarts the window (more parts may follow);
   a short part is the tail of the split, so the buffer is flushed at once.
 - The buffer is also flushed when the window expires, and before any other
   message from the same chat and user (command, attachment, forward, ...) is
@@ -33,16 +36,17 @@ from typing import Any
 
 import structlog
 
+from assistant.channels.telegram.commands import extract_supported_command
+
 logger = structlog.get_logger(__name__)
 
-TELEGRAM_TEXT_LIMIT_UTF16 = 4096
-# Telegram Desktop cuts a long text at the best break (paragraph, newline, space)
-# found in the second half of the limit, so a non-final part is never shorter
-# than half of it. Shorter texts can not be a non-final split part.
-SPLIT_PART_MIN_UTF16 = TELEGRAM_TEXT_LIMIT_UTF16 // 2
+# Clients split at different points (first parts of ~945 and ~1410 units were
+# observed in production), so the threshold is low; shorter texts are dispatched
+# at once.
+SPLIT_PART_MIN_UTF16 = 512
 # Observed in production: the client sends part 1, then the remaining parts
-# about 2.2 s later (and a few ms apart). The window must cover that gap.
-SPLIT_WINDOW_SECONDS = 3.0
+# about 2.15 s later (and a few ms apart). The window must cover that gap.
+SPLIT_WINDOW_SECONDS = 3.5
 
 # Messages with any of these keys are never merged (not a client-side split).
 _NON_SPLIT_KEYS = ("media_group_id", "forward_origin", "forward_date", "via_bot")
@@ -65,9 +69,9 @@ def _sender_key(message: dict[str, Any]) -> tuple[int, int] | None:
 
 
 def _mergeable_text(message: dict[str, Any]) -> str | None:
-    """Return the text of a plain, non-command text message; ``None`` otherwise."""
+    """Return the text of a plain text message that is not a bot command; ``None`` otherwise."""
     text = message.get("text")
-    if not isinstance(text, str) or not text or text.startswith("/"):
+    if not isinstance(text, str) or not text or extract_supported_command(text) is not None:
         return None
     if any(key in message for key in _NON_SPLIT_KEYS):
         return None
