@@ -4,7 +4,7 @@ Component ID: CMP_PROVIDER_PYDANTIC_AI_AGENT
 Find-and-replace edit tool for one existing vault file — the vault analogue of the
 Edit tool. Reads the current content, applies one exact string replacement, and hands
 the result to obsidian_wiki_write's transaction pipeline (same safety guarantees: hash
-preconditions, auto-reindex). Exists so a small change to a large note doesn't require
+preconditions, background reindex). Exists so a small change to a large note doesn't require
 reading and retyping the whole file through obsidian_wiki_write(mode="replace").
 """
 

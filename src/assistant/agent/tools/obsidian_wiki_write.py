@@ -26,11 +26,11 @@ from pydantic_ai import RunContext
 
 from assistant.agent.tools.deps import TurnDeps
 from assistant.agent.tools.obsidian_wiki_common import reject_unsafe_vault_path
+from assistant.agent.tools.obsidian_wiki_index import schedule_reindex
 
 logger = structlog.get_logger(__name__)
 
 _SUBPROCESS_TIMEOUT_SECONDS = 30
-_INDEX_REFRESH_TIMEOUT_SECONDS = 20
 _EXIT_CONFLICT = 75
 _MAX_WRITES_PER_CALL = 20
 _ALLOWED_MODES = {"create", "replace"}
@@ -202,12 +202,12 @@ def write_vault_transaction(
             "operation_id": apply_result["payload"].get("operation_id", resolved_operation_id),
             "changed_paths": changed_paths,
         }
-        result.update(_refresh_retrieval_index(product_root, vault, changed_paths))
+        result.update(_request_index_refresh(product_root, vault, changed_paths))
         logger.info(
             "provider.tool_result.obsidian_wiki_write",
             status="ok",
             changed_paths=result["changed_paths"],
-            index_refreshed=result.get("index_refreshed"),
+            index_refresh_scheduled=result.get("index_refresh_scheduled"),
         )
         return result
     finally:
@@ -215,51 +215,21 @@ def write_vault_transaction(
             os.unlink(bundle_path)
 
 
-def _refresh_retrieval_index(
+def _request_index_refresh(
     product_root: str, vault: str, changed_paths: list[str]
 ) -> dict[str, Any]:
-    """Best-effort: re-provision BM25 retrieval for changed wiki pages after a write.
+    """Queue a background retrieval-index refresh if any wiki page changed.
 
-    obsidian_wiki_search reads a prebuilt index that this tool would otherwise leave
-    stale (contextual-prefix.py / bm25-index.py are separate steps). Failure here
-    never turns a successful content write into a failure — it only annotates the
-    result so the model can tell the user retrieval may lag.
+    obsidian_wiki_search reads a prebuilt index that this write would otherwise leave
+    stale. The refresh runs off the request path (see obsidian_wiki_index), so a slow
+    or failing reindex never delays or fails a successful content write.
     """
-    md_paths = [
-        p
-        for p in changed_paths
-        if isinstance(p, str) and p.startswith("wiki/") and p.endswith(".md")
-    ]
-    if not md_paths:
-        return {"index_refreshed": False}
-
-    prefix_script = os.path.join(product_root, "scripts", "contextual-prefix.py")
-    bm25_script = os.path.join(product_root, "scripts", "bm25-index.py")
-    try:
-        for path in md_paths:
-            proc = subprocess.run(
-                ["python3", prefix_script, "--vault", vault, path, "--no-llm"],
-                capture_output=True,
-                text=True,
-                timeout=_INDEX_REFRESH_TIMEOUT_SECONDS,
-            )
-            if proc.returncode != 0:
-                reason = proc.stderr.strip() or f"contextual-prefix.py exited {proc.returncode}"
-                return {"index_refreshed": False, "index_refresh_error": reason}
-
-        proc = subprocess.run(
-            ["python3", bm25_script, "--vault", vault, "build"],
-            capture_output=True,
-            text=True,
-            timeout=_INDEX_REFRESH_TIMEOUT_SECONDS,
-        )
-        if proc.returncode != 0:
-            reason = proc.stderr.strip() or f"bm25-index.py build exited {proc.returncode}"
-            return {"index_refreshed": False, "index_refresh_error": reason}
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"index_refreshed": False, "index_refresh_error": str(exc)}
-
-    return {"index_refreshed": True}
+    if not any(
+        isinstance(p, str) and p.startswith("wiki/") and p.endswith(".md") for p in changed_paths
+    ):
+        return {"index_refresh_scheduled": False}
+    schedule_reindex(product_root, vault, reason="obsidian_wiki_write")
+    return {"index_refresh_scheduled": True}
 
 
 def _run_cli(cmd: list[str]) -> dict[str, Any]:

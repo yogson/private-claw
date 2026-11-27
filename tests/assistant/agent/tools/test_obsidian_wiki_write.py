@@ -14,6 +14,21 @@ class _Ctx:
     pass
 
 
+@pytest.fixture(autouse=True)
+def scheduled(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Capture background reindex requests instead of spawning worker threads."""
+    calls: list[tuple[str, str]] = []
+
+    def _fake_schedule(product_root: str, vault: str, *, reason: str) -> bool:
+        calls.append((product_root, vault))
+        return True
+
+    monkeypatch.setattr(
+        "assistant.agent.tools.obsidian_wiki_write.schedule_reindex", _fake_schedule
+    )
+    return calls
+
+
 def _set_env(monkeypatch: pytest.MonkeyPatch, vault: str, product: str = "/product") -> None:
     monkeypatch.setenv("CLAUDE_OBSIDIAN_VAULT", vault)
     monkeypatch.setenv("CLAUDE_OBSIDIAN_PRODUCT_ROOT", product)
@@ -94,20 +109,15 @@ def test_create_existing_file_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert "already exists" in result["reason"]
 
 
-def test_successful_create_flow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_successful_create_flow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scheduled: list[tuple[str, str]]
+) -> None:
     _set_env(monkeypatch, str(tmp_path), product="/product")
     calls: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         assert cmd[0] == "python3"
-        if cmd[1] == "/product/scripts/contextual-prefix.py":
-            assert cmd[2:] == ["--vault", str(tmp_path), "wiki/note.md", "--no-llm"]
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
-        if cmd[1] == "/product/scripts/bm25-index.py":
-            assert cmd[2:] == ["--vault", str(tmp_path), "build"]
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
-
         assert cmd[1] == "/product/scripts/claude-obsidian.py"
         assert cmd[2] == "transaction"
         bundle_path = cmd[4]
@@ -128,9 +138,7 @@ def test_successful_create_flow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
         return subprocess.CompletedProcess(
             cmd,
             returncode=0,
-            stdout=json.dumps(
-                {"operation_id": "save-xyz", "changed_paths": ["wiki/note.md"]}
-            ),
+            stdout=json.dumps({"operation_id": "save-xyz", "changed_paths": ["wiki/note.md"]}),
             stderr="",
         )
 
@@ -143,8 +151,9 @@ def test_successful_create_flow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert result["status"] == "ok"
     assert result["operation_id"] == "save-xyz"
     assert result["changed_paths"] == ["wiki/note.md"]
-    assert result["index_refreshed"] is True
-    assert len(calls) == 4
+    assert result["index_refresh_scheduled"] is True
+    assert scheduled == [("/product", str(tmp_path))]
+    assert len(calls) == 2  # inspect + apply only; reindex runs in the background
 
     # Temp bundle file must be cleaned up after the call.
     bundle_path = Path(calls[0][4])
@@ -152,7 +161,7 @@ def test_successful_create_flow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
 
 def test_index_refresh_skipped_for_non_markdown_changes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scheduled: list[tuple[str, str]]
 ) -> None:
     """Non-wiki/non-.md changed paths (e.g. index/ledger json) don't trigger reindexing."""
     _set_env(monkeypatch, str(tmp_path), product="/product")
@@ -180,38 +189,9 @@ def test_index_refresh_skipped_for_non_markdown_changes(
         writes=[{"path": ".vault-meta/mode.json", "mode": "create", "content": "{}"}],
     )
     assert result["status"] == "ok"
-    assert result["index_refreshed"] is False
-    assert len(calls) == 2  # only inspect + apply, no reindex calls
-
-
-def test_index_refresh_failure_does_not_fail_the_write(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _set_env(monkeypatch, str(tmp_path), product="/product")
-
-    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[1] == "/product/scripts/contextual-prefix.py":
-            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="boom")
-        if cmd[3] == "inspect":
-            return subprocess.CompletedProcess(
-                cmd, returncode=0, stdout=json.dumps({"approval_sha256": "abc123"}), stderr=""
-            )
-        return subprocess.CompletedProcess(
-            cmd,
-            returncode=0,
-            stdout=json.dumps({"operation_id": "save-xyz", "changed_paths": ["wiki/note.md"]}),
-            stderr="",
-        )
-
-    monkeypatch.setattr("assistant.agent.tools.obsidian_wiki_write.subprocess.run", _fake_run)
-    result = obsidian_wiki_write(
-        _Ctx(),
-        operation_type="save",
-        writes=[{"path": "wiki/note.md", "mode": "create", "content": "hello"}],
-    )
-    assert result["status"] == "ok"
-    assert result["index_refreshed"] is False
-    assert result["index_refresh_error"] == "boom"
+    assert result["index_refresh_scheduled"] is False
+    assert scheduled == []
+    assert len(calls) == 2
 
 
 def test_replace_flow_computes_current_hash(
@@ -226,8 +206,6 @@ def test_replace_flow_computes_current_hash(
     expected_hash = hashlib.sha256(existing_content.encode("utf-8")).hexdigest()
 
     def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[1] in ("/product/scripts/contextual-prefix.py", "/product/scripts/bm25-index.py"):
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
         bundle_path = cmd[4]
         bundle = json.loads(Path(bundle_path).read_text())
         assert bundle["expected_hashes"] == {"wiki/note.md": expected_hash}
@@ -249,7 +227,7 @@ def test_replace_flow_computes_current_hash(
         writes=[{"path": "wiki/note.md", "mode": "replace", "content": "new content"}],
     )
     assert result["status"] == "ok"
-    assert result["index_refreshed"] is True
+    assert result["index_refresh_scheduled"] is True
 
 
 def test_inspect_failure_returns_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

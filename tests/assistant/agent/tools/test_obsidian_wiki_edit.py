@@ -16,6 +16,14 @@ class _Ctx:
     pass
 
 
+@pytest.fixture(autouse=True)
+def _no_background_reindex(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "assistant.agent.tools.obsidian_wiki_write.schedule_reindex",
+        lambda product_root, vault, *, reason: True,
+    )
+
+
 def _set_env(monkeypatch: pytest.MonkeyPatch, vault: str, product: str = "/product") -> None:
     monkeypatch.setenv("CLAUDE_OBSIDIAN_VAULT", vault)
     monkeypatch.setenv("CLAUDE_OBSIDIAN_PRODUCT_ROOT", product)
@@ -81,8 +89,6 @@ def test_successful_edit_delegates_to_write(
     (tmp_path / "wiki" / "note.md").write_text("# Title\n\nold paragraph.\n", encoding="utf-8")
 
     def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[1] in ("/product/scripts/contextual-prefix.py", "/product/scripts/bm25-index.py"):
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
         bundle_path = cmd[4]
         bundle = json.loads(Path(bundle_path).read_text())
         assert bundle["operation_type"] == "markdown"
@@ -113,8 +119,6 @@ def test_replace_all(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (tmp_path / "wiki" / "note.md").write_text("foo foo foo", encoding="utf-8")
 
     def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[1] in ("/product/scripts/contextual-prefix.py", "/product/scripts/bm25-index.py"):
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
         bundle_path = cmd[4]
         bundle = json.loads(Path(bundle_path).read_text())
         assert bundle["writes"][0]["content"] == "bar bar bar"
@@ -160,8 +164,6 @@ def test_precondition_pins_hash_of_content_the_edit_read(
     seen: dict[str, Any] = {}
 
     def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[1] in ("/product/scripts/contextual-prefix.py", "/product/scripts/bm25-index.py"):
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
         seen["bundle"] = json.loads(Path(cmd[4]).read_text())
         return subprocess.CompletedProcess(
             cmd, returncode=0, stdout=json.dumps({"approval_sha256": "abc123"}), stderr=""
