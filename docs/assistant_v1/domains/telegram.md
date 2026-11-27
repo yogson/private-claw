@@ -151,6 +151,12 @@ the Telegram transport only.
 - The command returns three sections: current session, today (UTC), and this month (UTC).
 - Token counts and estimated costs are derived from persisted assistant message records with usage payloads.
 - Cost calculation uses static local [genai-prices](https://github.com/pydantic/genai-prices) data (provider: anthropic).
+  The stored `input_tokens` is the run total and includes cache reads/writes; the usage payload also stores
+  `cache_read_tokens`, `cache_write_tokens` and `cache_write_1h_tokens`, so cached input is priced at the model's cache rates.
+  Records without these fields (written before they existed) are priced as uncached input.
+- Usage of removed turns is kept in a per-user archive: `/reset` archives the session's usage before clearing it, and
+  compaction (automatic and `/compact`) archives the usage of the turns it summarizes away. The turns compaction keeps
+  verbatim stay in the session and are not archived, so they are not counted twice.
 - User attribution is enforced at turn level: assistant records carry `user_id`; records without it are correlated via the turn's user_message. Only usage attributed to the requesting user is included.
 - v1 explicitly configures Telegram `MenuButtonCommands` so the client menu opens the registered command list.
 - Command matching in runtime is centralized in a shared command parser that supports Telegram command forms:

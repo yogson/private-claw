@@ -229,6 +229,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await delegation_coordinator.start()
         app.state.delegation_coordinator = delegation_coordinator
         vocabulary_store = VocabularyStore(vocabulary_dir=data_root / "vocabulary")
+        # Shared by /usage, /reset and compaction (which archives summarized turns' usage).
+        usage_service = UsageStatsService(
+            session_store=store.sessions,
+            archive_dir=data_root / "runtime" / "usage_archive",
+            default_model_id=runtime_config.model.default_model_id,
+        )
         orchestrator = Orchestrator(
             store=store,
             config=runtime_config,
@@ -242,6 +248,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             capability_catalog=capability_catalog,
             confirmation_service=confirmations,
             capability_edit_service=capability_edit_service,
+            usage_service=usage_service,
         )
         verbose_state = VerboseStateService(
             storage_path=data_root / "runtime" / "verbose_state.json"
@@ -254,11 +261,6 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             _build_question_expired_handler(adapter)
         )
 
-        usage_service = UsageStatsService(
-            session_store=store.sessions,
-            archive_dir=data_root / "runtime" / "usage_archive",
-            default_model_id=runtime_config.model.default_model_id,
-        )
         cancellation_registry = CancellationRegistry()
         handler = _build_orchestrator_handler(
             adapter,

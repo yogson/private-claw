@@ -504,7 +504,14 @@ async def test_run_turn_reports_usage_end_to_end_with_real_factory(
     assert text == "hello"
     assert new_msgs
     assert usage is not None
-    assert set(usage) == {"input_tokens", "output_tokens", "last_request_input_tokens"}
+    assert set(usage) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cache_write_1h_tokens",
+        "last_request_input_tokens",
+    }
     assert usage["input_tokens"] > 0
     assert usage["output_tokens"] > 0
     # Single-request run: context size equals the run total.
@@ -540,7 +547,8 @@ def test_last_request_input_tokens_missing_usage_returns_none() -> None:
 async def test_run_turn_multi_request_reports_last_request_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Run totals stay summed; last_request_input_tokens is the final request only."""
+    """Run totals (cache split included) stay summed; last_request_input_tokens is the
+    final request only."""
     from pathlib import Path
 
     from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -565,11 +573,22 @@ async def test_run_turn_multi_request_reports_last_request_context(
                         args={"task_id": f"task-{n_responses}"},
                     )
                 ],
-                usage=RequestUsage(input_tokens=50_000, output_tokens=10),
+                usage=RequestUsage(
+                    input_tokens=50_000,
+                    output_tokens=10,
+                    cache_read_tokens=30_000,
+                    cache_write_tokens=1_000,
+                ),
             )
         return ModelResponse(
             parts=[TextPart(content="done")],
-            usage=RequestUsage(input_tokens=50_100, output_tokens=20),
+            usage=RequestUsage(
+                input_tokens=50_100,
+                output_tokens=20,
+                cache_read_tokens=31_000,
+                cache_write_tokens=500,
+                cache_write_1h_tokens=200,
+            ),
         )
 
     adapter = PydanticAITurnAdapter(
@@ -589,5 +608,8 @@ async def test_run_turn_multi_request_reports_last_request_context(
     assert usage == {
         "input_tokens": 150_100,
         "output_tokens": 40,
+        "cache_read_tokens": 91_000,
+        "cache_write_tokens": 2_500,
+        "cache_write_1h_tokens": 200,
         "last_request_input_tokens": 50_100,
     }
