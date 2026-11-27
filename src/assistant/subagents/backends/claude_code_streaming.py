@@ -20,21 +20,10 @@ from typing import Any, TypeGuard, cast, get_args
 
 import structlog
 
-from assistant.subagents.coordinator import DELEGATION_RELAY_TIMEOUT_S
-
-# Extend the SDK's stdin-close timeout so it stays open long enough for a
-# human to respond to an AskUserQuestion relay.  We add 10 s of headroom on
-# top of the coordinator's relay timeout (DELEGATION_RELAY_TIMEOUT_S).
-# The SDK reads this env var in Query.__init__ (parent process), so setting it
-# here at module import time ensures it takes effect before query() is called.
-os.environ.setdefault(
-    "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT",
-    str(DELEGATION_RELAY_TIMEOUT_S * 1000 + 10_000),
-)
-
 from assistant.core.capabilities.subagent_mcp import SubagentMcpResolver, resolve_run_mcp
 from assistant.core.config.schemas import SubagentPermissionMode
 from assistant.subagents.contracts import DelegationResult, DelegationRun
+from assistant.subagents.coordinator import DELEGATION_RELAY_TIMEOUT_S
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 from assistant.subagents.permission_modes import (
     PermissionModeMonitor,
@@ -44,6 +33,22 @@ from assistant.subagents.permission_modes import (
 )
 
 logger = structlog.get_logger(__name__)
+
+_STREAM_CLOSE_TIMEOUT_ENV = "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"
+# A value set outside the process wins over the one derived from the config.
+_STREAM_CLOSE_TIMEOUT_PINNED = _STREAM_CLOSE_TIMEOUT_ENV in os.environ
+
+
+def _apply_stream_close_timeout(question_timeout_seconds: int) -> None:
+    """Keep the SDK's stdin open long enough for a human to answer a relayed question.
+
+    10 s of headroom on top of the coordinator's question timeout.  The SDK reads
+    the env var in Query.__init__ (parent process), i.e. at every query() call.
+    """
+    if _STREAM_CLOSE_TIMEOUT_PINNED:
+        return
+    os.environ[_STREAM_CLOSE_TIMEOUT_ENV] = str(question_timeout_seconds * 1000 + 10_000)
+
 
 # Import SDK at module level so it can be patched in tests.
 # Import failures are caught at execution time in execute().
@@ -129,7 +134,10 @@ class ClaudeCodeStreamingBackendAdapter(DelegationBackendAdapterInterface):
         self,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         cli_path: str | None = None,
+        question_timeout_seconds: int = DELEGATION_RELAY_TIMEOUT_S,
     ) -> None:
+        # The coordinator's configured question timeout (resolve_question_timeout_seconds).
+        _apply_stream_close_timeout(question_timeout_seconds)
         # Keyed by task_id; each entry is an async callable that receives
         # (question, options) and returns the user's answer as a string.
         self._task_relays: dict[str, Callable[[str, list[str]], Awaitable[str]]] = {}

@@ -142,6 +142,29 @@ Coordinator enforcement rules:
 - SDK streaming backend: `ClaudeCodeStreamingBackendAdapter`
   (`src/assistant/subagents/backends/claude_code_streaming.py`), with the AskUserQuestion relay.
 
+### Question relay timeout
+
+A sub-agent's AskUserQuestion is sent to the parent session's chat and waits for an answer
+for `delegation_question_timeout_seconds` (tools.yaml defaults of `delegate_subagent_task`
+only; default 1800, must be positive), capped by the task's `timeout_seconds`. The SDK
+stdin-close timeout (`CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`) is derived from the configured value
+(+10 s) unless that env var is set outside the process.
+
+- On timeout the question is withdrawn first, then the channel edits the question message to
+  "⌛ This question expired …" and drops its buttons, and the sub-agent gets an explicit answer:
+  "No answer from the user within N minutes; the question expired. Proceed with your best
+  judgement and state the assumption, or stop and report." The event is logged as
+  `subagent.question_relay.answer_timeout` with `task_id`, `session_id`, `trace_id`,
+  `turn_id`, `timeout_s` and `waited_s`.
+- If the task stops while its question is pending (cancel, run timeout, shutdown), the
+  message is edited to say the question is no longer awaited
+  (`subagent.question_relay.withdrawn`).
+- A late button tap gets "The question has already been answered or timed out." and resolves
+  nothing; a late free-text message is a normal message to the assistant. An answer that races
+  the expiry is dropped and logged as `subagent.question_relay.late_answer_dropped`.
+- Answer buttons are valid for at most 1 hour (Telegram adapter token TTL), so a larger
+  timeout still accepts text answers but not button taps after that.
+
 ### Workspaces (worktree / readonly / in_place)
 
 Where a task runs is decided in code (`src/assistant/subagents/workspaces.py`, used by the
