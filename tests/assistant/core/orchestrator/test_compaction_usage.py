@@ -243,6 +243,91 @@ async def test_reset_during_compaction_is_serialized_and_archives_each_turn_once
 
 
 @pytest.mark.asyncio
+async def test_token_limit_auto_reset_is_serialized_with_compaction(tmp_path: Path) -> None:
+    """The automatic reset after a token-limit error takes the turn slot like /reset.
+
+    A turn queued behind the failing one may be compacting (waiting on its summarizer);
+    an unserialized auto-reset would archive and clear, then compaction would archive the
+    summarized turns a second time and restore the kept ones.
+    """
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
+
+    orch, sessions, usage = _build(tmp_path)
+    seq = 0
+    for i in range(4):
+        await sessions.append(_turn(f"t{i}", seq, 20_000 + i))
+        seq += 3
+    before = await _today_and_month(usage)
+
+    summarizing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_summarize(*_: object) -> str:
+        summarizing.set()
+        await release.wait()
+        return "Summary."
+
+    orch._compaction_service.summarize = AsyncMock(side_effect=_slow_summarize)  # noqa: SLF001
+    orch.execute_turn = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ModelHTTPError(
+            status_code=400,
+            model_name="claude-opus-4-5",
+            body={"error": {"message": "prompt is too long: 202847 tokens > 200000 maximum"}},
+        )
+    )
+
+    adapter = MagicMock()
+    adapter.is_confirmation_callback.return_value = False
+    adapter.is_stop_request.return_value = False
+    adapter.is_verbose_request.return_value = False
+    adapter.is_session_new_request.return_value = False
+    adapter.is_session_reset_request.return_value = False
+    adapter.is_compact_request.return_value = False
+    adapter.is_wtf_request.return_value = False
+    adapter.is_session_resume_request.return_value = False
+    adapter.is_session_resume_callback.return_value = False
+    adapter.is_model_request.return_value = False
+    adapter.is_model_callback_request.return_value = False
+    adapter.is_capabilities_request.return_value = False
+    adapter.is_capabilities_callback_request.return_value = False
+    adapter.is_usage_request.return_value = False
+    adapter.get_model_override.return_value = None
+    adapter.get_capabilities_override.return_value = None
+    adapter.is_session_reset_available.return_value = True
+
+    async def _clear(event: NormalizedEvent) -> bool:
+        return await sessions.clear_session(event.session_id)
+
+    adapter.reset_session_context = AsyncMock(side_effect=_clear)
+    handler = _build_orchestrator_handler(adapter, orch, usage_service=usage)
+    event = _usage_event().model_copy(
+        update={"event_id": "ev-overflow", "trace_id": "trace-overflow", "text": "hello"}
+    )
+
+    compact_task = asyncio.create_task(orch.compact_session(SESSION_ID, "trace-c", USER_ID))
+    await summarizing.wait()
+    handler_task = asyncio.create_task(handler(event))
+    # Fixed: the auto-reset queues behind compaction (2 users of the slot).
+    # Unfixed: it archives and clears right away.
+    while orch._turn_queue.depth(SESSION_ID) < 2 and not handler_task.done():  # noqa: SLF001
+        await asyncio.sleep(0)
+    assert not handler_task.done()
+
+    release.set()
+    assert await compact_task
+    response = await handler_task
+
+    assert response is not None
+    assert "Session has been reset" in response.text
+    assert await sessions.read_session(SESSION_ID) == []
+    archive_rows = (tmp_path / "usage_archive" / f"{USER_ID}.jsonl").read_text().splitlines()
+    assert len(archive_rows) == 4  # t0..t3, each exactly once
+    assert await _today_and_month(usage) == before
+
+
+@pytest.mark.asyncio
 async def test_compaction_archive_failure_logs_error(tmp_path: Path) -> None:
     """The usage of the summarized turns is lost here, so the log must carry the cause."""
     orch, sessions, usage = _build(tmp_path)

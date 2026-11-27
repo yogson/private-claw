@@ -113,6 +113,14 @@ the Telegram transport only.
   - currently activated resume-session override (if selected earlier).
 - After reset, subsequent turns in that session start as a fresh conversation (no prior replayed context).
 - The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
+- `/reset` runs in the session's turn slot (like `/compact`): it waits in the turn queue behind a running turn or
+  compaction, so it cannot interleave with them. If the slot stays busy past the queue timeout
+  (`SESSION_LOCK_WAIT_TIMEOUT_SECONDS`, 300 s), the user gets a busy reply ("Session is busy. Try again once the
+  current turn finishes.") and nothing is archived or cleared.
+- When a turn fails because the history exceeds the model's token limit, the handler resets the session
+  automatically (archive usage + clear, when reset is available). This runs after the failed turn released its slot,
+  and takes the slot the same way as `/reset`; if the slot stays busy past the timeout, the session is not reset and
+  the user is told to send `/reset` once the current turn finishes.
 
 ### New Session Flow
 

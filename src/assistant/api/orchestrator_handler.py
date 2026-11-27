@@ -349,10 +349,29 @@ def _build_orchestrator_handler(
                     trace_id=event.trace_id,
                     status_code=exc.status_code,
                 )
-                if usage_service is not None:
-                    await usage_service.archive_session_usage(orch_event.session_id, event.user_id)
-                if adapter.is_session_reset_available():
-                    await adapter.reset_session_context(event)
+                # execute_turn has released the slot by now. Archive + clear take it like
+                # /reset: a turn queued behind this one may already be compacting.
+                try:
+                    async with orchestrator.session_turn_slot(
+                        orch_event.session_id, trace_id=event.trace_id, turn_kind="reset"
+                    ):
+                        if usage_service is not None:
+                            await usage_service.archive_session_usage(
+                                orch_event.session_id, event.user_id
+                            )
+                        reset_available = adapter.is_session_reset_available()
+                        if reset_available:
+                            await adapter.reset_session_context(event)
+                except LockAcquisitionError:
+                    return build_text_channel_response(
+                        text=(
+                            "Conversation history exceeded the model limit, and the session is "
+                            "busy so it was not reset. Send /reset once the current turn finishes."
+                        ),
+                        session_id=orch_event.session_id,
+                        trace_id=event.trace_id,
+                    )
+                if reset_available:
                     reset_msg = "Session has been reset. Please try your message again."
                 else:
                     reset_msg = (
