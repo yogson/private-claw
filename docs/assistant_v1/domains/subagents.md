@@ -164,6 +164,26 @@ stdin-close timeout (`CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`) is derived from the con
   the expiry is dropped and logged as `subagent.question_relay.late_answer_dropped`.
 - Answer buttons are valid for at most 1 hour (Telegram adapter token TTL), so a larger
   timeout still accepts text answers but not button taps after that.
+- An answer accepted in the same event-loop iteration in which the timeout fires (the user
+  already got "Answer received") is delivered to the sub-agent, not expired.
+
+### Pending question visibility (parent session)
+
+The relay bypasses the orchestrator, so the parent session has no record of a question. The
+coordinator keeps the latest relayed question of each running task in memory
+(`DelegationCoordinator.question_state(task_id)`) and `check_subagent_status` returns it:
+
+- `pending_question`: `{question, asked_at, expires_at}` (ISO 8601 UTC) while the sub-agent
+  waits for the answer, otherwise `null`. Set only after the question was sent; while it is
+  set, the status `hint` tells the parent the task is blocked on the user's answer.
+- `last_question`: the latest question that is no longer pending, with `status`
+  (`answered`, `expired` or `withdrawn`) and `resolved_at`.
+- The state is dropped when the task's run ends (it is not persisted; a restart fails running
+  tasks anyway), so a finished task shows `pending_question: null` and no `last_question`.
+- The delegation_coding prompt tells the parent that questions go directly to the user, to
+  check `pending_question` before saying there are none, and not to promise to relay them.
+- Not covered: telling the user about a pending question through another bot instance they are
+  currently using (needs a cross-instance channel).
 
 ### Workspaces (worktree / readonly / in_place)
 

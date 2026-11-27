@@ -34,8 +34,12 @@ async def check_subagent_status(
     read_subagent_log call. If completed, the response includes the result
     (summary text and usage); if failed, it includes the error. If still
     pending/running, the response includes a "hint" telling you to end your
-    turn instead of checking again. This tool is rate-limited per task per
-    turn - repeated calls will be refused.
+    turn instead of checking again. "pending_question" (question, asked_at,
+    expires_at) is set while the sub-agent is blocked waiting for the user's
+    answer: its questions go directly to the user, not through you, so check
+    this before saying a task has no questions. "last_question" shows the
+    outcome (answered/expired/withdrawn) of its latest question. This tool is
+    rate-limited per task per turn - repeated calls will be refused.
 
     Args:
         task_id: The task_id returned by delegate_subagent_task.

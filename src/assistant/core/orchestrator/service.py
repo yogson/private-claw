@@ -116,6 +116,13 @@ _DELEGATION_STILL_RUNNING_HINT = (
     "to poll for completion. End your turn now (tell the user it's still working) unless "
     "the user explicitly asked you to wait and re-check right now."
 )
+_DELEGATION_PENDING_QUESTION_HINT = (
+    "The sub-agent is blocked waiting for the user's answer to pending_question. It was sent "
+    "directly to the user in this chat; you cannot answer or relay it yourself. Tell the user "
+    "the task is waiting for their answer (quote the question and when it expires): their next "
+    "text message in this chat, or a tap on an answer button, goes to the sub-agent. Then end "
+    "your turn."
+)
 _DELEGATION_NON_TERMINAL_STATUSES = (TaskStatus.PENDING.value, TaskStatus.RUNNING.value)
 _DELEGATION_STATUS_LOG_TAIL_LINES = 10
 
@@ -134,16 +141,31 @@ def _with_still_running_hint(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _delegation_status_payload(task: TaskRecord, recent_log: list[str]) -> dict[str, Any]:
+def _delegation_status_payload(
+    task: TaskRecord, recent_log: list[str], question: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """check_subagent_status result for a found task.
 
     ``workspace`` surfaces the resolved branch/worktree at the top level, so a follow-up
-    round can reuse ``workspace.branch``.
+    round can reuse ``workspace.branch``. ``pending_question`` is the question the sub-agent
+    is blocked on (None if none); ``last_question`` is the latest question it is no longer
+    waiting on, with its outcome. ``question`` is the coordinator's ``question_state()``.
     """
     payload: dict[str, Any] = {"found": True, **task.model_dump(mode="json")}
     payload["workspace"] = task_workspace_info(task.metadata)
     payload["recent_log"] = recent_log
-    return _with_still_running_hint(payload)
+    pending = question if question is not None and question.get("status") == "pending" else None
+    payload["pending_question"] = (
+        {key: pending.get(key) for key in ("question", "asked_at", "expires_at")}
+        if pending is not None
+        else None
+    )
+    if question is not None and pending is None:
+        payload["last_question"] = question
+    payload = _with_still_running_hint(payload)
+    if pending is not None and "hint" in payload:
+        payload["hint"] = _DELEGATION_PENDING_QUESTION_HINT
+    return payload
 
 
 def _turn_kind(event: OrchestratorEvent) -> str:
@@ -411,7 +433,9 @@ class Orchestrator:
                 recent_log = await coordinator.read_log_lines(
                     task_id, _DELEGATION_STATUS_LOG_TAIL_LINES
                 )
-                return _delegation_status_payload(task, recent_log)
+                return _delegation_status_payload(
+                    task, recent_log, coordinator.question_state(task_id)
+                )
 
             async def delegation_cancel_handler(task_id: str) -> dict[str, Any]:
                 cancelled = await coordinator.cancel_task(task_id, session_id=session_id)

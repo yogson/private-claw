@@ -143,6 +143,9 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         # so that a session switch between task creation and reply does not lose
         # the answer.  v1 constraint: only one pending question per chat at a time.
         self._pending_questions: dict[str, asyncio.Future[str]] = {}
+        # Latest relayed question per running task (pending or its outcome), shown to the
+        # parent by check_subagent_status; dropped when the task's run ends.
+        self._question_states: dict[str, dict[str, Any]] = {}
         self._stop = asyncio.Event()
         self._worker_task: asyncio.Task[None] | None = None
         self._inflight: dict[str, asyncio.Task[None]] = {}
@@ -227,6 +230,16 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         """
         key = self._pending_question_key(session_id)
         return key in self._pending_questions
+
+    def question_state(self, task_id: str) -> dict[str, Any] | None:
+        """Return the running task's latest relayed question, or None if it asked none.
+
+        Keys: ``question``, ``asked_at``, ``expires_at`` (ISO 8601 UTC), ``status``
+        (``pending`` | ``answered`` | ``expired`` | ``withdrawn``) and, once no longer
+        pending, ``resolved_at``. Kept in memory only for the duration of the task's run.
+        """
+        state = self._question_states.get(task_id)
+        return dict(state) if state is not None else None
 
     def submit_delegation_answer(self, session_id: str, answer: str) -> bool:
         """Fulfil a pending AskUserQuestion relay with the user's answer.
@@ -706,6 +719,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         finally:
             if backend.supports_relay:
                 backend.unregister_relay(task.task_id)
+            self._question_states.pop(task.task_id, None)
         if not result.ok:
             updated = await self._store.tasks.update_status(
                 task.task_id,
@@ -802,13 +816,22 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             # returns True when the user actually received the question.
             self._pending_questions[pending_key] = future
             asked_at = loop.time()
+            self._record_question(task_id, question, timeout_s)
             try:
                 # Wait until submit_delegation_answer() resolves the future
-                return await asyncio.wait_for(asyncio.shield(future), timeout=timeout_s)
+                answer = await asyncio.wait_for(asyncio.shield(future), timeout=timeout_s)
+                self._resolve_question_state(task_id, "answered")
+                return answer
             except TimeoutError:
+                if future.done() and not future.cancelled():
+                    # Answered in the loop iteration the timeout fired in: the user was
+                    # already told "Answer received", so deliver it instead of expiring.
+                    self._resolve_question_state(task_id, "answered")
+                    return future.result()
                 # Withdraw before notifying the channel, so an answer arriving
                 # meanwhile is not taken for one the sub-agent still waits for.
                 self._withdraw_question(pending_key, future)
+                self._resolve_question_state(task_id, "expired")
                 logger.warning(
                     "subagent.question_relay.answer_timeout",
                     **log_ctx,
@@ -822,6 +845,7 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             except asyncio.CancelledError:
                 # The task stopped (cancelled, run timeout, shutdown) while waiting.
                 self._withdraw_question(pending_key, future)
+                self._resolve_question_state(task_id, "withdrawn")
                 logger.info(
                     "subagent.question_relay.withdrawn",
                     **log_ctx,
@@ -839,6 +863,21 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
                 self._withdraw_question(pending_key, future)
 
         backend.register_relay(task_id, _relay)
+
+    def _record_question(self, task_id: str, question: str, timeout_s: int) -> None:
+        asked_at = datetime.now(UTC)
+        self._question_states[task_id] = {
+            "question": question,
+            "asked_at": asked_at.isoformat(),
+            "expires_at": (asked_at + timedelta(seconds=timeout_s)).isoformat(),
+            "status": "pending",
+        }
+
+    def _resolve_question_state(self, task_id: str, status: str) -> None:
+        state = self._question_states.get(task_id)
+        if state is not None and state["status"] == "pending":
+            state["status"] = status
+            state["resolved_at"] = datetime.now(UTC).isoformat()
 
     def _withdraw_question(self, pending_key: str, future: asyncio.Future[str]) -> None:
         """Stop awaiting ``future``; never touches another question of the same chat."""

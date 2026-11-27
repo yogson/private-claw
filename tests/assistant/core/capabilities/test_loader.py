@@ -290,6 +290,16 @@ def test_tracked_manifests_pass_strict_schema(config_name: str) -> None:
     assert load_capability_definitions(config_dir=root)
 
 
+def test_delegation_prompt_covers_pending_sub_agent_questions() -> None:
+    root = Path(__file__).resolve().parents[4] / "config"
+    prompt = load_capability_definitions(config_dir=root)["delegation_coding"].prompt
+    assert "#### Sub-agent questions to the user" in prompt
+    assert "goes directly to the user in this chat, not through you" in prompt
+    assert "Never promise to pass its questions on" in prompt
+    assert "say a task has no questions without checking" in prompt
+    assert "`pending_question`" in prompt
+
+
 @pytest.mark.parametrize("key", ["1", "~", "true", "!!binary c2VsZl9lZGl0"])
 def test_non_string_top_level_key_is_a_parse_error(key: str) -> None:
     with pytest.raises(ManifestParseError, match="top-level keys must be strings"):

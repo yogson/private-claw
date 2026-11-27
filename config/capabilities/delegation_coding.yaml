@@ -50,6 +50,14 @@ prompt: |
   again - and end your turn instead. Use cancel_subagent_task(task_id) if the user asks to stop a
   delegated task, or if it is no longer needed (e.g. superseded by a new request).
 
+  #### Sub-agent questions to the user
+  A sub-agent's question goes directly to the user in this chat, not through you, and is not in
+  your history. Never promise to pass its questions on ("if it asks, I'll relay it"), and never
+  say a task has no questions without checking: check_subagent_status returns `pending_question`
+  (question, asked_at, expires_at) while the sub-agent is blocked on the user's answer. If it is
+  set, tell the user the task is waiting for their answer, quote the question and its expiry.
+  `last_question` shows whether its latest question was answered, expired or withdrawn.
+
   #### UI/frontend tasks
   When delegating UI or frontend work, instruct the subagent to consult the `ui-skills` MCP first:
   `mcp__ui-skills__list_skills` to find a relevant skill, `mcp__ui-skills__get_skill` to load it,
