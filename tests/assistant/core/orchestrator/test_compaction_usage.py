@@ -5,11 +5,13 @@ LLM call is mocked. Summarized turns' usage must move to the archive, and the
 turns compaction keeps verbatim must not be archived too (double counting).
 """
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from assistant.channels.telegram.models import EventType, NormalizedEvent
 from assistant.channels.telegram.usage import UsageStatsService
@@ -173,3 +175,86 @@ async def test_compaction_triggered_without_user_still_archives_owner_usage(
     assert await orch.compact_session(SESSION_ID, "trace-sys", None)
 
     assert await _today_and_month(usage) == before
+
+
+@pytest.mark.asyncio
+async def test_reset_during_compaction_is_serialized_and_archives_each_turn_once(
+    tmp_path: Path,
+) -> None:
+    """A /reset arriving while compaction waits on the summarizer must wait for it.
+
+    Otherwise /reset archives and clears every turn, compaction then restores the kept
+    turns and archives the summarized ones a second time from its old snapshot.
+    """
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
+
+    orch, sessions, usage = _build(tmp_path)
+    seq = 0
+    for i in range(4):
+        await sessions.append(_turn(f"t{i}", seq, 20_000 + i))
+        seq += 3
+    before = await _today_and_month(usage)
+
+    summarizing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_summarize(*_: object) -> str:
+        summarizing.set()
+        await release.wait()
+        return "Summary."
+
+    orch._compaction_service.summarize = AsyncMock(side_effect=_slow_summarize)  # noqa: SLF001
+
+    adapter = MagicMock()
+    adapter.is_confirmation_callback.return_value = False
+    adapter.is_stop_request.return_value = False
+    adapter.is_verbose_request.return_value = False
+    adapter.is_session_new_request.return_value = False
+    adapter.is_session_reset_request.return_value = True
+    adapter.is_session_reset_available.return_value = True
+
+    async def _clear(event: NormalizedEvent) -> bool:
+        return await sessions.clear_session(event.session_id)
+
+    adapter.reset_session_context = AsyncMock(side_effect=_clear)
+    handler = _build_orchestrator_handler(adapter, orch, usage_service=usage)
+    reset_event = _usage_event().model_copy(
+        update={"event_id": "ev-reset", "trace_id": "trace-reset", "text": "/reset"}
+    )
+
+    compact_task = asyncio.create_task(orch.compact_session(SESSION_ID, "trace-c", USER_ID))
+    await summarizing.wait()
+    reset_task = asyncio.create_task(handler(reset_event))
+    # Fixed: /reset queues behind compaction (2 users of the slot). Unfixed: it runs now.
+    while orch._turn_queue.depth(SESSION_ID) < 2 and not reset_task.done():  # noqa: SLF001
+        await asyncio.sleep(0)
+    assert not reset_task.done()
+
+    release.set()
+    assert await compact_task
+    response = await reset_task
+
+    assert response is not None
+    assert response.text == "Session context reset. Starting fresh."
+    assert await sessions.read_session(SESSION_ID) == []
+    archive_rows = (tmp_path / "usage_archive" / f"{USER_ID}.jsonl").read_text().splitlines()
+    assert len(archive_rows) == 4  # t0..t3, each exactly once
+    assert await _today_and_month(usage) == before
+
+
+@pytest.mark.asyncio
+async def test_compaction_archive_failure_logs_error(tmp_path: Path) -> None:
+    """The usage of the summarized turns is lost here, so the log must carry the cause."""
+    orch, sessions, usage = _build(tmp_path)
+    seq = 0
+    for i in range(3):
+        await sessions.append(_turn(f"t{i}", seq, 20_000))
+        seq += 3
+    usage.archive_compacted_usage = AsyncMock(side_effect=OSError("disk full"))  # type: ignore[method-assign]
+
+    with capture_logs() as logs:
+        assert await orch.compact_session(SESSION_ID, "trace-fail", USER_ID)
+
+    (entry,) = [e for e in logs if e["event"] == "orchestrator.compaction_archive_failed"]
+    assert entry["error"] == "disk full"
+    assert entry["exc_info"] is True

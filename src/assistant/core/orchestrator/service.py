@@ -7,7 +7,7 @@ Orchestrator service executing turn lifecycle with persistence and idempotency.
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import AbstractAsyncContextManager, suppress
 from datetime import UTC, datetime
 from typing import Any, Final
 
@@ -1097,6 +1097,16 @@ class Orchestrator:
                     session_id, trace_id, user_id, enforce_limit=False
                 )
 
+    def session_turn_slot(
+        self, session_id: str, *, trace_id: str, turn_kind: str
+    ) -> AbstractAsyncContextManager[None]:
+        """Hold the session's turn slot, so the body cannot interleave with a turn,
+        an automatic compaction or ``/compact`` of this session (used by ``/reset``).
+
+        Raises ``LockAcquisitionError`` when the slot stays busy past the queue timeout.
+        """
+        return self._turn_queue.slot(session_id, trace_id=trace_id, turn_kind=turn_kind)
+
     @property
     def recap_enabled(self) -> bool:
         """Whether the /wtf session recap is configured and available."""
@@ -1278,11 +1288,13 @@ class Orchestrator:
                 await self._usage_service.archive_compacted_usage(
                     session_id, records, {r.turn_id for r in records_to_summarize}
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "orchestrator.compaction_archive_failed",
                     session_id=session_id,
                     trace_id=trace_id,
+                    error=str(exc),
+                    exc_info=True,
                 )
 
         logger.info(

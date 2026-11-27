@@ -11,12 +11,15 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+import structlog
 from genai_prices import Usage, calc_price
 
 from assistant.channels.telegram.models import ChannelResponse, MessageType, NormalizedEvent
 from assistant.store.filesystem.atomic import ensure_directory, file_append_lines
 from assistant.store.interfaces import SessionStoreInterface
 from assistant.store.models import SessionRecord, SessionRecordType
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_PROVIDER = "anthropic"
 _DEFAULT_MODEL_REF = "claude-sonnet-4-5"
@@ -89,41 +92,52 @@ def _calc_cost(
     ``in_tok`` is the total input and includes the cache read/write tokens (the
     pydantic-ai and genai-prices convention); genai-prices prices the cached part
     at the model's cache rates and the rest at the base input rate.
+
+    Raises when genai-prices cannot price the usage: ``LookupError`` for an
+    unknown model, ``ValueError`` for inconsistent cache data.
     """
     ref = (model_ref or _DEFAULT_MODEL_REF).removeprefix("anthropic:")
     if not ref:
         ref = _DEFAULT_MODEL_REF
-    try:
-        price = calc_price(
-            Usage(
-                input_tokens=in_tok,
-                output_tokens=out_tok,
-                cache_read_tokens=cache_read_tok,
-                cache_write_tokens=cache_write_tok,
-                cache_write_1h_tokens=cache_write_1h_tok,
-            ),
-            ref,
-            provider_id=_DEFAULT_PROVIDER,
-        )
-        return float(price.total_price)
-    except Exception:
-        return 0.0
+    price = calc_price(
+        Usage(
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cache_read_tokens=cache_read_tok,
+            cache_write_tokens=cache_write_tok,
+            cache_write_1h_tokens=cache_write_1h_tok,
+        ),
+        ref,
+        provider_id=_DEFAULT_PROVIDER,
+    )
+    return float(price.total_price)
 
 
-def _usage_cost(usage: dict[str, Any], model_ref: str) -> float:
-    """Cost of one stored ``usage`` payload.
+def _usage_cost(usage: dict[str, Any], model_ref: str, unpriced: dict[str, str]) -> float | None:
+    """Cost of one stored ``usage`` payload, or None when it cannot be priced.
 
     Records written before the cache split carry no cache fields: they are priced
-    as uncached input, as before.
+    as uncached input, as before. On a pricing failure the model id and the reason
+    are recorded in ``unpriced`` (first reason per model) for ``_log_unpriced``.
     """
-    return _calc_cost(
-        int(usage.get("input_tokens") or 0),
-        int(usage.get("output_tokens") or 0),
-        model_ref,
-        cache_read_tok=int(usage.get("cache_read_tokens") or 0),
-        cache_write_tok=int(usage.get("cache_write_tokens") or 0),
-        cache_write_1h_tok=int(usage.get("cache_write_1h_tokens") or 0),
-    )
+    try:
+        return _calc_cost(
+            int(usage.get("input_tokens") or 0),
+            int(usage.get("output_tokens") or 0),
+            model_ref,
+            cache_read_tok=int(usage.get("cache_read_tokens") or 0),
+            cache_write_tok=int(usage.get("cache_write_tokens") or 0),
+            cache_write_1h_tok=int(usage.get("cache_write_1h_tokens") or 0),
+        )
+    except Exception as exc:
+        unpriced.setdefault(model_ref, f"{type(exc).__name__}: {exc}")
+        return None
+
+
+def _log_unpriced(unpriced: dict[str, str], path: str) -> None:
+    """One warning per model that could not be priced during one ``path`` pass."""
+    for model_id, reason in unpriced.items():
+        logger.warning("usage.cost_unknown", model_id=model_id, reason=reason, path=path)
 
 
 def _archive_path(archive_dir: Path, user_id: str) -> Path:
@@ -212,6 +226,7 @@ class UsageStatsService:
         if turn_to_user is None:
             turn_to_user = _turn_user_id_map(records)
         lines: list[str] = []
+        unpriced: dict[str, str] = {}
         for r in records:
             if r.record_type != SessionRecordType.ASSISTANT_MESSAGE:
                 continue
@@ -227,7 +242,8 @@ class UsageStatsService:
             if in_tok == 0 and out_tok == 0:
                 continue
             model_ref = str(payload.get("model_id") or self._default_model_id)
-            cost = _usage_cost(usage, model_ref)
+            # None (JSON null) marks a turn that could not be priced.
+            cost = _usage_cost(usage, model_ref, unpriced)
             rec_date = _record_date(r)
             if rec_date is None:
                 continue
@@ -239,12 +255,14 @@ class UsageStatsService:
                         "output_tokens": out_tok,
                         "cache_read_tokens": int(usage.get("cache_read_tokens") or 0),
                         "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
+                        "cache_write_1h_tokens": int(usage.get("cache_write_1h_tokens") or 0),
                         "cost_usd": cost,
                         "model_id": model_ref,
                     },
                     separators=(",", ":"),
                 )
             )
+        _log_unpriced(unpriced, "archive")
         return lines
 
     async def _append_archive(self, user_id: str, lines: list[str]) -> None:
@@ -254,14 +272,18 @@ class UsageStatsService:
         path = _archive_path(self._archive_dir, user_id)
         await file_append_lines(path, lines)
 
-    def _read_archive(self, user_id: str) -> list[tuple[date, int, int, float]]:
-        """Read archived usage for user. Returns list of (date, in_tok, out_tok, cost)."""
+    def _read_archive(self, user_id: str) -> list[tuple[date, int, int, float, bool]]:
+        """Read archived usage for user.
+
+        Returns list of (date, in_tok, out_tok, cost, unpriced); ``unpriced`` marks
+        rows archived with a null cost (the turn could not be priced).
+        """
         if self._archive_dir is None:
             return []
         path = _archive_path(self._archive_dir, user_id)
         if not path.exists():
             return []
-        result: list[tuple[date, int, int, float]] = []
+        result: list[tuple[date, int, int, float, bool]] = []
         for line in path.read_text().strip().split("\n"):
             if not line.strip():
                 continue
@@ -275,8 +297,9 @@ class UsageStatsService:
                     continue
                 in_tok = int(data.get("input_tokens") or 0)
                 out_tok = int(data.get("output_tokens") or 0)
-                cost = float(data.get("cost_usd") or 0)
-                result.append((rec_date, in_tok, out_tok, cost))
+                raw_cost = data.get("cost_usd")
+                cost = float(raw_cost or 0)
+                result.append((rec_date, in_tok, out_tok, cost, raw_cost is None))
             except (json.JSONDecodeError, ValueError, TypeError):
                 continue
         return result
@@ -292,6 +315,9 @@ class UsageStatsService:
         session_bucket = _UsageBucket(0, 0, 0.0)
         day_bucket = _UsageBucket(0, 0, 0.0)
         month_bucket = _UsageBucket(0, 0, 0.0)
+        # Turns counted in a bucket below whose cost is unknown (counted as $0).
+        unpriced_turns = 0
+        unpriced: dict[str, str] = {}
 
         all_sessions = await self._store.list_sessions()
         for sid in all_sessions:
@@ -318,14 +344,19 @@ class UsageStatsService:
                 if in_tok == 0 and out_tok == 0:
                     continue
                 model_ref = payload.get("model_id") or self._default_model_id
-                cost = _usage_cost(usage, str(model_ref))
+                priced = _usage_cost(usage, str(model_ref), unpriced)
+                cost = priced if priced is not None else 0.0
+                rec_date = _record_date(r)
+                if priced is None and (
+                    sid == session_id or (rec_date is not None and rec_date >= month_start)
+                ):
+                    unpriced_turns += 1
                 if sid == session_id:
                     session_bucket = _UsageBucket(
                         session_bucket.input_tokens + in_tok,
                         session_bucket.output_tokens + out_tok,
                         session_bucket.cost_usd + cost,
                     )
-                rec_date = _record_date(r)
                 if rec_date is not None:
                     if rec_date == today:
                         day_bucket = _UsageBucket(
@@ -340,7 +371,11 @@ class UsageStatsService:
                             month_bucket.cost_usd + cost,
                         )
 
-        for rec_date, in_tok, out_tok, cost in self._read_archive(user_id):
+        _log_unpriced(unpriced, "usage")
+
+        for rec_date, in_tok, out_tok, cost, row_unpriced in self._read_archive(user_id):
+            if row_unpriced and rec_date >= month_start:
+                unpriced_turns += 1
             if rec_date == today:
                 day_bucket = _UsageBucket(
                     day_bucket.input_tokens + in_tok,
@@ -369,6 +404,12 @@ class UsageStatsService:
             f"  Tokens: {month_bucket.input_tokens} in / {month_bucket.output_tokens} out",
             f"  Cost: ${month_bucket.cost_usd:.4f}",
         ]
+        if unpriced_turns:
+            lines += [
+                "",
+                f"_Cost is incomplete: {unpriced_turns} turn(s) could not be priced "
+                "(unknown model or inconsistent cache data) and count as $0._",
+            ]
         text = "\n".join(lines)
         if (
             session_bucket.input_tokens == 0

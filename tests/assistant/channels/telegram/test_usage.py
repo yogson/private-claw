@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from genai_prices import Usage, calc_price
+from structlog.testing import capture_logs
 
 from assistant.channels.telegram.models import EventType, NormalizedEvent
 from assistant.channels.telegram.usage import (
@@ -334,6 +335,98 @@ async def test_archived_rows_keep_cache_aware_cost(tmp_path: Path) -> None:
     row = json.loads((archive_dir / "123.jsonl").read_text())
     assert row["cache_read_tokens"] == 150_000
     assert row["cache_write_tokens"] == 20_000
+    assert row["cache_write_1h_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_archived_rows_keep_cache_write_1h_tokens(tmp_path: Path) -> None:
+    """Archive rows keep the 1-hour cache-write share so 5m and 1h writes stay apart."""
+    store = FilesystemSessionStore(tmp_path / "sessions")
+    archive_dir = tmp_path / "usage_archive"
+    await store.append(_turn("t1", 0, {**_CACHED_USAGE, "cache_write_1h_tokens": 8_000}))
+    service = UsageStatsService(session_store=store, archive_dir=archive_dir)
+
+    await service.archive_session_usage("tg:123", "123")
+
+    row = json.loads((archive_dir / "123.jsonl").read_text())
+    assert row["cache_write_tokens"] == 20_000
+    assert row["cache_write_1h_tokens"] == 8_000
+    assert row["cost_usd"] == _genai_cost(**{**_CACHED_USAGE, "cache_write_1h_tokens": 8_000})
+
+
+# ---------------------------------------------------------------------------
+# Unpriced turns (unknown model / inconsistent cache data) (#123)
+# ---------------------------------------------------------------------------
+
+_INCOMPLETE_NOTE = "_Cost is incomplete: 2 turn(s) could not be priced"
+
+
+def _unpriced_turns() -> list[SessionRecord]:
+    """A priced turn, an unknown-model turn and a turn with cache_read > input."""
+    unknown = _turn("t2", 2, {"input_tokens": 1_000, "output_tokens": 10})
+    unknown[1].payload["model_id"] = "no-such-model"
+    return (
+        _turn("t1", 0, _CACHED_USAGE)
+        + unknown
+        + _turn("t3", 4, {"input_tokens": 10, "output_tokens": 1, "cache_read_tokens": 20})
+    )
+
+
+@pytest.mark.asyncio
+async def test_unpriced_turns_are_flagged_and_logged(tmp_path: Path) -> None:
+    """Unpriceable turns count as $0 but /usage says the cost is incomplete and a
+    warning names the model and the reason, instead of silently showing $0 as exact."""
+    store = FilesystemSessionStore(tmp_path / "sessions")
+    await store.append(_unpriced_turns())
+    service = UsageStatsService(session_store=store)
+
+    with capture_logs() as logs:
+        text = (await service.build_usage_response(_usage_event())).text
+
+    assert text.count(f"Cost: ${_genai_cost(**_CACHED_USAGE):.4f}") == 3
+    assert _INCOMPLETE_NOTE in text
+    warnings = {
+        (e["model_id"], e["reason"].split(":")[0])
+        for e in logs
+        if e["event"] == "usage.cost_unknown" and e["path"] == "usage"
+    }
+    assert warnings == {("no-such-model", "LookupError"), (_MODEL, "ValueError")}
+
+
+@pytest.mark.asyncio
+async def test_unpriced_turns_stay_flagged_after_archiving(tmp_path: Path) -> None:
+    """An archived unpriceable turn keeps a null cost, so /usage still flags it."""
+    store = FilesystemSessionStore(tmp_path / "sessions")
+    archive_dir = tmp_path / "usage_archive"
+    await store.append(_unpriced_turns())
+    service = UsageStatsService(session_store=store, archive_dir=archive_dir)
+
+    with capture_logs() as logs:
+        await service.archive_session_usage("tg:123", "123")
+    await store.clear_session("tg:123")
+    text = (await service.build_usage_response(_usage_event())).text
+
+    costs = [json.loads(line)["cost_usd"] for line in (archive_dir / "123.jsonl").open()]
+    assert costs[1:] == [None, None]
+    assert {e["model_id"] for e in logs if e["event"] == "usage.cost_unknown"} == {
+        "no-such-model",
+        _MODEL,
+    }
+    assert text.count(f"Cost: ${_genai_cost(**_CACHED_USAGE):.4f}") == 2  # today, month
+    assert _INCOMPLETE_NOTE in text
+
+
+@pytest.mark.asyncio
+async def test_priced_usage_has_no_incomplete_note(tmp_path: Path) -> None:
+    store = FilesystemSessionStore(tmp_path / "sessions")
+    await store.append(_turn("t1", 0, _CACHED_USAGE))
+    service = UsageStatsService(session_store=store)
+
+    with capture_logs() as logs:
+        text = (await service.build_usage_response(_usage_event())).text
+
+    assert "incomplete" not in text
+    assert not [e for e in logs if e["event"] == "usage.cost_unknown"]
 
 
 @pytest.mark.asyncio

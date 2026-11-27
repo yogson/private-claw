@@ -165,9 +165,22 @@ def _build_orchestrator_handler(
                     session_id=event.session_id,
                     trace_id=event.trace_id,
                 )
-            if usage_service is not None:
-                await usage_service.archive_session_usage(event.session_id, event.user_id)
-            cleared = await adapter.reset_session_context(event)
+            # In the session's turn slot, like /compact: a /reset racing a turn or an
+            # automatic compaction (waiting on its summarizer) would otherwise archive
+            # turns that compaction archives again, and compaction would restore them.
+            try:
+                async with orchestrator.session_turn_slot(
+                    event.session_id, trace_id=event.trace_id, turn_kind="reset"
+                ):
+                    if usage_service is not None:
+                        await usage_service.archive_session_usage(event.session_id, event.user_id)
+                    cleared = await adapter.reset_session_context(event)
+            except LockAcquisitionError:
+                return build_text_channel_response(
+                    text="Session is busy. Try again once the current turn finishes.",
+                    session_id=event.session_id,
+                    trace_id=event.trace_id,
+                )
             return build_text_channel_response(
                 text=(
                     "Session context reset. Starting fresh."

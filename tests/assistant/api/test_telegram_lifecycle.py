@@ -242,6 +242,52 @@ async def test_handler_handles_reset_without_orchestrator_call() -> None:
     assert response.text == "Session context reset. Starting fresh."
     mock_adapter.reset_session_context.assert_awaited_once_with(event)
     mock_orchestrator.execute_turn.assert_not_called()
+    mock_orchestrator.session_turn_slot.assert_called_once_with(
+        "tg:123", trace_id="trace-reset", turn_kind="reset"
+    )
+
+
+@pytest.mark.asyncio
+async def test_handler_reset_reports_busy_when_turn_slot_times_out() -> None:
+    from assistant.api.orchestrator_handler import _build_orchestrator_handler
+    from assistant.core.events.models import EventSource, EventType
+    from assistant.store.interfaces import LockAcquisitionError
+
+    event = NormalizedEvent(
+        event_id="ev-reset-busy",
+        event_type=EventType.USER_TEXT_MESSAGE,
+        source=EventSource.TELEGRAM,
+        session_id="tg:123",
+        user_id="123",
+        created_at=datetime.now(UTC),
+        trace_id="trace-reset-busy",
+        text="/reset",
+        metadata={"chat_id": 123},
+    )
+    mock_adapter = MagicMock()
+    mock_adapter.is_stop_request.return_value = False
+    mock_adapter.is_verbose_request.return_value = False
+    mock_adapter.is_session_new_request.return_value = False
+    mock_adapter.is_session_reset_request.return_value = True
+    mock_adapter.is_session_reset_available.return_value = True
+    mock_adapter.is_confirmation_callback.return_value = False
+    mock_adapter.reset_session_context = AsyncMock(return_value=True)
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.session_turn_slot.return_value.__aenter__.side_effect = LockAcquisitionError(
+        "busy"
+    )
+    usage_service = MagicMock()
+    usage_service.archive_session_usage = AsyncMock()
+
+    handler = _build_orchestrator_handler(
+        mock_adapter, mock_orchestrator, None, usage_service=usage_service
+    )
+    response = await handler(event)
+
+    assert response is not None
+    assert response.text == "Session is busy. Try again once the current turn finishes."
+    usage_service.archive_session_usage.assert_not_awaited()
+    mock_adapter.reset_session_context.assert_not_awaited()
 
 
 @pytest.mark.asyncio
