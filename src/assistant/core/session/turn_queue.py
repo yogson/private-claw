@@ -30,7 +30,7 @@ class _SessionSlot:
 class SessionTurnQueue:
     """Runs the turns of one session one at a time, in arrival order.
 
-    Every producer of turns (user messages, delegation feedback, /compact) enters
+    Every producer of turns (user messages, delegation feedback, /compact, /reset) enters
     ``slot(session_id)`` before it reads any session state, so a turn starts only
     after the previous turn of the session has been persisted. Different sessions
     never wait for each other. Ordering is per process: the session file lock in

@@ -113,6 +113,14 @@ the Telegram transport only.
   - currently activated resume-session override (if selected earlier).
 - After reset, subsequent turns in that session start as a fresh conversation (no prior replayed context).
 - The command is processed at adapter/API handler level and bypasses normal orchestrator turn execution.
+- `/reset` runs in the session's turn slot (like `/compact`): it waits in the turn queue behind a running turn or
+  compaction, so it cannot interleave with them. If the slot stays busy past the queue timeout
+  (`SESSION_LOCK_WAIT_TIMEOUT_SECONDS`, 300 s), the user gets a busy reply ("Session is busy. Try again once the
+  current turn finishes.") and nothing is archived or cleared.
+- When a turn fails because the history exceeds the model's token limit, the handler resets the session
+  automatically (archive usage + clear, when reset is available). This runs after the failed turn released its slot,
+  and takes the slot the same way as `/reset`; if the slot stays busy past the timeout, the session is not reset and
+  the user is told to send `/reset` once the current turn finishes.
 
 ### New Session Flow
 
@@ -154,9 +162,14 @@ the Telegram transport only.
   The stored `input_tokens` is the run total and includes cache reads/writes; the usage payload also stores
   `cache_read_tokens`, `cache_write_tokens` and `cache_write_1h_tokens`, so cached input is priced at the model's cache rates.
   Records without these fields (written before they existed) are priced as uncached input.
+  A turn genai-prices cannot price (unknown model, inconsistent cache data) counts as $0, logs a
+  `usage.cost_unknown` warning with the model id and reason, and `/usage` adds a note that the cost is incomplete.
 - Usage of removed turns is kept in a per-user archive: `/reset` archives the session's usage before clearing it, and
   compaction (automatic and `/compact`) archives the usage of the turns it summarizes away. The turns compaction keeps
-  verbatim stay in the session and are not archived, so they are not counted twice.
+  verbatim stay in the session and are not archived, so they are not counted twice. `/reset` runs in the session's
+  turn slot, so it waits for a running turn or compaction instead of interleaving with it. Archive rows keep the
+  cache split (`cache_read_tokens`, `cache_write_tokens`, `cache_write_1h_tokens`) and a frozen `cost_usd`
+  (`null` when the turn could not be priced).
 - User attribution is enforced at turn level: assistant records carry `user_id`; records without it are correlated via the turn's user_message. Only usage attributed to the requesting user is included.
 - v1 explicitly configures Telegram `MenuButtonCommands` so the client menu opens the registered command list.
 - Command matching in runtime is centralized in a shared command parser that supports Telegram command forms:
