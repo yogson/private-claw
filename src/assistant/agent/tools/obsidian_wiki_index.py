@@ -95,14 +95,26 @@ def schedule_reindex(product_root: str, vault: str, *, reason: str) -> bool:
 
 def _worker(product_root: str, vault: str) -> None:
     key = (product_root, vault)
-    while True:
-        with _state_lock:
-            _dirty.discard(key)
-        _reindex_with_retries(product_root, vault)
-        with _state_lock:
-            if key not in _dirty:
+    released = False
+    try:
+        while True:
+            with _state_lock:
+                _dirty.discard(key)
+            _reindex_with_retries(product_root, vault)
+            with _state_lock:
+                if key not in _dirty:
+                    _running.discard(key)
+                    released = True
+                    return
+    except Exception:
+        logger.exception("obsidian_wiki_index.reindex_crashed")
+    finally:
+        # Unexpected failure: free the slot (dropping any queued follow-up) so the
+        # next schedule_reindex can start a fresh worker instead of coalescing forever.
+        if not released:
+            with _state_lock:
                 _running.discard(key)
-                return
+                _dirty.discard(key)
 
 
 def _reindex_with_retries(product_root: str, vault: str) -> None:

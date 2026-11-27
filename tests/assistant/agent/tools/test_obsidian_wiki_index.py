@@ -136,6 +136,28 @@ def test_failed_run_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     assert attempts == 2
 
 
+def test_unexpected_exception_frees_the_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    crashed = threading.Event()
+    prefix_runs = 0
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal prefix_runs
+        if cmd[1].endswith("contextual-prefix.py"):
+            prefix_runs += 1
+            if prefix_runs == 1:
+                crashed.set()
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(index_module.subprocess, "run", _fake_run)
+    assert schedule_reindex("/product", "/vault", reason="first") is True
+    assert crashed.wait(5)
+    _wait_idle()
+    assert schedule_reindex("/product", "/vault", reason="second") is True
+    _wait_idle()
+    assert prefix_runs == 2
+
+
 def test_gives_up_after_retries_and_frees_the_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = 0
 
