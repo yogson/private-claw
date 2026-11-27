@@ -768,6 +768,8 @@ async def test_streaming_relay_submit_answer_resolves_future(tmp_path: Path) -> 
         assert question_received[0][2] == "What now?"
         # The backend received "yes" as the relay answer
         assert relay_backend.relay_answer == "yes"
+        # The question state lives only as long as the task's run.
+        assert coordinator.question_state(task_id) is None
     finally:
         await coordinator.stop()
         await store.shutdown()
@@ -1013,6 +1015,151 @@ async def test_cancelled_task_withdraws_pending_question(tmp_path: Path) -> None
     finally:
         await coordinator.stop()
         await store.shutdown()
+
+
+def _relay_task(task_id: str = "dlg-q1", timeout_seconds: int = 3600) -> TaskRecord:
+    now = datetime.now(UTC)
+    return TaskRecord(
+        task_id=task_id,
+        parent_session_id="tg:123",
+        parent_turn_id="turn-1",
+        task_type="delegation",
+        status=TaskStatus.RUNNING,
+        created_at=now,
+        updated_at=now,
+        metadata={"timeout_seconds": timeout_seconds},
+    )
+
+
+async def _registered_relay(
+    tmp_path: Path, *, expired: list[str] | None = None
+) -> tuple[DelegationCoordinator, Callable[[str, list[str]], Awaitable[str]]]:
+    """A coordinator plus the relay closure it registers for ``_relay_task()``, called
+    directly (no worker loop), so tests do not depend on polling or wall-clock time."""
+    coordinator = DelegationCoordinator(
+        store=StoreFacade(data_root=tmp_path),
+        config=_question_config(tmp_path),
+        backends=[],
+    )
+
+    async def _question_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> str:
+        return "msg-handle"
+
+    async def _question_expired(task_id: str, session_id: str, handle: Any, notice: str) -> None:
+        if expired is not None:
+            expired.append(notice)
+
+    coordinator.set_question_relay_callback(_question_relay)
+    coordinator.set_question_expired_callback(_question_expired)
+    backend = _RelayCapableBackend()
+    coordinator._register_streaming_relay(backend, _relay_task())
+    assert backend._relay is not None
+    return coordinator, backend._relay
+
+
+async def _until_pending(coordinator: DelegationCoordinator) -> None:
+    for _ in range(20):
+        if coordinator.has_pending_question("tg:123"):
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("question was never registered")
+
+
+@pytest.mark.asyncio
+async def test_question_state_pending_while_waiting_then_answered(tmp_path: Path) -> None:
+    coordinator, relay = await _registered_relay(tmp_path)
+    assert coordinator.question_state("dlg-q1") is None
+    waiting = asyncio.create_task(relay("Which database?", ["pg", "sqlite"]))
+    await _until_pending(coordinator)
+
+    state = coordinator.question_state("dlg-q1")
+    assert state is not None
+    assert state["question"] == "Which database?"
+    assert state["status"] == "pending"
+    assert "resolved_at" not in state
+    asked_at = datetime.fromisoformat(state["asked_at"])
+    expires_at = datetime.fromisoformat(state["expires_at"])
+    assert (expires_at - asked_at).total_seconds() == DELEGATION_RELAY_TIMEOUT_S
+
+    assert coordinator.submit_delegation_answer("tg:123", "pg") is True
+    assert await waiting == "pg"
+    state = coordinator.question_state("dlg-q1")
+    assert state is not None
+    assert state["status"] == "answered"
+    assert datetime.fromisoformat(state["resolved_at"]) >= asked_at
+
+
+def _timeout_now(
+    before_timeout: Callable[[], None] | None = None,
+) -> Callable[..., Awaitable[Any]]:
+    """Stand-in for asyncio.wait_for that times out at once (no real wait)."""
+
+    async def _wait_for(aw: asyncio.Future[Any], timeout: float | None) -> Any:
+        if before_timeout is not None:
+            before_timeout()
+        aw.cancel()
+        raise TimeoutError
+
+    return _wait_for
+
+
+@pytest.mark.asyncio
+async def test_question_state_expired_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expired: list[str] = []
+    coordinator, relay = await _registered_relay(tmp_path, expired=expired)
+    with monkeypatch.context() as m:
+        m.setattr(asyncio, "wait_for", _timeout_now())
+        answer = await relay("Which database?", [])
+    assert answer == question_expired_answer(DELEGATION_RELAY_TIMEOUT_S)
+    assert expired == [question_expired_notice(DELEGATION_RELAY_TIMEOUT_S)]
+    state = coordinator.question_state("dlg-q1")
+    assert state is not None
+    assert state["status"] == "expired"
+    assert "resolved_at" in state
+    assert not coordinator.has_pending_question("tg:123")
+
+
+@pytest.mark.asyncio
+async def test_answer_resolved_as_the_timeout_fires_is_delivered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An answer accepted in the loop iteration the timeout fires in (the user was already
+    told "Answer received") reaches the sub-agent instead of the expiry text."""
+    expired: list[str] = []
+    coordinator, relay = await _registered_relay(tmp_path, expired=expired)
+    accepted: list[bool] = []
+
+    def _answer_at_deadline() -> None:
+        accepted.append(coordinator.submit_delegation_answer("tg:123", "yes"))
+
+    with monkeypatch.context() as m:
+        m.setattr(asyncio, "wait_for", _timeout_now(_answer_at_deadline))
+        answer = await relay("Proceed?", ["yes", "no"])
+    assert accepted == [True]
+    assert answer == "yes"
+    assert expired == []
+    state = coordinator.question_state("dlg-q1")
+    assert state is not None
+    assert state["status"] == "answered"
+    assert not coordinator.has_pending_question("tg:123")
+
+
+@pytest.mark.asyncio
+async def test_question_state_withdrawn_when_task_stops(tmp_path: Path) -> None:
+    coordinator, relay = await _registered_relay(tmp_path)
+    waiting = asyncio.create_task(relay("Which database?", []))
+    await _until_pending(coordinator)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    state = coordinator.question_state("dlg-q1")
+    assert state is not None
+    assert state["status"] == "withdrawn"
+    await asyncio.gather(*coordinator._question_notice_tasks)
 
 
 # ---------------------------------------------------------------------------

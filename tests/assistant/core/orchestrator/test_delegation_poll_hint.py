@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from assistant.core.orchestrator.service import (
+    _DELEGATION_PENDING_QUESTION_HINT,
     _DELEGATION_STILL_RUNNING_HINT,
     _delegation_status_payload,
     _with_still_running_hint,
@@ -77,3 +78,33 @@ def test_status_payload_workspace_is_null_without_workspace() -> None:
     payload = _delegation_status_payload(_task({}, TaskStatus.COMPLETED), [])
     assert payload["workspace"] is None
     assert "hint" not in payload
+
+
+_QUESTION = {
+    "question": "Which database?",
+    "asked_at": "2026-11-26T20:50:39+00:00",
+    "expires_at": "2026-11-26T21:20:39+00:00",
+}
+
+
+def test_status_payload_without_question() -> None:
+    payload = _delegation_status_payload(_task({}), [])
+    assert payload["pending_question"] is None
+    assert "last_question" not in payload
+    assert payload["hint"] == _DELEGATION_STILL_RUNNING_HINT
+
+
+def test_status_payload_shows_pending_question_and_blocked_hint() -> None:
+    payload = _delegation_status_payload(_task({}), [], {**_QUESTION, "status": "pending"})
+    assert payload["pending_question"] == _QUESTION
+    assert "last_question" not in payload
+    assert payload["hint"] == _DELEGATION_PENDING_QUESTION_HINT
+
+
+def test_status_payload_shows_outcome_once_question_is_resolved() -> None:
+    for status in ("answered", "expired", "withdrawn"):
+        resolved = {**_QUESTION, "status": status, "resolved_at": "2026-11-26T21:20:39+00:00"}
+        payload = _delegation_status_payload(_task({}), [], resolved)
+        assert payload["pending_question"] is None
+        assert payload["last_question"] == resolved
+        assert payload["hint"] == _DELEGATION_STILL_RUNNING_HINT

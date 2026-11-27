@@ -98,6 +98,15 @@ class DelegationCoordinatorInterface(ABC):
         """
 
     @abstractmethod
+    def question_state(self, task_id: str) -> dict[str, Any] | None:
+        """Return the running task's latest question to the user, or None.
+
+        Performs no ownership check - callers must have fetched the task. The state is
+        ``pending`` while the sub-agent waits for the answer, then ``answered``,
+        ``expired`` or ``withdrawn``; it is dropped when the task's run ends.
+        """
+
+    @abstractmethod
     async def read_log_lines(self, task_id: str, tail_lines: int) -> list[str]:
         """Return the last ``tail_lines`` activity lines for an already-fetched task.
 
