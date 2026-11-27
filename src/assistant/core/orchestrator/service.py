@@ -1165,6 +1165,10 @@ class Orchestrator:
         unless ``enforce_limit`` is False).
 
         Returns True if the session was successfully compacted, False otherwise.
+
+        The usage of the summarized turns is archived for every user who owns one
+        of them, so ``user_id`` (the user whose turn triggered compaction) is not
+        used for archiving.
         """
         if self._compaction_service is None:
             return False
@@ -1229,17 +1233,6 @@ class Orchestrator:
             )
             return False
 
-        # Archive usage stats before clearing.
-        if self._usage_service and user_id:
-            try:
-                await self._usage_service.archive_session_usage(session_id, user_id)
-            except Exception:
-                logger.warning(
-                    "orchestrator.compaction_archive_failed",
-                    session_id=session_id,
-                    trace_id=trace_id,
-                )
-
         # Build new summary record.
         now = datetime.now(UTC)
         compaction_pass = len(previous_summaries) + 1
@@ -1274,6 +1267,23 @@ class Orchestrator:
         await self._store.sessions.replace_session(
             session_id, records_to_restore, preserve_after_sequence=snapshot_sequence
         )
+
+        # The summarized turns (and their usage payloads) are gone from the session
+        # now: move their usage to the /usage archive. Only those turns: the kept
+        # turns are still live and counted from the session. Archiving after the
+        # replace means a failed replace cannot leave the same turns both live and
+        # archived (double counted).
+        if self._usage_service is not None:
+            try:
+                await self._usage_service.archive_compacted_usage(
+                    session_id, records, {r.turn_id for r in records_to_summarize}
+                )
+            except Exception:
+                logger.warning(
+                    "orchestrator.compaction_archive_failed",
+                    session_id=session_id,
+                    trace_id=trace_id,
+                )
 
         logger.info(
             "orchestrator.session_compacted",

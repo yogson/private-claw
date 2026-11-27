@@ -421,11 +421,16 @@ class PydanticAITurnAdapter:
         usage = None
         usage_obj = result.usage
         if usage_obj is not None:
-            # input/output_tokens are run totals (billing, /usage);
-            # last_request_input_tokens is the context size used for compaction.
+            # input/output_tokens are run totals (billing, /usage); input_tokens
+            # includes the cache_* tokens, stored separately so /usage prices them
+            # at cache rates. last_request_input_tokens is the context size used
+            # for compaction.
             usage = {
                 "input_tokens": usage_obj.input_tokens or 0,
                 "output_tokens": usage_obj.output_tokens or 0,
+                "cache_read_tokens": usage_obj.cache_read_tokens or 0,
+                "cache_write_tokens": usage_obj.cache_write_tokens or 0,
+                "cache_write_1h_tokens": usage_obj.cache_write_1h_tokens or 0,
             }
             last_request_input = _last_request_input_tokens(new_msgs)
             if last_request_input is not None:

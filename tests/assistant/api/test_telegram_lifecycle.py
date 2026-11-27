@@ -4,6 +4,7 @@ Tests for Telegram polling lifecycle wiring in FastAPI startup/shutdown.
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -97,6 +98,39 @@ def test_startup_starts_polling_when_telegram_enabled() -> None:
     call_kwargs = mock_polling.call_args[1]
     assert "stop_event" in call_kwargs
     assert call_kwargs["stop_event"] is not None
+
+
+def test_startup_wires_usage_service_into_orchestrator(tmp_path: Path) -> None:
+    """Compaction archives usage through the orchestrator's usage service, so the
+    orchestrator must get the same UsageStatsService that serves /usage and /reset."""
+    from assistant.api import lifespan as lifespan_module
+    from assistant.channels.telegram.usage import UsageStatsService
+
+    config = _runtime_config(allowlist=[123456])
+    config.app.data_root = str(tmp_path / "data")
+    mock_mem0_client = MagicMock()
+    with (
+        patch("assistant.api.lifespan.bootstrap_with_catalog", return_value=(config, _catalog())),
+        patch("assistant.api.lifespan.run_polling", new_callable=AsyncMock),
+        patch("assistant.channels.telegram.adapter.TelegramAdapter.close", new_callable=AsyncMock),
+        patch("assistant.memory.mem0.write.MemoryClient", mock_mem0_client),
+        patch("assistant.memory.mem0.retrieval.MemoryClient", mock_mem0_client),
+        patch(
+            "assistant.api.lifespan.Orchestrator", wraps=lifespan_module.Orchestrator
+        ) as orchestrator_cls,
+        patch(
+            "assistant.api.lifespan._build_orchestrator_handler",
+            wraps=lifespan_module._build_orchestrator_handler,
+        ) as build_handler,
+    ):
+        from assistant.api.main import app
+
+        with TestClient(app, raise_server_exceptions=True):
+            pass
+
+    usage_service = orchestrator_cls.call_args.kwargs["usage_service"]
+    assert isinstance(usage_service, UsageStatsService)
+    assert build_handler.call_args.kwargs["usage_service"] is usage_service
 
 
 def test_startup_skips_telegram_when_disabled() -> None:

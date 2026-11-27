@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 from genai_prices import Usage, calc_price
 
@@ -75,20 +76,54 @@ def _record_date(record: SessionRecord) -> date | None:
     return date(ts.year, ts.month, ts.day)
 
 
-def _calc_cost(in_tok: int, out_tok: int, model_ref: str) -> float:
-    """Compute cost in USD for given token counts and model."""
+def _calc_cost(
+    in_tok: int,
+    out_tok: int,
+    model_ref: str,
+    cache_read_tok: int = 0,
+    cache_write_tok: int = 0,
+    cache_write_1h_tok: int = 0,
+) -> float:
+    """Compute cost in USD for given token counts and model.
+
+    ``in_tok`` is the total input and includes the cache read/write tokens (the
+    pydantic-ai and genai-prices convention); genai-prices prices the cached part
+    at the model's cache rates and the rest at the base input rate.
+    """
     ref = (model_ref or _DEFAULT_MODEL_REF).removeprefix("anthropic:")
     if not ref:
         ref = _DEFAULT_MODEL_REF
     try:
         price = calc_price(
-            Usage(input_tokens=in_tok, output_tokens=out_tok),
+            Usage(
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=cache_read_tok,
+                cache_write_tokens=cache_write_tok,
+                cache_write_1h_tokens=cache_write_1h_tok,
+            ),
             ref,
             provider_id=_DEFAULT_PROVIDER,
         )
         return float(price.total_price)
     except Exception:
         return 0.0
+
+
+def _usage_cost(usage: dict[str, Any], model_ref: str) -> float:
+    """Cost of one stored ``usage`` payload.
+
+    Records written before the cache split carry no cache fields: they are priced
+    as uncached input, as before.
+    """
+    return _calc_cost(
+        int(usage.get("input_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+        model_ref,
+        cache_read_tok=int(usage.get("cache_read_tokens") or 0),
+        cache_write_tok=int(usage.get("cache_write_tokens") or 0),
+        cache_write_1h_tok=int(usage.get("cache_write_1h_tokens") or 0),
+    )
 
 
 def _archive_path(archive_dir: Path, user_id: str) -> Path:
@@ -106,7 +141,12 @@ class UsageStatsService:
     payloads with fallback to chat-derived session matching.
 
     When a session is cleared via /reset, usage is archived before deletion so
-    Today and This month stats persist.
+    Today and This month stats persist. Compaction archives the usage of the
+    turns it summarizes away (``archive_compacted_usage``).
+
+    Stored ``input_tokens`` is the run total and includes cache reads/writes;
+    ``cache_read_tokens`` / ``cache_write_tokens`` (absent on older records, read
+    as 0) let the cost use the model's cache rates.
     """
 
     def __init__(
@@ -131,7 +171,46 @@ class UsageStatsService:
             return
         if not _session_belongs_to_user(session_id, user_id, records):
             return
+        await self._append_archive(user_id, self._archive_lines(records, user_id))
+
+    async def archive_compacted_usage(
+        self,
+        session_id: str,
+        records: list[SessionRecord],
+        removed_turn_ids: set[str],
+    ) -> None:
+        """
+        Archive the usage of the turns compaction removed from the session.
+
+        ``records`` is the session snapshot compaction worked on. Only turns in
+        ``removed_turn_ids`` are archived: the turns compaction keeps verbatim stay
+        in the live session and are counted from there, so nothing is counted twice.
+        Usage is archived for every user who owns a removed turn, not only the user
+        whose turn triggered the compaction.
+        """
+        if self._archive_dir is None:
+            return
         turn_to_user = _turn_user_id_map(records)
+        removed = [r for r in records if r.turn_id in removed_turn_ids]
+        user_ids = {
+            (r.payload or {}).get("user_id") or turn_to_user.get(r.turn_id)
+            for r in removed
+            if r.record_type == SessionRecordType.ASSISTANT_MESSAGE
+        }
+        for user_id in sorted(u for u in user_ids if isinstance(u, str) and u):
+            if not _session_belongs_to_user(session_id, user_id, records):
+                continue
+            await self._append_archive(user_id, self._archive_lines(removed, user_id, turn_to_user))
+
+    def _archive_lines(
+        self,
+        records: list[SessionRecord],
+        user_id: str,
+        turn_to_user: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Archive rows (JSON lines) for the user's assistant records with usage."""
+        if turn_to_user is None:
+            turn_to_user = _turn_user_id_map(records)
         lines: list[str] = []
         for r in records:
             if r.record_type != SessionRecordType.ASSISTANT_MESSAGE:
@@ -148,7 +227,7 @@ class UsageStatsService:
             if in_tok == 0 and out_tok == 0:
                 continue
             model_ref = str(payload.get("model_id") or self._default_model_id)
-            cost = _calc_cost(in_tok, out_tok, model_ref)
+            cost = _usage_cost(usage, model_ref)
             rec_date = _record_date(r)
             if rec_date is None:
                 continue
@@ -158,13 +237,18 @@ class UsageStatsService:
                         "date": rec_date.isoformat(),
                         "input_tokens": in_tok,
                         "output_tokens": out_tok,
+                        "cache_read_tokens": int(usage.get("cache_read_tokens") or 0),
+                        "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
                         "cost_usd": cost,
                         "model_id": model_ref,
                     },
                     separators=(",", ":"),
                 )
             )
-        if not lines:
+        return lines
+
+    async def _append_archive(self, user_id: str, lines: list[str]) -> None:
+        if not lines or self._archive_dir is None:
             return
         ensure_directory(self._archive_dir)
         path = _archive_path(self._archive_dir, user_id)
@@ -234,7 +318,7 @@ class UsageStatsService:
                 if in_tok == 0 and out_tok == 0:
                     continue
                 model_ref = payload.get("model_id") or self._default_model_id
-                cost = _calc_cost(in_tok, out_tok, str(model_ref))
+                cost = _usage_cost(usage, str(model_ref))
                 if sid == session_id:
                     session_bucket = _UsageBucket(
                         session_bucket.input_tokens + in_tok,
