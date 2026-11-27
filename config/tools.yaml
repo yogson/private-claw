@@ -71,6 +71,9 @@ tools:
       delegation_default_timeout_seconds: 300
       # Passed to the sub-agent CLI as --effort unless the call sets its own.
       delegation_default_effort: high
+      # How long a sub-agent's question to the user waits for an answer before it expires
+      # (capped by the task's timeout; read from here only).
+      delegation_question_timeout_seconds: 1800
       # Claude Code permission mode for sub-agents (both backends): plan | dontAsk |
       # default (alias manual) | acceptEdits | auto | bypassPermissions, from most
       # to least restrictive. Unset means auto. It is also the ceiling: a call's

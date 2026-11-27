@@ -41,9 +41,11 @@ _DEFAULT_BUDGET_WINDOW_SECONDS = 86400
 _DEFAULT_BACKEND = "claude_code"
 # Without a directory these would run in the process cwd: the live primary checkout.
 _DIRECTORY_REQUIRED_BACKENDS = frozenset({"claude_code", "claude_code_streaming"})
-# Timeout for waiting on an AskUserQuestion relay answer from the user.
-# claude_code_streaming.py derives its SDK stdin-close timeout from this value.
-DELEGATION_RELAY_TIMEOUT_S = 300
+# Default wait for the user's answer to a sub-agent's AskUserQuestion relay. Configurable
+# via delegation_question_timeout_seconds (see resolve_question_timeout_seconds) and capped
+# per task by its timeout_seconds. claude_code_streaming.py derives its SDK stdin-close
+# timeout from the configured value.
+DELEGATION_RELAY_TIMEOUT_S = 1800
 _TERMINAL_TASK_STATUSES = (
     TaskStatus.COMPLETED,
     TaskStatus.FAILED,
@@ -53,6 +55,50 @@ _TERMINAL_TASK_STATUSES = (
 _TASK_BUDGET_REASON = "task token budget exceeded"
 _DEFAULT_LOG_TAIL_LINES = 200
 _MAX_LOG_TAIL_LINES = 2000
+
+
+def resolve_question_timeout_seconds(config: RuntimeConfig) -> int:
+    """Configured wait for a relayed question's answer, before the per-task cap.
+
+    Read from the ``delegate_subagent_task`` defaults in tools.yaml
+    (``delegation_question_timeout_seconds``); :data:`DELEGATION_RELAY_TIMEOUT_S` if unset.
+    """
+    for tool in config.tools.tools:
+        if tool.tool_id != "delegate_subagent_task" or tool.default_params is None:
+            continue
+        value = tool.default_params.delegation_question_timeout_seconds
+        if value is not None:
+            return value
+    return DELEGATION_RELAY_TIMEOUT_S
+
+
+def _format_wait(seconds: int) -> str:
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds} second{'s' if seconds != 1 else ''}"
+
+
+def question_expired_answer(timeout_seconds: int) -> str:
+    """The answer a sub-agent gets when the user did not answer its question in time."""
+    return (
+        f"No answer from the user within {_format_wait(timeout_seconds)}; the question "
+        "expired. Proceed with your best judgement and state the assumption, or stop "
+        "and report."
+    )
+
+
+def question_expired_notice(timeout_seconds: int) -> str:
+    """Shown to the user in place of a question that is no longer awaited (timeout)."""
+    return (
+        f"\u231b This question expired: no answer within {_format_wait(timeout_seconds)}. "
+        "The task continued without your answer."
+    )
+
+
+QUESTION_WITHDRAWN_NOTICE = (
+    "\u231b This question is no longer awaited: the task stopped before you answered."
+)
 
 
 class DelegationCoordinator(DelegationCoordinatorInterface):
@@ -76,12 +122,22 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         # whole-file-rewrite-per-update cost. See store/filesystem/task_log.py.
         self._log_dir = Path(self._config.app.data_root) / "runtime" / "task_logs"
         # Optional callback for relaying AskUserQuestion to the channel layer.
-        # Signature: (task_id, session_id, question, options) -> None
+        # Signature: (task_id, session_id, question, options) -> handle
         # The callback is responsible only for sending the question; the answer
-        # is delivered via submit_delegation_answer().
+        # is delivered via submit_delegation_answer().  The returned handle is
+        # opaque here and only handed back to _question_expired_callback.
         self._question_relay_callback: (
-            Callable[[str, str, str, list[str]], Awaitable[None]] | None
+            Callable[[str, str, str, list[str]], Awaitable[Any]] | None
         ) = None
+        # Optional channel callback that marks a sent question as no longer awaited
+        # (e.g. edits the message and drops its buttons).
+        # Signature: (task_id, session_id, handle, notice) -> None
+        self._question_expired_callback: Callable[[str, str, Any, str], Awaitable[None]] | None = (
+            None
+        )
+        self._question_timeout_s = resolve_question_timeout_seconds(config)
+        # Background "no longer awaited" notices of cancelled relays (kept referenced).
+        self._question_notice_tasks: set[asyncio.Task[None]] = set()
         # Pending asyncio Futures for in-flight AskUserQuestion relays.
         # Keyed by chat_id (stable Telegram identifier, extracted from session)
         # so that a session switch between task creation and reply does not lose
@@ -140,15 +196,28 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
 
     def set_question_relay_callback(
         self,
-        callback: Callable[[str, str, str, list[str]], Awaitable[None]] | None,
+        callback: Callable[[str, str, str, list[str]], Awaitable[Any]] | None,
     ) -> None:
         """Register a channel-layer callback for relaying AskUserQuestion to the user.
 
         The callback receives ``(task_id, session_id, question, options)`` and is
         responsible for sending the question to the channel layer (e.g. Telegram).
         The answer must be delivered back via :meth:`submit_delegation_answer`.
+        Whatever it returns identifies the sent question to the expired callback.
         """
         self._question_relay_callback = callback
+
+    def set_question_expired_callback(
+        self,
+        callback: Callable[[str, str, Any, str], Awaitable[None]] | None,
+    ) -> None:
+        """Register a channel-layer callback for questions that are no longer awaited.
+
+        Called with ``(task_id, session_id, handle, notice)`` when a relayed question
+        times out or its task stops waiting; ``handle`` is what the relay callback
+        returned for that question and ``notice`` is the text to show in its place.
+        """
+        self._question_expired_callback = callback
 
     def has_pending_question(self, session_id: str) -> bool:
         """Return True if the session has an in-flight AskUserQuestion relay.
@@ -169,6 +238,8 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         if future is not None and not future.done():
             future.set_result(answer)
             return True
+        # No sub-agent waits any more (e.g. the question expired meanwhile).
+        logger.info("subagent.question_relay.late_answer_dropped", session_id=session_id)
         return False
 
     async def enqueue_from_tool(
@@ -672,27 +743,40 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
         The relay closure:
         1. Calls ``_question_relay_callback`` to notify the channel layer (send to Telegram)
         2. Only after a confirmed send, registers an asyncio.Future keyed by chat_id
-        3. Awaits the Future, which is resolved via :meth:`submit_delegation_answer`
+        3. Awaits the Future, which is resolved via :meth:`submit_delegation_answer`,
+           for the configured question timeout capped by the task's timeout_seconds
+        4. On timeout, withdraws the question, has the channel mark it expired and
+           returns :func:`question_expired_answer` to the sub-agent
         """
         if self._question_relay_callback is None:
             return
         if task.metadata.get("interactive") is False:
             # No human to ask (e.g. HTTP ingress jobs): leave the backend without a relay
             # so AskUserQuestion is answered at once with "user unavailable" instead of
-            # waiting out DELEGATION_RELAY_TIMEOUT_S for a reply that cannot come.
+            # waiting out the question timeout for a reply that cannot come.
             logger.info("subagent.question_relay.disabled", task_id=task.task_id)
             return
         task_id = task.task_id
         session_id = task.parent_session_id or ""
         pending_key = self._pending_question_key(session_id)
         relay_callback = self._question_relay_callback
+        # Waiting past the task's own timeout is pointless: the run is gone by then.
+        task_timeout = self._parse_positive_int(task.metadata.get("timeout_seconds"))
+        timeout_s = min(self._question_timeout_s, task_timeout or self._question_timeout_s)
+        log_ctx = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "trace_id": task.metadata.get("trace_id"),
+            "turn_id": task.parent_turn_id,
+        }
 
         async def _relay(question: str, options: list[str]) -> str:
-            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[str] = loop.create_future()
             try:
                 # Notify the channel layer; propagates on send failure so we do
                 # not register a Future for a question the user never received.
-                await relay_callback(task_id, session_id, question, options)
+                handle = await relay_callback(task_id, session_id, question, options)
             except Exception:
                 logger.exception(
                     "subagent.question_relay.send_failed",
@@ -717,24 +801,66 @@ class DelegationCoordinator(DelegationCoordinatorInterface):
             # Register only after confirmed send so has_pending_question() only
             # returns True when the user actually received the question.
             self._pending_questions[pending_key] = future
+            asked_at = loop.time()
             try:
                 # Wait until submit_delegation_answer() resolves the future
-                return await asyncio.wait_for(
-                    asyncio.shield(future), timeout=DELEGATION_RELAY_TIMEOUT_S
-                )
+                return await asyncio.wait_for(asyncio.shield(future), timeout=timeout_s)
             except TimeoutError:
+                # Withdraw before notifying the channel, so an answer arriving
+                # meanwhile is not taken for one the sub-agent still waits for.
+                self._withdraw_question(pending_key, future)
                 logger.warning(
                     "subagent.question_relay.answer_timeout",
-                    task_id=task_id,
-                    session_id=session_id,
+                    **log_ctx,
+                    timeout_s=timeout_s,
+                    waited_s=round(loop.time() - asked_at, 1),
                 )
-                return ""
+                await self._notify_question_expired(
+                    task_id, session_id, handle, question_expired_notice(timeout_s)
+                )
+                return question_expired_answer(timeout_s)
+            except asyncio.CancelledError:
+                # The task stopped (cancelled, run timeout, shutdown) while waiting.
+                self._withdraw_question(pending_key, future)
+                logger.info(
+                    "subagent.question_relay.withdrawn",
+                    **log_ctx,
+                    waited_s=round(loop.time() - asked_at, 1),
+                )
+                notice = asyncio.create_task(
+                    self._notify_question_expired(
+                        task_id, session_id, handle, QUESTION_WITHDRAWN_NOTICE
+                    )
+                )
+                self._question_notice_tasks.add(notice)
+                notice.add_done_callback(self._question_notice_tasks.discard)
+                raise
             finally:
-                self._pending_questions.pop(pending_key, None)
-                if not future.done():
-                    future.cancel()
+                self._withdraw_question(pending_key, future)
 
         backend.register_relay(task_id, _relay)
+
+    def _withdraw_question(self, pending_key: str, future: asyncio.Future[str]) -> None:
+        """Stop awaiting ``future``; never touches another question of the same chat."""
+        if self._pending_questions.get(pending_key) is future:
+            del self._pending_questions[pending_key]
+        if not future.done():
+            future.cancel()
+
+    async def _notify_question_expired(
+        self, task_id: str, session_id: str, handle: Any, notice: str
+    ) -> None:
+        if self._question_expired_callback is None:
+            return
+        try:
+            await self._question_expired_callback(task_id, session_id, handle, notice)
+        except Exception:
+            logger.warning(
+                "subagent.question_relay.expire_notify_failed",
+                task_id=task_id,
+                session_id=session_id,
+                exc_info=True,
+            )
 
     async def _notify_completion(self, task: TaskRecord) -> None:
         if self._completion_callback is None:

@@ -15,7 +15,10 @@ from assistant.api.completion_dispatcher import CompletionHandler, build_complet
 from assistant.api.delegation_feedback_handler import _build_delegation_feedback_handler
 from assistant.api.deps import set_runtime_config
 from assistant.api.orchestrator_handler import _build_orchestrator_handler
-from assistant.api.question_relay_handler import _build_question_relay_handler
+from assistant.api.question_relay_handler import (
+    _build_question_expired_handler,
+    _build_question_relay_handler,
+)
 from assistant.api.utils import build_text_channel_response
 from assistant.channels.telegram import ChannelResponse, NormalizedEvent, TelegramAdapter
 from assistant.channels.telegram.ingestion.factory import build_transcription_service
@@ -53,7 +56,7 @@ from assistant.observability.logging import configure_logging
 from assistant.store import StoreFacade
 from assistant.store.idempotency import IngressIdempotencyService
 from assistant.subagents.backends import ClaudeCodeBackendAdapter, ClaudeCodeStreamingBackendAdapter
-from assistant.subagents.coordinator import DelegationCoordinator
+from assistant.subagents.coordinator import DelegationCoordinator, resolve_question_timeout_seconds
 
 logger = structlog.get_logger(__name__)
 
@@ -73,7 +76,9 @@ def _build_delegation_coordinator(
     """
     default_policy = runtime_config.capabilities
     claude_code_backend = ClaudeCodeBackendAdapter()
-    claude_code_streaming_backend = ClaudeCodeStreamingBackendAdapter()
+    claude_code_streaming_backend = ClaudeCodeStreamingBackendAdapter(
+        question_timeout_seconds=resolve_question_timeout_seconds(runtime_config)
+    )
     subagent_mcp_sync = SubagentMcpServersSync(
         resolve_active=lambda snapshot: resolve_policy(default_policy, snapshot),
         targets=[claude_code_backend, claude_code_streaming_backend],
@@ -245,6 +250,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             orchestrator, adapter, confirmations, verbose_state=verbose_state
         )
         delegation_coordinator.set_question_relay_callback(_build_question_relay_handler(adapter))
+        delegation_coordinator.set_question_expired_callback(
+            _build_question_expired_handler(adapter)
+        )
 
         usage_service = UsageStatsService(
             session_store=store.sessions,

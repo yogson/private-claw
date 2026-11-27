@@ -215,6 +215,10 @@ class ToolDefaultParams(BaseModel):
     delegation_default_max_turns: int | None = Field(default=None, ge=1)
     delegation_default_timeout_seconds: int | None = Field(default=None, ge=1)
     delegation_default_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    # How long a sub-agent's question relayed to the user (AskUserQuestion) waits for an
+    # answer (default 1800), capped by the task's timeout. Read from the tools.yaml
+    # defaults only. Answer buttons stay valid for at most 1 hour.
+    delegation_question_timeout_seconds: int | None = Field(default=None, ge=1)
     # Claude Code permission mode for sub-agents unless the call sets its own;
     # unset means "auto".  It is also the ceiling: a per-request mode may only be
     # as restrictive or more.  "bypassPermissions" only when set explicitly.

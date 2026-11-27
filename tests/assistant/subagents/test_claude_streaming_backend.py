@@ -1,6 +1,7 @@
 """Tests for ClaudeCodeStreamingBackendAdapter."""
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -943,3 +944,24 @@ async def test_named_capabilities_get_resolved_servers_and_tool_filter_hook() ->
 async def test_runs_without_named_capabilities_keep_global_servers() -> None:
     opts = await _captured_options({})
     assert opts.hooks == {"PreToolUse": []}
+
+
+def test_stream_close_timeout_follows_question_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SDK stdin-close timeout tracks the configured question timeout (+10 s)."""
+    monkeypatch.setattr(
+        "assistant.subagents.backends.claude_code_streaming._STREAM_CLOSE_TIMEOUT_PINNED", False
+    )
+    monkeypatch.delenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", raising=False)
+    ClaudeCodeStreamingBackendAdapter(question_timeout_seconds=900)
+    assert os.environ["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] == "910000"
+    ClaudeCodeStreamingBackendAdapter()
+    assert os.environ["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] == "1810000"
+
+
+def test_stream_close_timeout_set_outside_process_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "assistant.subagents.backends.claude_code_streaming._STREAM_CLOSE_TIMEOUT_PINNED", True
+    )
+    monkeypatch.setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "5000")
+    ClaudeCodeStreamingBackendAdapter(question_timeout_seconds=900)
+    assert os.environ["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] == "5000"

@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 from structlog.testing import capture_logs
 
 from assistant.core.config.schemas import (
@@ -20,13 +21,22 @@ from assistant.core.config.schemas import (
     SchedulerConfig,
     StoreConfig,
     TelegramChannelConfig,
+    ToolDefaultParams,
+    ToolDefinition,
     ToolsConfig,
 )
 from assistant.store.facade import StoreFacade
 from assistant.store.filesystem.task_log import append_log_line, task_log_path
 from assistant.store.models import TaskRecord, TaskStatus
 from assistant.subagents.contracts import DelegationResult, DelegationRun
-from assistant.subagents.coordinator import DelegationCoordinator
+from assistant.subagents.coordinator import (
+    DELEGATION_RELAY_TIMEOUT_S,
+    QUESTION_WITHDRAWN_NOTICE,
+    DelegationCoordinator,
+    question_expired_answer,
+    question_expired_notice,
+    resolve_question_timeout_seconds,
+)
 from assistant.subagents.interfaces import DelegationBackendAdapterInterface
 
 
@@ -763,54 +773,129 @@ async def test_streaming_relay_submit_answer_resolves_future(tmp_path: Path) -> 
         await store.shutdown()
 
 
+def _question_config(
+    data_root: Path, *, question_timeout_seconds: int | None = None
+) -> RuntimeConfig:
+    config = _config(data_root, model_allowlist=["claude-sonnet-4-5"])
+    config.tools = ToolsConfig(
+        tools=[
+            ToolDefinition(
+                tool_id="delegate_subagent_task",
+                entrypoint="assistant.agent.tools.delegate_subagent_task:delegate_subagent_task",
+                default_params=ToolDefaultParams(
+                    delegation_question_timeout_seconds=question_timeout_seconds
+                ),
+            )
+        ]
+    )
+    return config
+
+
+async def _wait_terminal(coordinator: DelegationCoordinator, task_id: str) -> TaskRecord:
+    for _ in range(80):
+        task = await coordinator.get_task(task_id)
+        if task is not None and task.status in (
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        ):
+            return task
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"task {task_id} did not finish")
+
+
+def test_question_timeout_default_and_configured(tmp_path: Path) -> None:
+    assert DELEGATION_RELAY_TIMEOUT_S == 1800
+    assert resolve_question_timeout_seconds(_config(tmp_path)) == 1800
+    assert resolve_question_timeout_seconds(_question_config(tmp_path)) == 1800
+    configured = _question_config(tmp_path, question_timeout_seconds=900)
+    assert resolve_question_timeout_seconds(configured) == 900
+    with pytest.raises(ValidationError):
+        ToolDefaultParams(delegation_question_timeout_seconds=0)
+
+
+def test_question_expired_answer_is_explicit() -> None:
+    answer = question_expired_answer(1800)
+    assert answer.startswith("No answer from the user within 30 minutes; the question expired.")
+    assert "best judgement" in answer
+    assert question_expired_answer(1).startswith("No answer from the user within 1 second;")
+
+
 @pytest.mark.asyncio
-async def test_streaming_relay_answer_timeout_returns_empty(tmp_path: Path) -> None:
-    """When no answer is submitted within the coordinator timeout, the relay returns ''."""
+async def test_streaming_relay_timeout_returns_explicit_answer_and_expires_question(
+    tmp_path: Path,
+) -> None:
+    """On timeout the sub-agent gets the explicit text and the channel is told once."""
     store = StoreFacade(data_root=tmp_path)
     await store.initialize()
-
     relay_backend = _RelayCapableBackend()
     coordinator = DelegationCoordinator(
         store=store,
-        config=_config(tmp_path, model_allowlist=["claude-sonnet-4-5"]),
+        config=_question_config(tmp_path, question_timeout_seconds=1),
+        backends=[relay_backend],
+    )
+
+    async def _question_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> str:
+        return "msg-handle"  # never answered
+
+    expired: list[tuple[str, str, Any, str]] = []
+
+    async def _question_expired(task_id: str, session_id: str, handle: Any, notice: str) -> None:
+        # The question is already withdrawn when the channel is told.
+        assert not coordinator.has_pending_question(session_id)
+        expired.append((task_id, session_id, handle, notice))
+
+    coordinator.set_question_relay_callback(_question_relay)
+    coordinator.set_question_expired_callback(_question_expired)
+    await coordinator.start()
+    try:
+        with capture_logs() as logs:
+            accepted = await coordinator.enqueue_from_tool(
+                session_id="tg:123",
+                turn_id="turn-1",
+                trace_id="trace-1",
+                user_id="u1",
+                request={"objective": "Ask me", "backend": "claude_code_streaming"},
+            )
+            task_id = accepted["task_id"]
+            task = await _wait_terminal(coordinator, task_id)
+        assert task.status == TaskStatus.COMPLETED
+        assert relay_backend.relay_answer == question_expired_answer(1)
+        assert expired == [(task_id, "tg:123", "msg-handle", question_expired_notice(1))]
+        assert coordinator._pending_questions == {}
+        timeouts = [e for e in logs if e["event"] == "subagent.question_relay.answer_timeout"]
+        assert len(timeouts) == 1
+        assert timeouts[0]["task_id"] == task_id
+        assert timeouts[0]["session_id"] == "tg:123"
+        assert timeouts[0]["trace_id"] == "trace-1"
+        assert timeouts[0]["turn_id"] == "turn-1"
+        assert timeouts[0]["timeout_s"] == 1
+        assert timeouts[0]["waited_s"] >= 1
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_streaming_relay_timeout_capped_by_task_timeout(tmp_path: Path) -> None:
+    """The question never waits longer than the task's own timeout_seconds."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    relay_backend = _RelayCapableBackend()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_question_config(tmp_path, question_timeout_seconds=1800),
         backends=[relay_backend],
     )
 
     async def _question_relay(
         task_id: str, session_id: str, question: str, options: list[str]
     ) -> None:
-        # Never submit an answer — let the coordinator's relay time out
-        pass
+        return None
 
     coordinator.set_question_relay_callback(_question_relay)
-
-    # Patch the timeout in _register_streaming_relay to a tiny value
-    def _fast_register(backend: Any, task: Any) -> None:
-        # Monkey-patch the relay to use a very short timeout
-        if coordinator._question_relay_callback is None:
-            return
-        task_id = task.task_id
-        session_id = task.parent_session_id or ""
-        pending_key = coordinator._pending_question_key(session_id)
-        relay_callback = coordinator._question_relay_callback
-
-        async def _relay(question: str, options: list[str]) -> str:
-            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            coordinator._pending_questions[pending_key] = future
-            try:
-                await relay_callback(task_id, session_id, question, options)
-                return await asyncio.wait_for(asyncio.shield(future), timeout=0.05)
-            except TimeoutError:
-                return ""
-            finally:
-                coordinator._pending_questions.pop(pending_key, None)
-                if not future.done():
-                    future.cancel()
-
-        backend.register_relay(task_id, _relay)
-
-    coordinator._register_streaming_relay = _fast_register  # type: ignore[method-assign]
-
     await coordinator.start()
     try:
         accepted = await coordinator.enqueue_from_tool(
@@ -819,25 +904,112 @@ async def test_streaming_relay_answer_timeout_returns_empty(tmp_path: Path) -> N
             trace_id="trace-1",
             user_id="u1",
             request={
-                "objective": "Ask me with timeout",
+                "objective": "Ask me",
                 "backend": "claude_code_streaming",
-                "tool_params": {},
+                "timeout_seconds": 1,
             },
         )
-        assert accepted["accepted"] is True
-        task_id = accepted["task_id"]
-
-        for _ in range(40):
-            task = await coordinator.get_task(task_id)
-            if task is not None and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            await asyncio.sleep(0.1)
-
-        task = await coordinator.get_task(task_id)
-        assert task is not None
+        task = await _wait_terminal(coordinator, accepted["task_id"])
         assert task.status == TaskStatus.COMPLETED
-        # No answer was submitted; relay returned ""
-        assert relay_backend.relay_answer == ""
+        assert relay_backend.relay_answer == question_expired_answer(1)
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_answer_after_expiry_is_not_delivered(tmp_path: Path) -> None:
+    """An answer arriving while or after the question expires resolves nothing."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    relay_backend = _RelayCapableBackend()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_question_config(tmp_path, question_timeout_seconds=1),
+        backends=[relay_backend],
+    )
+
+    async def _question_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> None:
+        return None
+
+    late_results: list[bool] = []
+
+    async def _question_expired(task_id: str, session_id: str, handle: Any, notice: str) -> None:
+        # The user answers right while the message is being edited.
+        late_results.append(coordinator.submit_delegation_answer(session_id, "yes"))
+
+    coordinator.set_question_relay_callback(_question_relay)
+    coordinator.set_question_expired_callback(_question_expired)
+    await coordinator.start()
+    try:
+        with capture_logs() as logs:
+            accepted = await coordinator.enqueue_from_tool(
+                session_id="tg:123",
+                turn_id="turn-1",
+                trace_id="trace-1",
+                user_id="u1",
+                request={"objective": "Ask me", "backend": "claude_code_streaming"},
+            )
+            await _wait_terminal(coordinator, accepted["task_id"])
+            late_results.append(coordinator.submit_delegation_answer("tg:123", "no"))
+        assert late_results == [False, False]
+        assert relay_backend.relay_answer == question_expired_answer(1)
+        assert not coordinator.has_pending_question("tg:123")
+        dropped = [e for e in logs if e["event"] == "subagent.question_relay.late_answer_dropped"]
+        assert len(dropped) == 2
+    finally:
+        await coordinator.stop()
+        await store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_withdraws_pending_question(tmp_path: Path) -> None:
+    """A task cancelled while its question is pending marks the question as not awaited."""
+    store = StoreFacade(data_root=tmp_path)
+    await store.initialize()
+    relay_backend = _RelayCapableBackend()
+    coordinator = DelegationCoordinator(
+        store=store,
+        config=_question_config(tmp_path),
+        backends=[relay_backend],
+    )
+
+    async def _question_relay(
+        task_id: str, session_id: str, question: str, options: list[str]
+    ) -> str:
+        return "msg-handle"
+
+    expired: list[tuple[str, Any, str]] = []
+
+    async def _question_expired(task_id: str, session_id: str, handle: Any, notice: str) -> None:
+        expired.append((task_id, handle, notice))
+
+    coordinator.set_question_relay_callback(_question_relay)
+    coordinator.set_question_expired_callback(_question_expired)
+    await coordinator.start()
+    try:
+        accepted = await coordinator.enqueue_from_tool(
+            session_id="tg:123",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            user_id="u1",
+            request={"objective": "Ask me", "backend": "claude_code_streaming"},
+        )
+        task_id = accepted["task_id"]
+        for _ in range(80):
+            if coordinator.has_pending_question("tg:123"):
+                break
+            await asyncio.sleep(0.05)
+        assert coordinator.has_pending_question("tg:123")
+        await coordinator.cancel_task(task_id)
+        for _ in range(80):
+            if expired:
+                break
+            await asyncio.sleep(0.05)
+        assert expired == [(task_id, "msg-handle", QUESTION_WITHDRAWN_NOTICE)]
+        assert not coordinator.has_pending_question("tg:123")
     finally:
         await coordinator.stop()
         await store.shutdown()
